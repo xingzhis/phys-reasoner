@@ -55,28 +55,52 @@ def _unwrap_single(lst: list) -> str | list:
 # load_physics
 # ---------------------------------------------------------------------------
 
-def load_physics(cache_dir: str = _DEFAULT_CACHE) -> list[PhysicsProblem]:
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+
+
+def load_physics(
+    cache_dir: str = _DEFAULT_CACHE,
+    drop_chinese: bool = True,
+    drop_multi_alternative: bool = True,
+) -> list[PhysicsProblem]:
     """Load desimfj/PHYSICS (test split, 2000 rows).
 
     Known QC applied at load time:
-    - answer is List[List[str]] (doubly nested) — unwrap outer list.
+    - answer is List[List[str]] (doubly nested): each inner list is one answer
+      part, possibly with multiple alternatives (same quantity in different
+      units, or different valid derivations).
+    - drop_multi_alternative=True (default): skip rows where any part has
+      more than one alternative. These 173 English rows are semantically
+      ambiguous (alternatives may be different units, required pairs, or
+      distinct sub-question answers) and unreliable for automated verification.
+      After this filter, all inner lists have length 1, so flattening is safe.
     - Open-end rows assigned to eval_tier1 (not rule-verifiable).
+    - drop_chinese=True (default): skip rows whose question contains CJK
+      characters. The dataset interleaves Chinese/English translations of the
+      same problems; keeping both would duplicate concepts and skew distribution.
     """
     from datasets import load_dataset
 
     ds = load_dataset("desimfj/PHYSICS", cache_dir=cache_dir, split="test")
     problems = []
     for i, row in enumerate(ds):
+        if drop_chinese and _CJK_RE.search(row["question"]):
+            continue
+
         raw_answer = row["answer"]
         raw_at = row["answer_type"]  # List[str]
 
-        # Known fix: answer is List[List[str]] — unwrap outer list
+        # Unwrap the known double-nesting: List[List[str]] -> List[str]
+        # Each inner list is one part; after filtering multi-alternative rows
+        # every inner list has exactly one element, so lst[0] is lossless.
         if (
             isinstance(raw_answer, list)
             and len(raw_answer) >= 1
             and isinstance(raw_answer[0], list)
         ):
-            raw_answer = raw_answer[0]
+            if drop_multi_alternative and any(len(lst) > 1 for lst in raw_answer):
+                continue
+            raw_answer = [lst[0] for lst in raw_answer if lst]
 
         answer = _unwrap_single(raw_answer) if isinstance(raw_answer, list) else raw_answer
         answer_type = _unwrap_single(raw_at) if isinstance(raw_at, list) else raw_at
@@ -162,22 +186,21 @@ def _clean_ugphysics_answer_type(raw: str) -> str:
     Known dirty patterns:
       'NV\\n   \\nThe final answer...' → 'NV'
       'EX\\n```'                       → 'EX'
+      '\\\\\\nMC'                      → 'MC'  (spurious backslash on line 0)
     For comma-joined multi-part (e.g. 'NV, NV'), kept as-is.
     """
     if not isinstance(raw, str):
         return str(raw)
-    # Take only the first line (strips trailing prose/backticks)
-    first_line = raw.split("\n")[0].strip()
-    # Remove backticks and surrounding whitespace
-    first_line = re.sub(r"`+", "", first_line).strip()
-    # If it looks like a valid code (possibly multi-part), return it
-    if re.match(r"^[A-Z]{2}(,\s*[A-Z]{2})*$", first_line):
-        return first_line
-    # Fallback: try to extract first valid 2-letter code
-    m = re.match(r"([A-Z]{2})", first_line)
-    if m:
-        return m.group(1)
-    return first_line
+    _VALID_CODE_RE = re.compile(r"^[A-Z]{2}(,\s*[A-Z]{2})*$")
+    # Try each line in order; return the first one that parses as a valid code
+    for line in raw.split("\n"):
+        line = re.sub(r"`+", "", line).strip()
+        if _VALID_CODE_RE.match(line):
+            return line
+        m = re.match(r"([A-Z]{2})", line)
+        if m:
+            return m.group(1)
+    return raw.split("\n")[0].strip()
 
 
 # ---------------------------------------------------------------------------
@@ -212,6 +235,14 @@ def load_olympiadbench(
 
         answer = _unwrap_single(raw_answer) if isinstance(raw_answer, list) else raw_answer
         answer_type = _unwrap_single(raw_at.split(",")) if "," in str(raw_at) else raw_at
+
+        # Drop rows where answer part count and type part count disagree.
+        # These 5 rows have raw data inconsistencies (answer values packed into
+        # one string while type says multiple, or vice versa) with no safe fix.
+        n_ans = len(answer) if isinstance(answer, list) else 1
+        n_at  = len(answer_type) if isinstance(answer_type, list) else 1
+        if n_ans != n_at:
+            continue
 
         problems.append(
             PhysicsProblem(

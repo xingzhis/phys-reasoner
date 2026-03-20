@@ -284,6 +284,43 @@ def report_invariants(rows: list[PhysicsProblem]) -> int:
     return total_flagged
 
 
+def report_multipart_mismatch(rows: list[PhysicsProblem]) -> int:
+    """(f) Multi-part answer_type with single-value answer (length mismatch)."""
+    print("\n" + "=" * 70)
+    print("(f) MULTI-PART ANSWER_TYPE / SINGLE ANSWER MISMATCH")
+    print("=" * 70)
+
+    flagged = 0
+    examples: list[tuple[str, str, str, str]] = []
+
+    for r in rows:
+        at = r.answer_type
+        ans = r.answer
+        # Only check when answer_type is a list
+        if not isinstance(at, list) or len(at) <= 1:
+            continue
+        # Mismatch: answer_type says N parts but answer is a single string
+        if isinstance(ans, str):
+            flagged += 1
+            if len(examples) < 8:
+                examples.append((r.source, r.problem_id, repr(at), repr(ans[:60])))
+        elif isinstance(ans, list) and len(ans) != len(at):
+            flagged += 1
+            if len(examples) < 8:
+                examples.append((r.source, r.problem_id, repr(at), repr(ans)))
+
+    if flagged == 0:
+        print("  [OK] No multi-part mismatches.")
+    else:
+        print(f"  FLAGGED: {flagged} rows")
+        for src, pid, at_s, ans_s in examples:
+            print(f"    [{src}] {pid}")
+            print(f"      answer_type : {at_s}")
+            print(f"      answer      : {ans_s}")
+
+    return flagged
+
+
 def report_ugphysics_dirty_labels(rows: list[PhysicsProblem]) -> int:
     """Check UGPhysics for remaining dirty answer_type labels."""
     print("\n" + "=" * 70)
@@ -337,7 +374,10 @@ def report_phybench_prose(rows: list[PhysicsProblem]) -> int:
 
     total_phybench = sum(1 for r in rows if r.source == "PHYBench")
     print(f"  PHYBench total: {total_phybench}")
-    print(f"  Estimated prose: {flagged}  ({100*flagged/total_phybench:.1f}% if total > 0)")
+    if total_phybench == 0:
+        print("  (PHYBench not loaded — skipped)")
+        return 0
+    print(f"  Estimated prose: {flagged}  ({100*flagged/total_phybench:.1f}%)")
     if examples:
         print("  Examples:")
         for pid, ans in examples:
@@ -396,6 +436,7 @@ def main() -> None:
     total_flagged += report_answer_lengths(rows)
     report_boxed_rate(rows)
     total_flagged += report_invariants(rows)
+    total_flagged += report_multipart_mismatch(rows)
     total_flagged += report_ugphysics_dirty_labels(rows)
     total_flagged += report_phybench_prose(rows)
 

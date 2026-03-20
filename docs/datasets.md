@@ -1,6 +1,6 @@
 # Dataset Inventory
 
-Last updated: 2026-03-19. All row counts verified from downloaded data.
+Last updated: 2026-03-20. All row counts verified from downloaded data.
 
 ## Confirmed Downloads
 
@@ -30,29 +30,52 @@ Last updated: 2026-03-19. All row counts verified from downloaded data.
 
 ## Answer Types by Dataset
 
-### desimfj/PHYSICS (2,000 rows)
+### desimfj/PHYSICS (2,000 raw → 827 loaded)
 ```
 Numerical: 1774,  Expression: 1158,  Equation: 302
 MCQ: 132,  Open-end: 76,  T/F: 34,  Interval: 18
 ```
-Note: answer field is `List(List(string))` with `\boxed{}` wrapping; answer_type is also a list.
+Note: answer field is `List(List(string))` — outer list is the set of parts, inner list is
+alternatives per part (same quantity in different units, or paired equations, or distinct
+sub-question answers). "T/F" is a variant spelling of "True/False".
 
-### UGPhysics EN (5,520 rows)
+**Loader drops applied (2026-03-20):**
+- 953 Chinese-language rows: the dataset interleaves ZH/EN translations of the same problems.
+  Keeping both would duplicate physics concepts and skew distribution; `drop_chinese=True`.
+- 173 English rows where any answer part has >1 alternative: the inner list structure is
+  semantically ambiguous (true unit-alternatives vs required pairs vs mispacked sub-questions)
+  and cannot be reliably resolved programmatically. `drop_multi_alternative=True`.
+- 47 Open-end rows: assigned to `eval_tier1` (not rule-verifiable), not `train_candidate`.
+**Net loaded: 827 rows.**
+
+### UGPhysics EN (5,520 rows, all loaded)
 ```
 NV (Numerical Value): 2035    EX (Expression): 1605
 EQ (Equation): 759            MC (Multiple Choice): 221
 TF (True/False): 149          IN (Inequality): 64
-multi-part combos: ~591       dirty labels: ~10 (contain newlines)
+multi-part combos: ~591       dirty labels cleaned (see below)
 ```
-Note: `answers` field is `\boxed{}` string. Multi-part answers use comma-separated types e.g. `'NV, NV'`.
-Known dirty labels: `'NV\n   \nThe final answer...'`, `'EX\n\`\`\`'` — need cleaning.
+Note: `answers` field is a plain string (not a list), always with `\boxed{}`. Multi-part answers
+use comma-separated types e.g. `'NV, NV'`; the answer string may contain multiple `\boxed{}`.
 
-### OlympiadBench OE_TO_physics_en_COMP (236 rows, text-only)
+**Known dirty labels cleaned by `_clean_ugphysics_answer_type` (2026-03-20):**
+- `'NV\n   \nThe final answer...'` → `'NV'`
+- `'EX\n\`\`\`'` → `'EX'`
+- `'\\\nMC'` → `'MC'` (2 rows in SemiconductorPhysics: spurious backslash on line 0,
+  code on line 1 — fix: scan all lines not just the first)
+
+### OlympiadBench OE_TO_physics_en_COMP (236 raw → 231 loaded)
 ```
 Expression: 116,  Numerical: 113,  Equation: 3
 Expression+Numerical: 3,  Equation+Numerical: 1
 ```
 Note: `final_answer` is `List(string)`. `error` field gives numerical tolerance. `unit` separate field.
+
+**Loader drops applied (2026-03-20):**
+- 5 rows where answer-part count ≠ answer-type count (raw data inconsistency):
+  - 3 rows pack multiple values into one answer string while `answer_type` says multi-part
+  - 2 rows have 2 separate answer strings while `answer_type` is a single type
+  No programmatic fix is safe for these; dropped.
 
 ### OlympiadBench OE_MM_physics_en_COMP (456 rows, multimodal)
 ```
@@ -124,12 +147,20 @@ Verified via code execution. Pure research-level theoretical physics.
 
 ## Known Data Quality Issues
 
-1. **UGPhysics dirty answer_type labels**: ~10 rows have newlines/extra text in `answer_type` (e.g. `'NV\n   \nThe final answer...'`)
-2. **ABench BOM**: `mid` column has BOM prefix `\ufeff"mid"` — strip on read
-3. **OlympiadBench answer_type comma-joined**: multi-part answers use `'Expression,Numerical'` format — need to split for per-part handling
-4. **PHYBench no \boxed{}**: answers are raw LaTeX, not wrapped — need to extract/normalize
-5. **desimfj/PHYSICS answer nesting**: `List(List(string))` with `\boxed{}` inside — need to unwrap
-6. **desimfj/PHYSICS Open-end (76 rows)**: not rule-verifiable — exclude from training
-7. **SciBench-RL chemistry contamination**: atkins (105) + chemmc (38) = 143 chemistry rows — consider filtering to physics-only sources (fund, thermo, quan, calculus = 212 rows)
-8. **UGPhysics ZH**: exact translations of EN — exclude to avoid duplicate physics problems
+Issues marked **FIXED** are handled in the loader; issues marked **OPEN** require future work.
+
+| # | Dataset | Issue | Status |
+|---|---------|-------|--------|
+| 1 | UGPhysics | ~10 dirty `answer_type` labels with newlines/backticks/spurious chars | **FIXED** in `_clean_ugphysics_answer_type` |
+| 2 | ABench | BOM character in `mid` column header | **FIXED** via `encoding='utf-8-sig'` |
+| 3 | OlympiadBench | Multi-part `answer_type` comma-joined (`'Expression,Numerical'`) | **FIXED** via split in loader |
+| 4 | OlympiadBench | 5 rows with answer/type count mismatch (raw data error) | **FIXED** — dropped |
+| 5 | PHYBench | Answers are raw LaTeX without `\boxed{}` (8 rows do have it — source inconsistency) | **OPEN** — verifier must handle both |
+| 6 | PHYSICS | Answer field doubly nested `List[List[str]]` | **FIXED** — unwrapped in loader |
+| 7 | PHYSICS | 173 English rows with multi-alternative inner lists (semantically ambiguous) | **FIXED** — dropped (`drop_multi_alternative=True`) |
+| 8 | PHYSICS | 953 Chinese rows (mislabeled as `language=en`, translations of EN problems) | **FIXED** — dropped (`drop_chinese=True`) |
+| 9 | PHYSICS | `answer_type` length = total alternatives, not total parts (in multi-alt rows) | **FIXED** — resolved by dropping multi-alt rows |
+| 10 | PHYSICS | `T/F` used as variant spelling of `True/False` | **OPEN** — benign; verifier should handle both |
+| 11 | SciBench-RL | 143 chemistry rows (atkins, chemmc) in physics dataset | **FIXED** — filtered by default (`exclude_chemistry=True`) |
+| 12 | UGPhysics ZH | Exact CN translations of EN problems | **FIXED** — EN split loaded only |
 9. **Cross-dataset dedup**: PHYBench and OlympiadBench both draw from competition problems — may overlap; desimfj/PHYSICS may overlap with OlympiadBench
