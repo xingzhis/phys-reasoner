@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "phys-reasoner"
+version = "0.1.0"
+description = "Physics RLVR: verifier + training pipeline for physics reasoning"
+requires-python = ">=3.10"
+dependencies = [
+    "pint>=0.23",
+    "sympy>=1.12",
+    "datasets>=2.18",
+    "huggingface-hub>=0.22",
+    "pandas>=2.0",
+    "pyarrow>=14.0",
+    "numpy>=1.26",
+    "tqdm>=4.66",
+    "regex>=2024.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.4",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v"
+markers = [
+    "slow: requires HF cache or local data files",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
