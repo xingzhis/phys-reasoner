@@ -61,7 +61,20 @@ def check_schema(df: pd.DataFrame) -> bool:
             print(f"    {v!r}")
         return False
 
-    print(f"  PASS: all {len(df['answer_type'].unique())} answer_type values are canonical")
+    # After normalization, "unknown" means the label couldn't be mapped — flag as error
+    unknown_rows = df[df["answer_type"].apply(
+        lambda t: str(t) == "unknown" or (
+            isinstance(t, str) and t.startswith("[") and "unknown" in t
+        )
+    )]
+    if len(unknown_rows) > 0:
+        print(f"  FAIL: {len(unknown_rows)} rows have answer_type='unknown' after normalization"
+              f" — check loader for unmapped labels:")
+        for src, cnt in unknown_rows["source"].value_counts().items():
+            print(f"    {src}: {cnt} rows")
+        return False
+
+    print(f"  PASS: all {len(df['answer_type'].unique())} answer_type values are canonical, zero unknowns")
     return True
 
 

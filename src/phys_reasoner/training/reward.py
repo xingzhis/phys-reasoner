@@ -6,7 +6,6 @@ from __future__ import annotations
 def compute_score(
     solution_str: str,
     ground_truth: str | list[str],
-    data_source: str,
     answer_type: str,
     unit: str = "",
     tolerance: float = 0.05,

@@ -136,7 +136,6 @@ def score_predictions(df: pd.DataFrame, predictions: list[str], raw_outputs: lis
         score = compute_score(
             solution_str=pred_text,
             ground_truth=gold,
-            data_source=str(row.get("source", "")),
             answer_type=str(row.get("answer_type", "unknown")),
             unit=str(row.get("unit") or ""),
             tolerance=0.05,
