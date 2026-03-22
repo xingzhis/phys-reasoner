@@ -101,6 +101,33 @@ def test_pm_expansion():
     assert result == 1.0
 
 
+def test_pm_expansion_multiple():
+    # gold has two \pm: "\pm 5 \pm 1" → variants include +5-1=4 and -5+1=-4
+    # pred = "4" should match +5-1 variant
+    all_variants = expand_pm([r"\pm5\pm1"])
+    assert len(all_variants) == 4  # 2^2 combinations
+    assert "+5+1" in all_variants
+    assert "+5-1" in all_variants
+    assert "-5+1" in all_variants
+    assert "-5-1" in all_variants
+
+
+def test_multipart_n5_ordered():
+    # n=5 parts: permutation matching disabled at n>4, so order must match
+    result = verify_answer("1, 2, 3, 4, 5", ["1", "2", "3", "4", "5"], answer_type="numerical")
+    assert result == 1.0
+
+
+def test_empty_pred():
+    result = verify_answer("", "42", answer_type="numerical")
+    assert result == 0.0
+
+
+def test_empty_gold_list():
+    result = verify_answer("42", [], answer_type="numerical")
+    assert result == 0.0
+
+
 # ---------------------------------------------------------------------------
 # D7. Router edge cases
 # ---------------------------------------------------------------------------

@@ -87,21 +87,30 @@ def split_by_comma(expr: str) -> list[str]:
 
 
 def expand_pm(expr_list: list[str]) -> list[str]:
-    """Expand \\pm into separate + and - versions.
+    """Expand \\pm into all sign combinations.
 
-    Handles both '\\pm 5' (with space) and '\\pm5' (without) to avoid
-    producing '+ 5' / '- 5' which confuses LaTeX parsers (the sign gets lost).
+    For k occurrences of \\pm, generates 2^k variants covering every +/- combo.
+    E.g. "a \\pm b \\pm c" → ["a+b+c", "a+b-c", "a-b+c", "a-b-c"].
+
+    Handles both '\\pm ' (with space) and '\\pm' (without) to avoid producing
+    '+ 5' / '- 5' which confuse LaTeX parsers (sign gets lost).
     """
+    import itertools
+
     result = []
     for expr in expr_list:
-        if "\\pm" in expr:
-            # Replace '\\pm ' (with trailing space) first to avoid '+ 5'/'- 5'
-            pos = expr.replace("\\pm ", "+").replace("\\pm", "+")
-            neg = expr.replace("\\pm ", "-").replace("\\pm", "-")
-            result.append(pos)
-            result.append(neg)
-        else:
+        # Normalise to a single token form for splitting
+        normalised = expr.replace("\\pm ", "\\pm")
+        count = normalised.count("\\pm")
+        if count == 0:
             result.append(expr)
+            continue
+        # Generate all 2^k sign combinations
+        for signs in itertools.product(("+", "-"), repeat=count):
+            variant = normalised
+            for sign in signs:
+                variant = variant.replace("\\pm", sign, 1)
+            result.append(variant)
     return result
 
 
