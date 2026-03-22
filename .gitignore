@@ -32,7 +32,7 @@ outputs/
 *.sif
 *.sqfs
 overlay*/
-*overlay.img
+*.img
 
 # Logs & wandb
 wandb/

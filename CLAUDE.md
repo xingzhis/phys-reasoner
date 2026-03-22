@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Active Plan
 
-**Read first:** `.claude/plans/clever-launching-moonbeam.md` — the 2-month implementation plan. Currently executing Phase 1 (data acquisition + project scaffolding).
+**Read first:** `.claude/plans/clever-launching-moonbeam.md` — the 2-month implementation plan. Currently at end of Phase 1 / start of Phase 2.
+
+**Verifier MVP plan:** `.claude/plans/scalable-snacking-feigenbaum.md` — Phases A–E complete. Phase F (zero-shot baseline) in progress. See plan Status section for exact state and pending items before GRPO training.
 
 ## Project Overview
 
@@ -38,12 +40,19 @@ Project lives at `/gpfs/radev/scratch/krishnaswamy_smita/xs272/phys-reasoner`.
 
 All Python commands run inside an Apptainer container:
 ```bash
-SIF=/gpfs/radev/scratch/krishnaswamy_smita/xs272/phys-reasoner/verl_vllm011.latest.sif
-OVERLAY=/gpfs/radev/scratch/krishnaswamy_smita/xs272/phys-reasoner/phys-reasoner-overlay.img
+SIF=/gpfs/radev/scratch/krishnaswamy_smita/xs272/phys-reasoner/verl_vllm017.latest.sif
+OVERLAY=/gpfs/radev/scratch/krishnaswamy_smita/xs272/phys-reasoner/phys-reasoner-overlay-017.img
 apptainer exec --overlay "$OVERLAY" --bind /etc/pki:/etc/pki "$SIF" <command>
 ```
 
-Run tests: `apptainer exec --overlay "$OVERLAY" --bind /etc/pki:/etc/pki "$SIF" python -m pytest tests/ -v`
+**GPU commands require `--nv`** (passes through host NVIDIA driver):
+```bash
+apptainer exec --nv --overlay "$OVERLAY" --bind /etc/pki:/etc/pki "$SIF" python scripts/run_zero_shot.py
+```
+
+Run tests: `apptainer exec --overlay "$OVERLAY" --bind /etc/pki:/etc/pki "$SIF" python3 -m pytest tests/ -v`
+
+HF model cache: `HF_HOME=/gpfs/radev/scratch/krishnaswamy_smita/xs272/phys-reasoner/hf_cache`
 
 ## Key Dependencies (Planned)
 

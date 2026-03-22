@@ -8,6 +8,8 @@ version = "0.1.0"
 description = "Physics RLVR: verifier + training pipeline for physics reasoning"
 requires-python = ">=3.10"
 dependencies = [
+    "math-verify>=0.7",
+    "antlr4-python3-runtime==4.9.3",  # must pin: latex2sympy2_extended grammar compiled for 4.9.3; antlr4_13_2 extra breaks import
     "pint>=0.23",
     "sympy>=1.12",
     "datasets>=2.18",
@@ -31,7 +33,7 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-v"
+addopts = "-v -p no:hydra_pytest"
 markers = [
     "slow: requires HF cache or local data files",
 ]

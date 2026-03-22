@@ -6,35 +6,76 @@ Target venue: NeurIPS 2026.
 
 ---
 
-## Environment Setup (HPC with Singularity)
+## Environment
 
-This project runs on a SLURM HPC cluster using a Singularity container with an overlay for additional packages.
-
-### Prerequisites
-
-- Singularity installed on HPC
-- Base SIF with PyTorch + VeRL (see `scripts/env_setup.sh`)
-
-### Install project in overlay
+All commands run inside an Apptainer container with an overlay for installed packages:
 
 ```bash
-# Activate your overlay and SIF
-singularity exec --overlay /path/to/overlay.img /path/to/base.sif bash
+SIF=/gpfs/radev/scratch/krishnaswamy_smita/xs272/phys-reasoner/verl_vllm011.latest.sif
+OVERLAY=/gpfs/radev/scratch/krishnaswamy_smita/xs272/phys-reasoner/phys-reasoner-overlay.img
+CMD="apptainer exec --overlay $OVERLAY --bind /etc/pki:/etc/pki $SIF"
+CMD_GPU="apptainer exec --nv --overlay $OVERLAY --bind /etc/pki:/etc/pki $SIF"
 
-# Inside container: install project in editable mode
-pip install -e ".[dev]"
+# Run tests
+$CMD python -m pytest tests/ -v -m "not slow"
+
+# GPU inference/training
+$CMD_GPU python scripts/run_zero_shot.py ...
 ```
 
-### Running scripts
+HuggingFace model cache: `HF_HOME=data/hf_cache`
 
-All scripts should be run inside the container:
+---
+
+## Data Pipeline
+
+The training corpus is assembled from multiple sources, deduplicated, and saved as a single parquet file. **Re-run `run_dedup.py` whenever loaders or normalization logic changes.**
+
+### Step 1 — Raw data
+
+Data is stored in `data/raw/`:
+
+| Source | Location | Notes |
+|---|---|---|
+| UGPhysics | HuggingFace (`luffycodes/ugphysics`) | loaded via `loaders.py` |
+| PHYSICS (Yale) | `data/raw/yale-physics/` | git submodule |
+| OlympiadBench | `data/raw/grader-repos/OlympiadBench/` | git submodule |
+| PHYBench | HuggingFace | loaded via `loaders.py` |
+| SciBench_RL | HuggingFace | loaded via `loaders.py` |
+| ABench-Physics | `data/raw/abench/` | eval only (Phy_A, Phy_B CSV) |
+
+### Step 2 — Build training parquet
 
 ```bash
-singularity exec --overlay /path/to/overlay.img /path/to/base.sif \
-    python scripts/prepare_data.py
+$CMD python -u scripts/run_dedup.py
+# Output: data/processed/candidates_deduped.parquet (~6,866 rows)
 ```
 
-Or via SLURM batch jobs (see `scripts/slurm/`).
+This runs three passes:
+1. **Exact dedup** — SHA-256 on normalized question text
+2. **Fuzzy dedup** — MinHash LSH at Jaccard ≥ 0.8
+3. **Contamination check** — removes training rows that overlap with any eval set
+
+Priority when deduplicating: `OlympiadBench > PHYSICS > UGPhysics > PHYBench > SciBench_RL`
+
+Answer types are normalized to canonical labels (`numerical`, `expression`, `equation`, `interval`, `mcq`, `true_false`, `open_end`).
+
+### Step 3 — Validate parquet
+
+```bash
+$CMD python -u scripts/validate_parquet.py
+# Checks: canonical types, row count, 200-row smoke verify
+```
+
+### Step 4 — Zero-shot baseline
+
+```bash
+$CMD_GPU python -u scripts/run_zero_shot.py \
+    --n_per_tier 200 \
+    --output data/results/zero_shot_scores.parquet
+```
+
+Uses vLLM, thinking enabled, `max_new_tokens=4096`.
 
 ---
 
@@ -42,39 +83,88 @@ Or via SLURM batch jobs (see `scripts/slurm/`).
 
 ```
 phys-reasoner/
-├── pyproject.toml
 ├── src/phys_reasoner/
-│   ├── verifier/        # Physics answer verifier (numeric, unit, symbolic, ...)
-│   ├── data/            # Dataset loaders + preprocessing
-│   ├── training/        # VeRL reward wrapper
-│   └── eval/            # Evaluation scripts + analysis
-├── tests/
+│   ├── data/
+│   │   ├── loaders.py          # One loader per source dataset
+│   │   ├── normalize.py        # Raw answer_type → canonical label
+│   │   └── schema.py           # PhysicsProblem dataclass
+│   ├── verifier/
+│   │   ├── router.py           # Main entry: verify_answer()
+│   │   ├── extract.py          # \boxed{} extraction, split_by_comma, expand_pm
+│   │   ├── math_verify_wrapper.py  # math-verify rule tier
+│   │   ├── unit_check.py       # pint unit-aware comparison
+│   │   └── xverify_judge.py    # xVerify-3B-Ib LLM fallback
+│   └── training/
+│       └── reward.py           # VeRL-compatible compute_score()
 ├── scripts/
-│   ├── prepare_data.py  # Download + normalize all datasets
-│   ├── train_grpo.sh    # GRPO training entry point
-│   └── run_eval.py      # Evaluation entry point
+│   ├── run_dedup.py            # Build candidates_deduped.parquet
+│   ├── validate_parquet.py     # Post-dedup correctness check
+│   ├── run_zero_shot.py        # Zero-shot baseline (vLLM)
+│   ├── benchmark_xverify.py    # xVerify model size selection
+│   └── spot_check_eval.py      # Verifier spot-check on eval sets
+├── tests/
+│   └── test_verifier.py        # Verifier test suite (D1–D8)
+├── data/
+│   ├── raw/                    # Source data (git submodules + HF cache)
+│   └── processed/
+│       ├── candidates_raw.parquet      # Pre-dedup (from loaders)
+│       └── candidates_deduped.parquet  # Final training corpus (~6,866 rows)
 └── docs/
-    └── proposal.md
 ```
+
+---
 
 ## Datasets
 
-| Dataset | Split | Purpose |
+### Training corpus (~6,866 problems after dedup)
+
+| Dataset | Count | Answer types |
 |---|---|---|
-| PHYSICS | train | Textbook problems (Tier 1 training + held-out eval) |
-| UGPhysics | train | Undergraduate physics |
-| OlympiadBench (physics) | train | Competition problems |
-| ABench-Physics Phy_B | eval | Dynamic robustness (Tier 2) |
-| CritPt | eval | PhD-level frontier problems (Tier 3) |
+| UGPhysics | 5,451 | numerical, expression, equation, interval |
+| PHYSICS (Yale) | 805 | numerical, expression |
+| SciBench_RL | 280 | numerical |
+| OlympiadBench | 230 | mixed multi-part |
+| PHYBench | 100 | numerical |
+
+### Evaluation tiers
+
+| Dataset | Tier | Purpose |
+|---|---|---|
+| PHYSICS held-out | Tier 1 | In-domain textbook (same distribution as training) |
+| ABench-Physics Phy_B (dynamic) | Tier 2 | Robustness: same problem, varied numerical parameters |
+| CritPt (~70 problems) | Tier 3 | PhD-level frontier problems |
+
+---
+
+## Verifier
+
+Layered pipeline: unit check (pint) → rule verify (math-verify) → LLM fallback (xVerify-3B-Ib).
+
+- Rule tier false negative rate on training corpus: **0.3%** (18/6,866)
+- xVerify model: `IAAR-Shanghai/xVerify-3B-Ib` (98.5% accuracy on failure cases)
+
+```python
+from phys_reasoner.verifier.router import verify_answer
+
+score = verify_answer(
+    pred_text="\\boxed{9.8}",
+    gold_answer="9.8",
+    answer_type="numerical",
+    gold_unit="m/s^2",
+)
+# Returns: 1.0 (correct), 0.0 (wrong), -1.0 (unverifiable)
+```
+
+---
 
 ## Models
 
-- **Primary**: Qwen3.5-4B (Base → SFT → GRPO)
-- **Scaling check**: Qwen3.5-9B
+- **Primary**: `Qwen/Qwen3.5-4B` (Base → SFT warm-up → GRPO)
+- **Scaling check**: `Qwen/Qwen3.5-9B`
 
-## Baselines
+## Training Pipeline (planned)
 
-1. Base zero-shot
-2. SFT-only
-3. SFT + RLVR (GRPO with physics verifier reward)
-4. Best-of-N (SFT model, scored by verifier)
+1. Base zero-shot baseline (`scripts/run_zero_shot.py`)
+2. SFT warm-up on training corpus
+3. GRPO with physics verifier reward (via VeRL)
+4. Evaluation on all three tiers

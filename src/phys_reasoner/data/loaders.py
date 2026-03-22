@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Sequence
 
 from phys_reasoner.data.schema import PhysicsProblem
+from phys_reasoner.data.normalize import normalize_answer_type
 
 
 # ---------------------------------------------------------------------------
@@ -114,7 +115,7 @@ def load_physics(
                 problem_id=f"PHYSICS_{i:05d}",
                 problem=row["question"],
                 answer=answer,
-                answer_type=answer_type,
+                answer_type=normalize_answer_type(answer_type, "PHYSICS"),
                 source="PHYSICS",
                 domain=str(row.get("domain") or ""),
                 difficulty=str(row.get("difficulty") or ""),
@@ -161,7 +162,7 @@ def load_ugphysics(
                     problem_id=f"UGPhysics_{subject}_{i:05d}",
                     problem=row["problem"],
                     answer=row["answers"],       # str, may contain \boxed{}
-                    answer_type=clean_at,
+                    answer_type=normalize_answer_type(clean_at, "UGPhysics"),
                     source="UGPhysics",
                     unit=str(row.get("unit") or ""),
                     domain=subject,
@@ -249,7 +250,7 @@ def load_olympiadbench(
                 problem_id=f"OlympiadBench_{config}_{i:05d}",
                 problem=row["question"],
                 answer=answer,
-                answer_type=answer_type,
+                answer_type=normalize_answer_type(answer_type, "OlympiadBench"),
                 source="OlympiadBench",
                 unit=str(row.get("unit") or ""),
                 tolerance=str(row.get("error") or ""),

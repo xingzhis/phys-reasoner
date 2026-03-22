@@ -33,6 +33,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from phys_reasoner.data.schema import PhysicsProblem
+from phys_reasoner.data.normalize import normalize_answer_type
 
 # ---------------------------------------------------------------------------
 # Source priority (higher = keep when deduping)
@@ -78,7 +79,7 @@ def load_candidates(parquet_path: str) -> list[PhysicsProblem]:
                 problem_id=str(r["problem_id"]),
                 problem=str(r["problem"]),
                 answer=answer,
-                answer_type=answer_type,
+                answer_type=normalize_answer_type(answer_type, str(r.get("source", ""))),
                 source=r["source"],
                 difficulty=str(r.get("difficulty") or ""),
                 split=str(r.get("split") or "train_candidate"),
