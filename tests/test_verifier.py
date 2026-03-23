@@ -341,6 +341,24 @@ def test_unit_equivalent(pred, gold, unit, expected):
 
 
 # router: unit passed to verify_answer (no xVerify, rule tier only)
+@pytest.mark.parametrize("pred,gold,expected", [
+    # Normal exact match still works
+    (r"\boxed{A}", "A", 1.0),
+    (r"\boxed{B}", "B", 1.0),
+    # Parenthesized form: (A) should match gold A
+    (r"\boxed{(A)}", "A", 1.0),
+    (r"\boxed{(D)}", r"\boxed{D}", 1.0),
+    (r"\boxed{(a)}", r"\boxed{a}", 1.0),
+    # Wrong answer stays wrong
+    (r"\boxed{(A)}", "B", 0.0),
+    (r"\boxed{B}", "A", 0.0),
+])
+def test_mcq_paren_normalization(pred, gold, expected):
+    result = verify_answer(pred_text=pred, gold_answer=gold,
+                           answer_type="mcq", tolerance=0.05, xverify_judge=None)
+    assert result == expected
+
+
 def test_verify_answer_unit_rule_tier():
     # pred gives SI value (3.32e-10 m), gold is 0.332 nm — should resolve at rule/unit tier
     result = verify_answer(

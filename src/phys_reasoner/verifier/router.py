@@ -41,7 +41,7 @@ def verify_answer(
         pred_str = pred_parts[0] if pred_parts else pred_text.strip()
         gold_str = gold_answer[0] if isinstance(gold_answer, list) else gold_answer
         gold_str = _unbox(str(gold_str))
-        return 1.0 if _exact_match(pred_str, gold_str) else 0.0
+        return 1.0 if _exact_match(_normalize_choice(pred_str), _normalize_choice(gold_str)) else 0.0
 
     # --- Build gold_parts: unbox + re-split (UGPhysics packs multi-part into \boxed{a, b}) ---
     gold_parts = _build_gold_parts(gold_answer)
@@ -104,6 +104,17 @@ def _extract_pred_parts(pred_text: str) -> list[str]:
         sub = split_by_comma(item)
         parts.extend(sub if sub else [item])
     return [p for p in parts if p.strip()]
+
+
+def _normalize_choice(s: str) -> str:
+    """Normalize MCQ/true-false answer: strip whitespace and surrounding parentheses.
+
+    Handles model outputs like '(A)', '(B)' matching gold 'A', 'B'.
+    """
+    s = s.strip()
+    if len(s) >= 3 and s[0] == '(' and s[-1] == ')':
+        s = s[1:-1].strip()
+    return s
 
 
 def _exact_match(pred: str, gold: str) -> bool:

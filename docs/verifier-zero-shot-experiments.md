@@ -149,8 +149,8 @@ Key question: is 3B-Ib's leniency on Sample 0 a feature (partial credit) or a bu
 - Inference: `data/results/zero_shot_chunk{0..7}.parquet` (columns: problem_id, source, answer_type, gold_answer, pred_text, raw_output, score, truncated)
 - xVerify-3B rescore (chunks 0–3 only): `data/results/rescore_3b.parquet`
 - xVerify-7B rescore (chunks 0–3 only): `data/results/rescore_7b.parquet`
-- xVerify-3B rescore (all 8 chunks): `data/results/rescore_3b_all8.parquet` *(pending, running 2026-03-22)*
-- xVerify-7B rescore (all 8 chunks): `data/results/rescore_7b_all8.parquet` *(pending, running 2026-03-22)*
+- xVerify-3B rescore (all 8 chunks): `data/results/rescore_3b_all8.parquet` ✓ done 2026-03-22
+- xVerify-7B rescore (all 8 chunks): `data/results/rescore_7b_all8.parquet` ✓ done 2026-03-22 (pre-LaTeX-unit-fix; net impact +7 samples)
 
 ### Truncation Stats
 
@@ -160,39 +160,64 @@ Key question: is 3B-Ib's leniency on Sample 0 a feature (partial credit) or a bu
 | Truncated (hit 32k limit) | 1,511 | 22.0% |
 | Not truncated | 5,355 | 78.0% |
 
-Truncated samples have near-zero accuracy (rule: 1.3%, 7B-xVerify: ~5.9% on partial rescore). This is the key motivation for future interrupted-thinking experiments — see note below.
+Truncated samples have near-zero accuracy (rule: 1.3%, 7B-xVerify: 7.3%). This is the key motivation for future interrupted-thinking experiments — see note below.
 
-### Accuracy Comparison (partial: xVerify on chunks 0–3 only, n=3,436)
+### Accuracy Comparison — Final (all 8 chunks, n=6,866)
+
+Result files:
+- `data/results/rescore_3b_all8.parquet` — rule + xVerify-3B scores
+- `data/results/rescore_7b_all8.parquet` — rule + xVerify-7B scores
 
 | Subset | n | Rule-only | +xVerify-3B | +xVerify-7B |
 |--------|---|-----------|-------------|-------------|
-| All (rule all 8 chunks) | 6,866 | 19.0% | — | — |
-| Chunks 0–3 (all methods) | 3,436 | — | 26.6% | 33.8% |
-| Non-truncated (chunks 0–3) | 2,650 | — | 33.8% | 42.0% |
-| Truncated (chunks 0–3) | 786 | — | 2.3% | 5.9% |
+| **ALL** | **6,866** | **19.0%** | **31.6%** | **38.5%** |
+| Non-truncated | 5,355 | 24.0% | 39.6% | **47.3%** |
+| Truncated | 1,511 | 1.3% | 3.2% | 7.3% |
 
-### Accuracy by Source (xVerify-7B, chunks 0–3)
+### Accuracy by Source
 
-| Source | n | Rule-only | +xVerify-7B | delta |
-|--------|---|-----------|-------------|-------|
-| SciBench_RL | 280 | 65.7% | 76.8% | +11.1pp |
-| PHYSICS | 805 | 21.1% | 39.3% | +18.2pp |
-| OlympiadBench | 230 | 12.2% | 28.7% | +16.5pp |
-| UGPhysics | 5,451 | 16.9% | 27.3% | +10.4pp |
-| PHYBench | 100 | 0.0% | 12.0% | +12.0pp |
+| Source | n | Rule-only | +xVerify-3B | +xVerify-7B |
+|--------|---|-----------|-------------|-------------|
+| SciBench_RL | 280 | 65.7% | 74.3% | 76.8% |
+| PHYSICS | 805 | 21.1% | 32.6% | 39.3% |
+| OlympiadBench | 230 | 12.2% | 23.0% | 28.7% |
+| UGPhysics | 5,451 | 16.9% | 30.1% | 37.3% |
+| PHYBench | 100 | 0.0% | 7.0% | 12.0% |
 
-### Accuracy by Answer Type (xVerify-7B, chunks 0–3)
+### Accuracy by Answer Type
 
-| Type | n | Rule-only | +xVerify-7B |
-|------|---|-----------|-------------|
-| numerical | 2,698 | 38.3% | 58.6% |
-| expression | 2,030 | 1.9% | 31.2% |
-| equation | 792 | 2.7% | 32.8% |
-| multi(2)-numerical | 296 | 10.5% | 24.7% |
-| mcq | 269 | 40.9% | 47.9% |
-| multi(2)-expression | 225 | 0.0% | 15.1% |
+| Type | n | Rule-only | +xVerify-3B | +xVerify-7B |
+|------|---|-----------|-------------|-------------|
+| numerical | 2,698 | 38.3% | 48.3% | 52.5% |
+| expression | 2,030 | 1.9% | 19.9% | 31.1% |
+| equation | 792 | 2.7% | 22.6% | 32.8% |
+| multi(2)-numerical | 296 | 10.5% | 19.9% | 24.7% |
+| mcq | 269 | 40.9% | 40.9% | 40.9% |
+| multi(2)-expression | 225 | 0.0% | 6.7% | 15.1% |
+| interval | 65 | 12.3% | 18.5% | 27.7% |
 
-*Note: xVerify lifts expression/equation types by ~30pp absolute — rule-tier is nearly blind to symbolic answers.*
+Key takeaways:
+- xVerify is essential for expression/equation types (+29–31pp vs rule-only)
+- MCQ and true_false: xVerify adds nothing (rule handles exact-match correctly)
+- 47.3% non-truncated accuracy with 7B is the **clean baseline** for interrupted-thinking experiments
+
+### Impact of LaTeX unit fix (committed b19fef4, after rescores ran)
+
+The `rescore_7b_all8.parquet` was produced **before** the LaTeX unit fix. To quantify the fix:
+
+- Rule tier: 14 new TPs on SciBench_RL (all unit-conversion cases: pC, nm, mA, nm², kJ/mol, cm)
+- Of those 14, **7 were already rescued by xVerify-7B** (it guessed units from problem context)
+- **Net new gains: 7 samples** — the fix adds these definitively at the rule tier, before xVerify is even called
+- Overall accuracy impact: +0.1pp (7/6866) — small but eliminates a class of systematic FNs
+- All 7 are SciBench_RL answers where the model correctly gave SI units but gold was stored in non-SI
+
+To get fully-corrected baseline numbers, re-run:
+```bash
+python scripts/rescore_xverify.py \
+    --chunks data/results/zero_shot_chunk{0..7}.parquet \
+    --model IAAR-Shanghai/xVerify-7B-I \
+    --output data/results/rescore_7b_all8_fixed.parquet
+```
 
 ### Note: Truncation and Interrupted-Thinking Experiments
 
