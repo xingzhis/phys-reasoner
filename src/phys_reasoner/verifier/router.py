@@ -261,8 +261,11 @@ def _check_pair(
         return True
 
     # xVerify fallback (called for rule=False or rule=None — prevents false negatives)
+    # Append gold_unit to gold_str so xVerify can do unit-aware comparison
+    # (e.g. gold="0.332" unit="nm" → xVerify sees "0.332 nm" vs pred "3.32e-10 m")
     if xverify_judge is not None:
-        return xverify_judge(pred_str, gold_str, problem_text)
+        gold_for_xverify = f"{gold_str} {gold_unit}".strip() if gold_unit else gold_str
+        return xverify_judge(pred_str, gold_for_xverify, problem_text)
 
     # No xVerify
     if rule_result is False:

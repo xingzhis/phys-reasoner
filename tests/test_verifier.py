@@ -297,6 +297,65 @@ def test_gold_roundtrip():
 
 
 # ---------------------------------------------------------------------------
+# D7b. Unit check — strip_latex_unit and unit_equivalent
+# ---------------------------------------------------------------------------
+
+from phys_reasoner.verifier.unit_check import strip_latex_unit, unit_equivalent
+
+
+@pytest.mark.parametrize("raw,expected", [
+    (r"$\mathrm{~nm}$",             "nm"),
+    (r"$\mathrm{m} / \mathrm{s}^2$","m / s^2"),
+    (r"$\mathrm{~K}$",              "K"),
+    (r"$\mathrm{eV}$",              "eV"),
+    (r" J ",                         "J"),
+    (r"$\mathrm{~kJ} \mathrm{~mol}^{-1}$", "kJ mol^{-1}"),
+    (r"$10^6$ m",                   "10^6 m"),
+    (r"km",                          "km"),
+    (r"",                            ""),
+])
+def test_strip_latex_unit(raw, expected):
+    assert strip_latex_unit(raw) == expected
+
+
+@pytest.mark.parametrize("pred,gold,unit,expected", [
+    # de Broglie FN: model gives SI, gold is in nm
+    (r"3.32 \times 10^{-10} \text{ m}", "0.332", r"$\mathrm{~nm}$",  True),
+    # Same but plain unit string
+    ("3.32e-10 m",                       "0.332", "nm",               True),
+    # Wavelength in Angstrom
+    ("5.0e-10 m",                        "5.0",   r"$\mathrm{~\AA}$", None),  # pint may not parse \AA
+    # Simple: pred has km, gold is 1.5 with unit m — clearly wrong
+    ("1.5 km",                           "1.5",   "m",                False),
+    # Temperature in K: exact match
+    ("300 K",                            "300",   r"$\mathrm{~K}$",   True),
+    # Energy in eV: pred in J, gold in eV — ~wrong magnitude
+    ("1.6e-19 J",                        "1.0",   r"$\mathrm{eV}$",   True),
+])
+def test_unit_equivalent(pred, gold, unit, expected):
+    result = unit_equivalent(pred, gold, unit, tolerance=0.05)
+    if expected is None:
+        pass  # don't assert: pint may not support this unit, just ensure no crash
+    else:
+        assert result == expected
+
+
+# router: unit passed to verify_answer (no xVerify, rule tier only)
+def test_verify_answer_unit_rule_tier():
+    # pred gives SI value (3.32e-10 m), gold is 0.332 nm — should resolve at rule/unit tier
+    result = verify_answer(
+        pred_text=r"\boxed{3.32 \times 10^{-10} \text{ m}}",
+        gold_answer="0.332",
+        answer_type="numerical",
+        gold_unit=r"$\mathrm{~nm}$",
+        tolerance=0.05,
+        xverify_judge=None,
+    )
+    # With no xVerify, unit_check should resolve this to True
+    assert result == 1.0
+
+
+# ---------------------------------------------------------------------------
 # D8. xVerify tests (require GPU) — @pytest.mark.slow
 # ---------------------------------------------------------------------------
 

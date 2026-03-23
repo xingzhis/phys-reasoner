@@ -122,21 +122,118 @@ Key question: is 3B-Ib's leniency on Sample 0 a feature (partial credit) or a bu
 
 ---
 
-## Remaining Known Limitations
+## Remaining Known Limitations (from 10-sample diagnostic)
 
 1. **xVerify false negatives on algebraic rearrangements** (multiply/divide both sides):
    Both 3B-Ib and 7B-I fail to verify `R₁⁴ - R₀³R₁ = q²/(32π²ε₀Pₐ)` ≡ gold × R₀⁴.
+   **Status as of 2026-03-22: NOT fixed. Still an open known limitation.**
    Potential fix: try sympy simplify/expand on equation difference after parse.
    Difficulty: high (requires correct LaTeX→sympy parse of physics expressions).
 
 2. **xVerify false negatives on calculus identities** (3B-Ib only):
    `d(ρv)/dx = 0` ≡ `v dρ/dx + ρ dv/dx = 0` by product rule.
-   7B-I handles this correctly.
+   7B-I handles this correctly. → **Resolved by switching to 7B-I.**
 
 3. **Diagnostic issue-classifier fires on cross-pair permutation calls**:
    In `diagnose_verifier.py`, the cross-pair xVerify calls (all pred×gold combinations)
    are logged as issues even when the matched permutation is correct (sample 6).
    Fix needed in the diagnostic script — does not affect real verifier.
+
+---
+
+## Full Zero-Shot Baseline: All 8 Chunks (2026-03-22)
+
+**Dataset:** 6,866 samples (8 × ~859, stratified by source × answer_type, n_per_tier=10000)
+**Model:** Qwen/Qwen3.5-4B, thinking enabled, max_new_tokens=32768
+**Result files:**
+- Inference: `data/results/zero_shot_chunk{0..7}.parquet` (columns: problem_id, source, answer_type, gold_answer, pred_text, raw_output, score, truncated)
+- xVerify-3B rescore (chunks 0–3 only): `data/results/rescore_3b.parquet`
+- xVerify-7B rescore (chunks 0–3 only): `data/results/rescore_7b.parquet`
+- xVerify-3B rescore (all 8 chunks): `data/results/rescore_3b_all8.parquet` *(pending, running 2026-03-22)*
+- xVerify-7B rescore (all 8 chunks): `data/results/rescore_7b_all8.parquet` *(pending, running 2026-03-22)*
+
+### Truncation Stats
+
+| | Count | % |
+|---|---|---|
+| Total samples | 6,866 | 100% |
+| Truncated (hit 32k limit) | 1,511 | 22.0% |
+| Not truncated | 5,355 | 78.0% |
+
+Truncated samples have near-zero accuracy (rule: 1.3%, 7B-xVerify: ~5.9% on partial rescore). This is the key motivation for future interrupted-thinking experiments — see note below.
+
+### Accuracy Comparison (partial: xVerify on chunks 0–3 only, n=3,436)
+
+| Subset | n | Rule-only | +xVerify-3B | +xVerify-7B |
+|--------|---|-----------|-------------|-------------|
+| All (rule all 8 chunks) | 6,866 | 19.0% | — | — |
+| Chunks 0–3 (all methods) | 3,436 | — | 26.6% | 33.8% |
+| Non-truncated (chunks 0–3) | 2,650 | — | 33.8% | 42.0% |
+| Truncated (chunks 0–3) | 786 | — | 2.3% | 5.9% |
+
+### Accuracy by Source (xVerify-7B, chunks 0–3)
+
+| Source | n | Rule-only | +xVerify-7B | delta |
+|--------|---|-----------|-------------|-------|
+| SciBench_RL | 280 | 65.7% | 76.8% | +11.1pp |
+| PHYSICS | 805 | 21.1% | 39.3% | +18.2pp |
+| OlympiadBench | 230 | 12.2% | 28.7% | +16.5pp |
+| UGPhysics | 5,451 | 16.9% | 27.3% | +10.4pp |
+| PHYBench | 100 | 0.0% | 12.0% | +12.0pp |
+
+### Accuracy by Answer Type (xVerify-7B, chunks 0–3)
+
+| Type | n | Rule-only | +xVerify-7B |
+|------|---|-----------|-------------|
+| numerical | 2,698 | 38.3% | 58.6% |
+| expression | 2,030 | 1.9% | 31.2% |
+| equation | 792 | 2.7% | 32.8% |
+| multi(2)-numerical | 296 | 10.5% | 24.7% |
+| mcq | 269 | 40.9% | 47.9% |
+| multi(2)-expression | 225 | 0.0% | 15.1% |
+
+*Note: xVerify lifts expression/equation types by ~30pp absolute — rule-tier is nearly blind to symbolic answers.*
+
+### Note: Truncation and Interrupted-Thinking Experiments
+
+22% of outputs were truncated at 32k tokens, and truncated samples have ~1–6% accuracy vs ~24–42% for non-truncated. This is the baseline for the upcoming **interrupted-thinking** experiment: if we interrupt `<think>` early to save tokens, we expect more truncation and lower accuracy. Compare against:
+- `rescore_7b_all8.parquet` (this run, full thinking) for the authoritative baseline
+
+---
+
+## FN Spot-Check: Manual Inspection of Negatives (2026-03-22)
+
+### FN Category Breakdown (based on rescore_7b.parquet, 3,436 rows)
+
+Of 2,276 negatives (score_xverify=0):
+
+| Category | Count | Notes |
+|----------|-------|-------|
+| Truncated (hit 32k limit) | 740 | Expected — model ran out of tokens before answering |
+| Non-truncated, no `\boxed{}` | 52 | Model failed to produce a boxed answer |
+| Non-truncated, has `\boxed{}`, score=0 | 1,484 | Mix of genuine wrong answers + verifier FNs |
+
+Of the 1,484 "has boxed but scored 0" cases, manual inspection of a 15-sample random subset reveals:
+
+**Dominant pattern (>90%): Genuinely wrong answers.** The model boxed an incorrect value.
+
+**Confirmed verifier FN type: unit mismatch in SciBench_RL** (1 confirmed, likely ~5–10 cases):
+- Example: `SciBench_RL_00147` (de Broglie wavelength)
+  - Gold: `0.332` (implicit unit: nm)
+  - Model: `3.32 × 10⁻¹⁰ m` (correct — 0.332 nm in SI)
+  - Verifier: 0.0 — fails because SI vs implicit nm
+  - Root cause: SciBench_RL answers are in non-SI units without stating the unit in gold
+
+**Suspected verifier FN type: algebraic rearrangements** (low frequency, high difficulty to fix):
+- Same category as smoke-test Sample 1: model rewrites equation by multiplying both sides
+- xVerify-7B still fails on these (not fixed since 10-sample diagnostic)
+
+**Script for further investigation:**
+```bash
+python scripts/spot_check_fn.py \
+    --rescore data/results/rescore_7b_all8.parquet \
+    --source SciBench_RL --n 30 --show_problem
+```
 
 ---
 
@@ -146,6 +243,10 @@ Key question: is 3B-Ib's leniency on Sample 0 a feature (partial credit) or a bu
 |--------|---------|
 | `scripts/run_zero_shot.py` | Main zero-shot inference + scoring |
 | `scripts/run_zero_shot_diag.py` | Diagnostic variant: no max_tokens cap, per-sample token stats, `--max_samples` arg |
+| `scripts/rescore_xverify.py` | Re-score chunk parquets with xVerify (adds score_xverify column) |
+| `scripts/rescore_all_chunks.sbatch` | SLURM template for full 8-chunk rescore |
+| `scripts/analyze_zero_shot.py` | Full comparison analysis: rule vs 3B vs 7B, by source/type/truncation |
+| `scripts/spot_check_fn.py` | Manual FN inspection: random sample of negatives with gold/pred display |
 | `scripts/spot_check_xverify.py` | Re-score a parquet with xVerify enabled |
 | `scripts/compare_xverify.py` | Side-by-side comparison of multiple xVerify model sizes |
 | `scripts/diagnose_verifier.py` | Full pipeline trace: gold_parts, pred_parts, rule, xVerify per sample |
