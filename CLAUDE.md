@@ -42,15 +42,17 @@ All Python commands run inside an Apptainer container:
 ```bash
 SIF=/gpfs/radev/scratch/krishnaswamy_smita/xs272/phys-reasoner/verl_vllm017.latest.sif
 OVERLAY=/gpfs/radev/scratch/krishnaswamy_smita/xs272/phys-reasoner/phys-reasoner-overlay-017.img
-apptainer exec --overlay "$OVERLAY" --bind /etc/pki:/etc/pki "$SIF" <command>
+PYTHONNOUSERSITE=1 apptainer exec --overlay "$OVERLAY" --bind /etc/pki:/etc/pki "$SIF" <command>
 ```
 
 **GPU commands require `--nv`** (passes through host NVIDIA driver):
 ```bash
-apptainer exec --nv --overlay "$OVERLAY" --bind /etc/pki:/etc/pki "$SIF" python scripts/run_zero_shot.py
+PYTHONNOUSERSITE=1 apptainer exec --nv --overlay "$OVERLAY" --bind /etc/pki:/etc/pki "$SIF" python scripts/run_zero_shot.py
 ```
 
-Run tests: `apptainer exec --overlay "$OVERLAY" --bind /etc/pki:/etc/pki "$SIF" python3 -m pytest tests/ -v`
+**Always set `PYTHONNOUSERSITE=1`**: prevents `~/.local/lib/python3.12/site-packages` from leaking into the container. A broken `boto3` (missing `botocore`) in `~/.local` causes `accelerate → transformers` import failure.
+
+Run tests: `PYTHONNOUSERSITE=1 apptainer exec --overlay "$OVERLAY" --bind /etc/pki:/etc/pki "$SIF" python3 -m pytest tests/ -v`
 
 HF model cache: `HF_HOME=/gpfs/radev/scratch/krishnaswamy_smita/xs272/phys-reasoner/hf_cache`
 
