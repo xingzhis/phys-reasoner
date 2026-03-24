@@ -8,13 +8,15 @@ Target venue: NeurIPS 2026.
 
 ## Environment
 
-All commands run inside an Apptainer container with an overlay for installed packages:
+All commands run inside an Apptainer container. The base SIF is read-only; a writable overlay holds all installed packages.
 
 ```bash
-SIF=/gpfs/radev/scratch/krishnaswamy_smita/xs272/phys-reasoner/verl_vllm011.latest.sif
-OVERLAY=/gpfs/radev/scratch/krishnaswamy_smita/xs272/phys-reasoner/phys-reasoner-overlay.img
-CMD="apptainer exec --overlay $OVERLAY --bind /etc/pki:/etc/pki $SIF"
-CMD_GPU="apptainer exec --nv --overlay $OVERLAY --bind /etc/pki:/etc/pki $SIF"
+ROOT=/gpfs/radev/scratch/krishnaswamy_smita/xs272/phys-reasoner
+SIF=$ROOT/verl_vllm017.latest.sif
+OVERLAY=$ROOT/phys-reasoner-overlay-017.img   # primary overlay (use this one)
+
+CMD="PYTHONNOUSERSITE=1 apptainer exec --overlay $OVERLAY --bind /etc/pki:/etc/pki $SIF"
+CMD_GPU="PYTHONNOUSERSITE=1 apptainer exec --nv --overlay $OVERLAY --bind /etc/pki:/etc/pki $SIF"
 
 # Run tests
 $CMD python -m pytest tests/ -v -m "not slow"
@@ -23,7 +25,18 @@ $CMD python -m pytest tests/ -v -m "not slow"
 $CMD_GPU python scripts/run_zero_shot.py ...
 ```
 
-HuggingFace model cache: `HF_HOME=data/hf_cache`
+**`PYTHONNOUSERSITE=1` is required** — prevents `~/.local` packages from shadowing the overlay (the base SIF has `huggingface-hub==0.36.2`; the overlay has the correct `>=1.3.0`).
+
+HuggingFace model cache: `HF_HOME=$ROOT/hf_cache` (xVerify models pre-cached; use `local_files_only=True` in `from_pretrained` calls).
+
+### Installing packages into the overlay
+
+After cloning or when `pyproject.toml` changes:
+
+```bash
+PYTHONNOUSERSITE=1 apptainer exec --overlay "$OVERLAY" --bind /etc/pki:/etc/pki "$SIF" \
+    pip install -e "$ROOT[dev]"
+```
 
 ---
 
@@ -138,10 +151,13 @@ phys-reasoner/
 
 ## Verifier
 
-Layered pipeline: unit check (pint) → rule verify (math-verify) → LLM fallback (xVerify-3B-Ib).
+Layered pipeline: unit check (pint) → rule verify (math-verify) → LLM fallback (xVerify-7B-I).
 
-- Rule tier false negative rate on training corpus: **0.3%** (18/6,866)
-- xVerify model: `IAAR-Shanghai/xVerify-3B-Ib` (98.5% accuracy on failure cases)
+- Rule tier accuracy on zero-shot corpus: **19.0%** (1,305/6,866)
+- +xVerify-7B-I accuracy: **39.7%** overall, **48.9%** on non-truncated samples
+- xVerify model: `IAAR-Shanghai/xVerify-7B-I` (+6.5pp over 3B-Ib, especially on expression/equation types)
+- Authoritative baseline file: `data/results/rescore_7b_v3.parquet`
+- Full experiment log: `docs/verifier-zero-shot-experiments.md`
 
 ```python
 from phys_reasoner.verifier.router import verify_answer

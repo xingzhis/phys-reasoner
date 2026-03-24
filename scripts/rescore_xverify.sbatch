@@ -12,7 +12,8 @@
 #SBATCH --error=logs/%x_%j.err
 
 # Required: XV_MODEL (HF model ID), XV_OUTPUT (output parquet path)
-# e.g.  sbatch --export=ALL,XV_MODEL=IAAR-Shanghai/xVerify-3B-Ib,XV_OUTPUT=data/results/rescore_3b.parquet rescore_xverify.sbatch
+# 3B:  sbatch --export=ALL,XV_MODEL=IAAR-Shanghai/xVerify-3B-Ib,XV_OUTPUT=data/results/rescore_3b_v2.parquet scripts/rescore_xverify.sbatch
+# 7B:  sbatch --export=ALL,XV_MODEL=IAAR-Shanghai/xVerify-7B-I,XV_OUTPUT=data/results/rescore_7b_v3.parquet scripts/rescore_xverify.sbatch
 
 ROOT=/gpfs/radev/scratch/krishnaswamy_smita/xs272/phys-reasoner
 SIF=$ROOT/verl_vllm017.latest.sif
@@ -24,6 +25,7 @@ if [ -z "$XV_MODEL" ] || [ -z "$XV_OUTPUT" ]; then
 fi
 
 export PYTHONUNBUFFERED=1
+export PYTHONNOUSERSITE=1   # prevent ~/.local from shadowing overlay packages
 export HF_HOME=$ROOT/hf_cache
 export OMP_NUM_THREADS=8
 
@@ -36,10 +38,15 @@ echo "Output: $XV_OUTPUT"
 CHUNKS="$ROOT/data/results/zero_shot_chunk0.parquet \
         $ROOT/data/results/zero_shot_chunk1.parquet \
         $ROOT/data/results/zero_shot_chunk2.parquet \
-        $ROOT/data/results/zero_shot_chunk3.parquet"
+        $ROOT/data/results/zero_shot_chunk3.parquet \
+        $ROOT/data/results/zero_shot_chunk4.parquet \
+        $ROOT/data/results/zero_shot_chunk5.parquet \
+        $ROOT/data/results/zero_shot_chunk6.parquet \
+        $ROOT/data/results/zero_shot_chunk7.parquet"
 
 apptainer exec --nv \
   --overlay "$OVERLAY:ro" \
+  --no-home \
   --bind /etc/pki:/etc/pki \
   --env "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
   --env "HF_HOME=$HF_HOME" \

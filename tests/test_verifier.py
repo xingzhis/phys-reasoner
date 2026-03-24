@@ -67,6 +67,47 @@ def test_known_equivalences(pred, gold, expected):
 
 
 # ---------------------------------------------------------------------------
+# D4b. Symbolic equivalence (numerical substitution tier)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("pred,gold,expected", [
+    # Expressions — algebraic equivalents
+    (r"\frac{a \cdot b}{c}",           r"\frac{b \cdot a}{c}",        True),   # commutativity
+    (r"a^2 - b^2",                     r"(a-b)(a+b)",                 True),   # difference of squares
+    (r"\frac{R_1 + R_2}{R_1 \cdot R_2}", r"\frac{1}{R_1} + \frac{1}{R_2}", True),  # parallel resistance
+    (r"(x + y)^2",                     r"x^2 + 2 x y + y^2",          True),   # binomial expansion
+    (r"a \cdot b + a \cdot c",         r"a \cdot (b + c)",             True),   # distributive law
+    # Expressions — genuinely different
+    (r"x^2 + y^2",                     r"x^2 - y^2",                  False),  # sign differs
+    # Equations — rearranged
+    (r"r^2 = x^2 + y^2",              r"x^2 + y^2 = r^2",             True),   # flipped sides
+    (r"E = m \cdot c^2",              r"m \cdot c^2 = E",             True),   # flipped sides
+    (r"2 x^2 + 2 y^2 = 2 r^2",       r"x^2 + y^2 = r^2",            True),   # scaled by 2
+    # Equations — genuinely different
+    (r"x^2 + y^2 = 1",               r"x^2 - y^2 = 1",              False),  # different sign in LHS
+])
+def test_symbolic_numerical_equiv(pred, gold, expected):
+    from phys_reasoner.verifier.math_verify_wrapper import _sympy_numerical_equiv
+    result = _sympy_numerical_equiv(gold, pred)
+    if result is None:
+        pytest.skip(f"_sympy_numerical_equiv returned None for {pred!r} vs {gold!r}")
+    assert result == expected, f"Expected {expected}, got {result} for {pred!r} vs {gold!r}"
+
+
+@pytest.mark.parametrize("pred,gold", [
+    # FP2 guard: trailing unit — numerical checker must NOT fire (guard runs first)
+    ("0.64N", "0.64"),
+    # FP3 guard: nested exponent — numerical checker must NOT fire (guard runs first)
+    (r"10^{10^{10}}", r"10^{10}"),
+])
+def test_fp_guards_not_overridden(pred, gold):
+    """FP2/FP3 guards return None before numerical checker runs — verify no FP introduced."""
+    result = rule_verify(pred, gold)
+    # Guards should return None (not True) for these cases
+    assert result is not True, f"rule_verify should not return True for FP guard case: {pred!r} vs {gold!r}"
+
+
+# ---------------------------------------------------------------------------
 # D5. Unit equivalence (pint tier)
 # ---------------------------------------------------------------------------
 

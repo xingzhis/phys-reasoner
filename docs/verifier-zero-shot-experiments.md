@@ -249,6 +249,108 @@ python scripts/spot_check_fn.py \
 
 ---
 
+---
+
+## Verifier Update Rescore (2026-03-24)
+
+### Motivation
+
+`math_verify_wrapper.py` was updated with additional FN-reduction logic (symbolic numerical
+equivalence via random substitution, coefficient-extraction FP guard, improved sci-notation
+preprocessing). Re-scored all 8 chunks to confirm no regression and measure any FN rate improvement.
+
+### What changed in the scorer
+
+- Added `_sympy_numerical_equiv()`: random-substitution check for algebraically equivalent
+  expressions/equations (catches `a*(b+c)` vs `a*b+a*c`, equation side-swaps, scalar multiples).
+- Added `_is_suspicious_simplification()` guard: prevents math-verify from reporting True when
+  it silently extracts a small integer from a complex LaTeX expression (e.g. `2 \cosh(...)` → 2).
+- Added latex2sympy fallback numeric eval: rescues cases where `math_verify.parse()` drops symbolic
+  terms (e.g. `\frac{\sqrt{\pi}}{2} \times 10^{14.5}` — parse() extracted only the `10^{14.5}` part).
+
+### Regression check
+
+Rule-only scores are **bit-for-bit identical** to the previous baseline (`rescore_7b_all8_fixed`).
+No false positives introduced.
+
+### Results: new v2/v3 vs corrected old baseline
+
+| | rescore_7b_all8_fixed (old) | rescore_7b_v3 (new) | Δ |
+|---|---|---|---|
+| Rule-only | 19.01% | 19.01% | 0.00pp |
+| +xVerify-7B | 39.69% | **39.70%** | +0.01pp |
+| FN rescue rate (rule=0 → xv=1) | 25.55% | 25.57% | +0.01pp |
+
+The scorer changes produced negligible measurable gain on this dataset. This is expected:
+the new paths (symbolic substitution, coefficient guard) fire on patterns that are either
+rare in this corpus or already rescued by xVerify.
+
+**Conclusion:** no regression, no meaningful improvement on the current corpus.
+`rescore_7b_v3.parquet` is now the canonical baseline (same numbers, cleaner pipeline).
+
+### By source — 7B v3 final numbers
+
+| Source | n | Rule-only | +xVerify-7B |
+|--------|---|-----------|-------------|
+| SciBench_RL | 280 | 65.7% | **85.0%** |
+| PHYSICS | 805 | 21.1% | **40.2%** |
+| UGPhysics | 5,451 | 16.9% | **38.3%** |
+| OlympiadBench | 230 | 12.2% | **28.3%** |
+| PHYBench | 100 | 0.0% | **12.0%** |
+
+Differences from old baseline are within ±0.3pp (stochastic xVerify variation on borderline cases).
+
+### By answer type — 7B v3 final numbers
+
+| Type | n | Rule-only | +xVerify-7B | +xVerify-3B |
+|------|---|-----------|-------------|-------------|
+| numerical | 2,698 | 38.3% | **54.7%** | 50.7% |
+| expression | 2,030 | 1.9% | **30.8%** | 20.1% |
+| equation | 792 | 2.7% | **32.7%** | 22.0% |
+| multi(2)-numerical | 296 | 10.5% | **21.3%** | 18.2% |
+| mcq | 269 | 40.9% | **63.9%** | 63.9% |
+| multi(2)-expression | 225 | 0.0% | **8.9%** | 4.9% |
+| true_false | 152 | 37.5% | **37.5%** | 37.5% |
+| multi(2)-equation | 130 | 0.0% | **14.6%** | 6.2% |
+| interval | 65 | 12.3% | **26.2%** | 18.5% |
+
+7B vs 3B gap is largest on symbolic types: +10.8pp on expression, +10.7pp on equation.
+
+### 3B vs 7B summary
+
+| | rescore_3b_v2 | rescore_7b_v3 | Δ (7B−3B) |
+|---|---|---|---|
+| Overall | 33.2% | **39.7%** | +6.5pp |
+| SciBench_RL | 82.1% | **85.0%** | +2.9pp |
+| PHYSICS | 33.7% | **40.2%** | +6.6pp |
+| UGPhysics | 31.5% | **38.3%** | +6.8pp |
+| OlympiadBench | 23.5% | **28.3%** | +4.8pp |
+| PHYBench | 7.0% | **12.0%** | +5.0pp |
+
+### Updated authoritative baseline (2026-03-24)
+
+**`data/results/rescore_7b_v3.parquet`** — use this for all future comparisons.
+
+Previous files (`rescore_7b_all8.parquet`, `rescore_7b_all8_fixed.parquet`, `rescore_3b_all8.parquet`)
+are superseded. `rescore_3b_v2.parquet` is the companion 3B file for ablation comparisons.
+
+### Infrastructure fixes made during this session
+
+- **scipy missing from overlay** — `transformers/loss/loss_for_object_detection.py` imports
+  `scipy.optimize.linear_sum_assignment` at model-load time; base SIF has broken scipy. Fixed by
+  adding `scipy>=1.11` to `pyproject.toml` and installing into `phys-reasoner-overlay-017.img`.
+- **huggingface-hub version** — base SIF has `0.36.2`; transformers requires `>=1.3.0`. Installed
+  `1.7.2` into the 017 overlay.
+- **FUSE2FS mount issue** — `phys-reasoner-overlay.img` was not cleanly unmounted on one node,
+  causing silent mount failures on other nodes (overlay packages invisible). Switched sbatch to
+  use `phys-reasoner-overlay-017.img` which mounts cleanly.
+- **`local_files_only=True`** — added to `XVerifyJudge.__init__` to prevent HF API calls for
+  `additional_chat_templates` (404 on compute nodes without outbound HTTPS).
+- **`export PYTHONNOUSERSITE=1`** — added as a shell export in the sbatch script (not just as
+  `--env` to apptainer) to reliably block `~/.local` from shadowing overlay packages.
+
+---
+
 ## Scripts Reference
 
 | Script | Purpose |

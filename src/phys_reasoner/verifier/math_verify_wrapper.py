@@ -4,9 +4,17 @@ from __future__ import annotations
 
 import re
 
-# Matches: coefficient \times 10^{exp} or 10^exp (handles optional braces and negative exponents)
+# Matches: coefficient \times 10^{exp} or 10^exp (handles optional braces, negative
+# exponents, and decimal exponents like 10^{14.5})
 _SCI_NOTATION_RE = re.compile(
-    r"([\d.]+)\s*\\(?:times|cdot)\s*10\^(?:\{([+-]?\d+)\}|([+-]?\d+))"
+    r"([\d.]+)\s*\\(?:times|cdot)\s*10\^(?:\{([+-]?[\d.]+)\}|([+-]?[\d.]+))"
+)
+
+# Matches bare 10^{x.y} (decimal exponent, no preceding coefficient) — e.g. 10^{14.5}.
+# Integer-only exponents (10^{14}) are already handled fine by latex2sympy; this only
+# fires when there is a decimal point so we don't over-convert normal expressions.
+_BARE_DECIMAL_POW_RE = re.compile(
+    r"(?<![\\d.])10\^(?:\{([+-]?\d+\.\d+)\}|([+-]?\d+\.\d+))"
 )
 
 # Detects nested exponentiation: ^{...^{ — causes overflow / wrong parse
@@ -20,18 +28,30 @@ _TRAILING_UNIT_RE = re.compile(r"\d\s*[A-Za-z][A-Za-z0-9]*\s*$")
 def _preprocess(s: str) -> str:
     """Normalize LaTeX patterns that math-verify can't handle natively.
 
-    Converts 'N.NN \\times 10^K' / 'N.NN \\cdot 10^K' to float literals so
-    that latex2sympy doesn't lose the coefficient when parsing `* 10^{K}`.
+    1. 'N.NN \\times 10^K' / 'N.NN \\cdot 10^K'  → float literal
+       (including decimal exponents like 10^{14.5})
+    2. Bare '10^{x.y}' (decimal exponent, no coefficient) → float literal,
+       so that expressions like '\\frac{\\sqrt{\\pi}}{2} \\times 10^{14.5}'
+       can be evaluated numerically by sympy after substitution.
     """
     def _sci_to_float(m: re.Match) -> str:
         coef = float(m.group(1))
         exp_str = m.group(2) if m.group(2) is not None else m.group(3)
         try:
-            return repr(coef * 10 ** int(exp_str))
+            return repr(coef * 10 ** float(exp_str))
         except (OverflowError, ValueError):
             return m.group(0)  # leave untouched on overflow
 
-    return _SCI_NOTATION_RE.sub(_sci_to_float, s)
+    def _bare_decimal_pow_to_float(m: re.Match) -> str:
+        exp_str = m.group(1) if m.group(1) is not None else m.group(2)
+        try:
+            return repr(10 ** float(exp_str))
+        except (OverflowError, ValueError):
+            return m.group(0)
+
+    s = _SCI_NOTATION_RE.sub(_sci_to_float, s)
+    s = _BARE_DECIMAL_POW_RE.sub(_bare_decimal_pow_to_float, s)
+    return s
 
 
 def _strip_boxed(s: str) -> str:
@@ -58,6 +78,129 @@ def _lhs(s: str) -> str:
     # Only split on '=' not preceded by <, >, !, \
     parts = re.split(r"(?<![<>!\\])=", s, maxsplit=1)
     return parts[0].strip() if len(parts) > 1 else ""
+
+
+def _sympy_numerical_equiv(
+    gold_str: str,
+    pred_str: str,
+    tolerance: float = 0.05,
+    n_trials: int = 10,
+) -> bool | None:
+    """Numerical substitution check for symbolic equivalence.
+
+    Handles expressions (no '=') and equations (LHS = RHS):
+    - Expressions: substitute random values, check f_gold ≈ f_pred at each point.
+    - Equations: normalize f = LHS−RHS for both, check f_gold/f_pred is constant.
+
+    Fast-path: try sympy.expand / sympy.cancel before random trials.
+
+    Only proceeds when both sides have the same non-empty free symbol set.
+
+    Returns:
+        True  — all trials agree (or fast symbolic check passed)
+        False — a trial conclusively disagrees
+        None  — can't determine (parse failure, symbol mismatch, too few valid trials)
+    """
+    try:
+        from latex2sympy2_extended import latex2sympy
+        from sympy import Eq, N as sympyN, cancel, expand
+    except ImportError:
+        return None
+
+    import random
+
+    try:
+        gold_expr = latex2sympy(gold_str)
+        pred_expr = latex2sympy(pred_str)
+    except Exception:
+        return None
+
+    if gold_expr is None or pred_expr is None:
+        return None
+
+    # Normalise equations to f = LHS − RHS
+    gold_is_eq = isinstance(gold_expr, Eq)
+    pred_is_eq = isinstance(pred_expr, Eq)
+    if gold_is_eq != pred_is_eq:
+        return None  # type mismatch: one equation, one expression
+
+    if gold_is_eq:
+        try:
+            f_gold = gold_expr.lhs - gold_expr.rhs
+            f_pred = pred_expr.lhs - pred_expr.rhs
+        except Exception:
+            return None  # e.g. RHS is a FiniteSet (solution set) — can't subtract
+    else:
+        f_gold = gold_expr
+        f_pred = pred_expr
+
+    gold_syms = f_gold.free_symbols
+    pred_syms = f_pred.free_symbols
+
+    if not gold_syms and not pred_syms:
+        return None  # pure numeric — already handled by upstream numeric path
+
+    if gold_syms != pred_syms:
+        return None  # different variable sets — can't align safely
+
+    symbols = list(gold_syms)
+
+    # --- Fast symbolic pre-check (O(polynomial)-bounded, unlike simplify) ---
+    try:
+        diff = f_gold - f_pred
+        if expand(diff) == 0 or cancel(diff) == 0:
+            return True
+    except Exception:
+        pass
+
+    if gold_is_eq:
+        # Equations equivalent up to nonzero constant scale: check f_gold/f_pred is constant
+        try:
+            ratio_sym = cancel(f_gold / f_pred)
+            if not ratio_sym.free_symbols:
+                return True
+        except Exception:
+            pass
+
+    # --- Numerical substitution ---
+    rng = random.Random(42)  # deterministic seed for reproducibility
+    valid_trials = 0
+    ratio_ref: float | None = None
+
+    for _ in range(n_trials):
+        sub_dict = {s: rng.uniform(0.5, 3.0) for s in symbols}
+        try:
+            g_val = float(sympyN(f_gold.subs(sub_dict)))
+            p_val = float(sympyN(f_pred.subs(sub_dict)))
+        except Exception:
+            continue  # div-by-zero, complex result, etc. — skip trial
+
+        if not gold_is_eq:
+            # Expression: check f_gold ≈ f_pred
+            if abs(g_val) < 1e-10 and abs(p_val) < 1e-10:
+                valid_trials += 1
+                continue  # both near zero — not informative but not wrong
+            if abs(g_val) < 1e-10 or abs(p_val) < 1e-10:
+                return False  # one is zero, other is not
+            rel_err = abs(p_val - g_val) / abs(g_val)
+            if rel_err > tolerance:
+                return False
+            valid_trials += 1
+        else:
+            # Equation: check f_gold / f_pred is constant across trials
+            if abs(p_val) < 1e-8 or abs(g_val) < 1e-8:
+                continue  # near-zero denominator / numerator — unstable ratio
+            ratio = g_val / p_val
+            if ratio_ref is None:
+                ratio_ref = ratio
+            else:
+                if abs(ratio - ratio_ref) / max(abs(ratio_ref), 1e-10) > tolerance:
+                    return False
+            valid_trials += 1
+
+    if valid_trials < 3:
+        return None  # too few valid trials to be confident
+    return True
 
 
 def rule_verify(pred_str: str, gold_str: str, tolerance: float = 0.05) -> bool | None:
@@ -160,6 +303,27 @@ def rule_verify(pred_str: str, gold_str: str, tolerance: float = 0.05) -> bool |
             return True
     except Exception:
         pass
+
+    # Fallback: direct latex2sympy numerical evaluation on the preprocessed strings.
+    # Handles cases where math_verify's parse() silently drops symbolic terms, e.g.
+    # "\frac{\sqrt{\pi}}{2} \times 10^{14.5}" → parse() extracts only 10^14.5,
+    # but latex2sympy evaluates the full expression correctly.
+    try:
+        from latex2sympy2_extended import latex2sympy
+        from sympy import N as sympyN
+        g_num2 = float(sympyN(latex2sympy(gold_pre)))
+        p_num2 = float(sympyN(latex2sympy(pred_pre)))
+        if _within_tolerance(g_num2, p_num2):
+            return True
+    except Exception:
+        pass
+
+    # Numerical substitution for symbolic expressions / equations with free variables.
+    # Rescues FNs where algebraically equivalent forms differ in structure, e.g.
+    # a*(b+c) vs a*b+a*c, or r^2=x^2+y^2 vs x^2+y^2=r^2.
+    num_sub = _sympy_numerical_equiv(gold_pre, pred_pre, tolerance)
+    if num_sub is True:
+        return True
 
     try:
         return verify(gold_parsed, pred_parsed, float_rounding=6, timeout_seconds=5)

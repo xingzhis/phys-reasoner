@@ -17,6 +17,7 @@ dependencies = [
     "pandas>=2.0",
     "pyarrow>=14.0",
     "numpy>=1.26",
+    "scipy>=1.11",  # required by transformers (qwen2/loss_for_object_detection) during model load
     "tqdm>=4.66",
     "regex>=2024.0",
 ]

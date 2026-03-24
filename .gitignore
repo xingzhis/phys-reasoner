@@ -33,6 +33,8 @@ outputs/
 *.sqfs
 overlay*/
 *.img
+*.img.bak
+*.img.bak2
 
 # Logs & wandb
 wandb/
