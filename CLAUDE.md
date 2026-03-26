@@ -85,8 +85,10 @@ PYTHONNOUSERSITE=1 apptainer exec --overlay "$OVERLAY" --bind /etc/pki:/etc/pki 
 To upgrade a specific package (e.g. after a base-SIF version conflict):
 ```bash
 PYTHONNOUSERSITE=1 apptainer exec --overlay "$OVERLAY" --bind /etc/pki:/etc/pki "$SIF" \
-    pip install "huggingface-hub>=1.3.0,<2.0"
+    pip install "<package>==<version>"
 ```
+
+**Do NOT upgrade `huggingface-hub`** — keep the base SIF's `0.36.2`. See "Known overlay pitfalls" below.
 
 ### sbatch jobs
 
@@ -107,12 +109,13 @@ sbatch --export=ALL,XV_MODEL=IAAR-Shanghai/xVerify-7B-I,XV_OUTPUT=data/results/r
 - **FUSE2FS "unchecked fs" warning**: if the overlay was not cleanly unmounted (e.g. node crash during a writable session), other nodes may fail to mount it. Symptom: packages installed in the overlay are invisible and the base SIF's old versions are used instead. Fix: run `e2fsck -fp <overlay.img>` while the overlay is not mounted.
 - **`~/.local` shadowing**: always use `PYTHONNOUSERSITE=1`. The base SIF has `huggingface-hub==0.36.2`; `~/.local` may also have stale packages. The overlay has the correct versions.
 - **HF API calls in sbatch**: compute nodes may not have outbound HTTPS. Use `local_files_only=True` in any `from_pretrained` call when the model is already in `hf_cache`.
+- **Do NOT upgrade `huggingface-hub`**: keep the base SIF's `0.36.2`. With hub `>=1.3.0`, `list_repo_tree` exists and transformers `list_repo_templates` makes a live HTTP call for `additional_chat_templates` — this raises a fatal 404 for models that don't have that directory (e.g. `Qwen3.5-4B`). With `0.36.2`, `list_repo_tree` is absent so the call fails silently and inference works fine. The transformers `dependency_versions_check` warning about hub `<1.0` is harmless — ignore it.
 
 ## Key Dependencies (Planned)
 
 - `pint` — unit handling for physics answers
 - `sympy` — symbolic math equivalence checking
 - `scipy>=1.11` — required by transformers (qwen2 object detection loss module loads it at model-load time)
-- `huggingface-hub>=1.3.0` — required by transformers 4.57.6+ (base SIF has 0.36.2; must be in overlay)
+- `huggingface-hub` — use base SIF's `0.36.2`; do NOT upgrade (see "Known overlay pitfalls")
 - `verl` — GRPO/RLVR training framework
 - Qwen3.5 model family via HuggingFace

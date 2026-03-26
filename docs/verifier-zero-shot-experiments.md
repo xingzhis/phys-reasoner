@@ -351,6 +351,54 @@ are superseded. `rescore_3b_v2.parquet` is the companion 3B file for ablation co
 
 ---
 
+## Extended Token Budget Rerun — Truncated Samples (2026-03-24/25)
+
+### Motivation
+
+22% of outputs (1,511/6,866) hit the 32768-token limit and had near-zero accuracy (rule: 1.3%, 7B-xV: 7.1%). To measure the accuracy ceiling for these samples, the rerun script gives them 81920 tokens (Qwen3.5 complex-problem recommendation).
+
+### Setup
+
+- **Script:** `scripts/run_zero_shot_rerun.py` + `scripts/zero_shot_rerun.sbatch`
+- **Input:** truncated rows from `zero_shot_chunk{0..7}.parquet` (1,511 rows)
+- **Split:** 32 chunks (47–48 samples each); submit as parallel sbatch array
+- **max_new_tokens:** 81920; max_model_len: 86016
+
+### Status (2026-03-25)
+
+Only **chunk 0/32** completed (job 1418892). Chunks 1–31 stalled / hit time limit and need re-submission. Chunk 0 contains **48 samples, all OlympiadBench**.
+
+Rescored locally with xVerify-3B-Ib → `data/results/rescore_rerun0_3b.parquet`
+and xVerify-7B-I → `data/results/rescore_rerun0_7b.parquet`.
+
+### Results: chunk 0, 46 completed samples (excl. 2 still truncated at 81920)
+
+| Scorer | Before (32768 tok, truncated) | After (81920 tok) |
+|--------|-------------------------------|-------------------|
+| Rule-only | 0.0% (0/46) | **17.4%** (8/46) |
+| Rule + xVerify-3B | ~2% | **28.3%** (13/46) |
+| Rule + xVerify-7B | ~4% | **30.4%** (14/46) |
+
+All 48 samples were previously truncated (score=0); 46 completed at 81920 tokens, 2 still hit the limit.
+
+### By answer type (completed 46)
+
+| Type | n | Rule | +xVerify-3B | +xVerify-7B |
+|------|---|------|-------------|-------------|
+| numerical | 23 | 34.8% | 43.5% | 43.5% |
+| expression | 22 | 0.0% | 13.6% | 18.2% |
+| equation | 1 | 0.0% | 0.0% | 0.0% |
+
+Expression-type gains are the most informative: the model needs space to derive symbolic results, so the longer budget directly rescues these cases.
+
+### TODO
+
+- Re-submit chunks 1–31 (remaining 1,463 truncated samples) to complete the full rerun.
+- Run `scripts/merge_rerun_chunks.py` after all chunks complete to produce `zero_shot_merged.parquet`.
+- Rescore merged file with xVerify-7B to get the final combined baseline.
+
+---
+
 ## Scripts Reference
 
 | Script | Purpose |
@@ -364,6 +412,10 @@ are superseded. `rescore_3b_v2.parquet` is the companion 3B file for ablation co
 | `scripts/spot_check_xverify.py` | Re-score a parquet with xVerify enabled |
 | `scripts/compare_xverify.py` | Side-by-side comparison of multiple xVerify model sizes |
 | `scripts/diagnose_verifier.py` | Full pipeline trace: gold_parts, pred_parts, rule, xVerify per sample |
+| `scripts/run_zero_shot_rerun.py` | Re-run truncated samples with extended token budget |
+| `scripts/merge_rerun_chunks.py` | Merge rerun chunks back into full baseline parquet |
 | `scripts/zero_shot_diag.sbatch` | SLURM: diagnostic run (30 min, --max_samples 10) |
 | `scripts/zero_shot_preview.sbatch` | SLURM: small preview run (n_per_tier=5) |
 | `scripts/zero_shot_chunk.sbatch` | SLURM: full chunked run template |
+| `scripts/zero_shot_rerun.sbatch` | SLURM: rerun template (submit with CHUNK_ID + N_CHUNKS) |
+| `scripts/rescore_rerun0_xverify.sbatch` | SLURM: one-off rescore of rerun chunk 0 with both xVerify models |
