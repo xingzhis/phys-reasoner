@@ -399,6 +399,77 @@ Expression-type gains are the most informative: the model needs space to derive 
 
 ---
 
+## No-Think Zero-Shot Baseline (2026-03-26)
+
+### Motivation
+
+Run the same zero-shot evaluation with Qwen3's **thinking mode disabled** (`enable_thinking=False`) to quantify the value of chain-of-thought for physics problem solving. Serves as a direct ablation: same model, same corpus, same verifier pipeline.
+
+### Setup
+
+- **Script:** `scripts/run_zero_shot_nothink.py` + `scripts/zero_shot_nothink_full.sbatch`
+- **Model:** `Qwen/Qwen3.5-4B`, bfloat16, vLLM 0.17
+- **Thinking mode:** `enable_thinking=False` in chat template
+- **Sampling:** temperature=0.7, top_p=0.8, top_k=20 (Qwen3 official non-thinking params — no presence_penalty)
+- **max_new_tokens:** 8192; max_model_len: 12288
+- **Input:** `data/processed/candidates_deduped.parquet` (all 6,866 training candidates)
+- **Output:** `data/results/zero_shot_nothink.parquet`
+- **Rescored:** `data/results/zero_shot_nothink_xverify.parquet` (3B), `data/results/zero_shot_nothink_xverify_7b.parquet` (7B)
+- **Job:** 1422176 (A100, ~1.5 hrs)
+
+### Token distribution
+
+- Mean: 3,576 tokens; min: 118; max: 8,192
+- Truncated at 8,192: **1,568/6,866 (22.8%)** — similar truncation rate to thinking-on (22.0% at 32,768)
+
+### Results vs Think-ON baseline
+
+**Overall (n=6,866)**
+
+| Scorer | Think-ON | No-Think | Gap |
+|--------|----------|----------|-----|
+| Rule-only | 19.0% | 17.7% | −1.3pp |
+| +xVerify-3B | 33.2% | 27.0% | −6.2pp |
+| **+xVerify-7B** | **39.7%** | **32.0%** | **−7.7pp** |
+
+**By source (+xVerify-7B)**
+
+| Source | n | Think-ON | No-Think | Gap |
+|--------|---|----------|----------|-----|
+| SciBench_RL | 280 | 85.0% | 73.2% | −11.8pp |
+| PHYSICS | 805 | 40.2% | 33.2% | −7.1pp |
+| UGPhysics | 5,451 | 38.3% | 30.7% | −7.6pp |
+| OlympiadBench | 230 | 28.3% | 19.1% | −9.1pp |
+| PHYBench | 100 | 12.0% | 8.0% | −4.0pp |
+
+**By answer type (+xVerify-7B, no-think)**
+
+| Type | n | Rule-only | +xVerify-3B | +xVerify-7B |
+|------|---|-----------|-------------|-------------|
+| numerical | 2,698 | 33.9% | 41.3% | **44.0%** |
+| expression | 2,030 | 2.5% | 15.9% | **24.5%** |
+| equation | 792 | 1.9% | 17.3% | **26.9%** |
+| multi(2)-numerical | 296 | 9.1% | 14.9% | **16.9%** |
+| mcq | 269 | 53.2% | 53.2% | **53.2%** |
+| multi(2)-expression | 225 | 0.4% | 5.8% | **8.4%** |
+| true_false | 152 | 34.9% | 34.9% | **34.9%** |
+| multi(2)-equation | 130 | 0.0% | 6.2% | **10.0%** |
+| interval | 65 | 6.2% | 9.2% | **12.3%** |
+
+### Key observations
+
+- Thinking mode provides a consistent **~7–8pp lift** across all sources with xVerify-7B scoring.
+- The xVerify delta is **larger for no-think** (+14.3pp 7B) than for think-on (+20.7pp 7B) — thinking-on already resolves many symbolic answers in-context, while no-think leaves more correct but non-standard-format answers for xVerify to rescue.
+- SciBench_RL shows the biggest thinking-mode gap (−11.8pp), consistent with it being multi-step derivation heavy.
+- PHYBench is weakest under both conditions (8–12%), and least sensitive to thinking mode (−4.0pp).
+- 7B xVerify adds ~5pp over 3B in both conditions, consistent with earlier findings.
+
+### Authoritative no-think baseline
+
+**`data/results/zero_shot_nothink_xverify_7b.parquet`** — use this for all think vs no-think comparisons.
+
+---
+
 ## Scripts Reference
 
 | Script | Purpose |
@@ -419,3 +490,7 @@ Expression-type gains are the most informative: the model needs space to derive 
 | `scripts/zero_shot_chunk.sbatch` | SLURM: full chunked run template |
 | `scripts/zero_shot_rerun.sbatch` | SLURM: rerun template (submit with CHUNK_ID + N_CHUNKS) |
 | `scripts/rescore_rerun0_xverify.sbatch` | SLURM: one-off rescore of rerun chunk 0 with both xVerify models |
+| `scripts/run_zero_shot_nothink.py` | Zero-shot inference with thinking OFF (`enable_thinking=False`), records `n_tokens` per sample |
+| `scripts/zero_shot_nothink_smoke.sbatch` | SLURM: 1-sample smoke test for no-think pipeline |
+| `scripts/zero_shot_nothink_full.sbatch` | SLURM: full no-think run (all 6,866 samples, single job) |
+| `scripts/rescore_nothink_xverify.sbatch` | SLURM: xVerify rescore for no-think output (set XV_MODEL + XV_OUTPUT) |
