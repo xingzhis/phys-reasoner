@@ -16,13 +16,15 @@
 #   data/results/zero_shot_nothink_08b.parquet          (inference + rule-tier scores)
 #   data/results/zero_shot_nothink_08b_xverify_7b.parquet  (+ xVerify-7B scores)
 
-ROOT=/gpfs/radev/scratch/krishnaswamy_smita/xs272/phys-reasoner
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# Load machine-local overrides if present
+[ -f "$ROOT/.env" ] && source "$ROOT/.env"
 SIF=$ROOT/verl_vllm017.latest.sif
 OVERLAY=$ROOT/phys-reasoner-overlay-017.img
 
 export PYTHONUNBUFFERED=1
 export PYTHONNOUSERSITE=1
-export HF_HOME=$ROOT/hf_cache
+export HF_HOME=${HF_HOME:-$ROOT/hf_cache}
 export OMP_NUM_THREADS=8
 
 echo "Job:    $SLURM_JOB_ID  ($SLURM_JOB_NAME)"
