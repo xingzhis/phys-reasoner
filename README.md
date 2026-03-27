@@ -1,6 +1,8 @@
-# Do Verifiable Rewards Teach Physics?
+# Adaptive Compute Routing for Physics Reasoning
 
-Research project studying whether RLVR (Reinforcement Learning with Verifiable Rewards) improves physics reasoning and whether gains transfer beyond textbook problems to dynamic and research-level tasks.
+Research project training a small open model (Qwen3.5-4B) to route each physics problem to the right compute mode — direct answer, structured internal verification, deeper reasoning, or restricted tool-based verification — using SFT + RL with a correctness-minus-cost reward.
+
+Core claim: a learned routing policy achieves a better accuracy-cost frontier than fixed strategies or heuristic routers, with interpretable structure across problem types.
 
 Target venue: NeurIPS 2026.
 
@@ -11,23 +13,38 @@ Target venue: NeurIPS 2026.
 All commands run inside an Apptainer container. The base SIF is read-only; a writable overlay holds all installed packages.
 
 ```bash
-ROOT=/gpfs/radev/scratch/krishnaswamy_smita/xs272/phys-reasoner
+ROOT=$(pwd)   # repo root — derived automatically in sbatch scripts
 SIF=$ROOT/verl_vllm017.latest.sif
-OVERLAY=$ROOT/phys-reasoner-overlay-017.img   # primary overlay (use this one)
+OVERLAY=$ROOT/phys-reasoner-overlay-017.img
 
 CMD="PYTHONNOUSERSITE=1 apptainer exec --overlay $OVERLAY --bind /etc/pki:/etc/pki $SIF"
 CMD_GPU="PYTHONNOUSERSITE=1 apptainer exec --nv --overlay $OVERLAY --bind /etc/pki:/etc/pki $SIF"
 
 # Run tests
-$CMD python -m pytest tests/ -v -m "not slow"
+$CMD python -m pytest tests/ -v
 
 # GPU inference/training
 $CMD_GPU python scripts/run_zero_shot.py ...
 ```
 
-**`PYTHONNOUSERSITE=1` is required** — prevents `~/.local` packages from shadowing the overlay (the base SIF has `huggingface-hub==0.36.2`; the overlay has the correct `>=1.3.0`).
+**`PYTHONNOUSERSITE=1` is required** — prevents `~/.local` packages from shadowing the overlay.
 
-HuggingFace model cache: `HF_HOME=$ROOT/hf_cache` (xVerify models pre-cached; use `local_files_only=True` in `from_pretrained` calls).
+HuggingFace models are loaded from the standard cache (`~/.cache/huggingface`). Models download automatically on first use if internet is available.
+
+### Machine-local configuration
+
+Copy `.env.example` to `.env` (gitignored) to override machine-specific settings:
+
+```bash
+cp .env.example .env
+# Edit .env as needed (HF_HOME, Slurm partition/QOS, etc.)
+```
+
+Sbatch scripts automatically source `.env` from the project root if it exists. For interactive use, source it in your shell first:
+
+```bash
+. .env   # or: source .env
+```
 
 ### Installing packages into the overlay
 
@@ -42,53 +59,40 @@ PYTHONNOUSERSITE=1 apptainer exec --overlay "$OVERLAY" --bind /etc/pki:/etc/pki 
 
 ## Data Pipeline
 
-The training corpus is assembled from multiple sources, deduplicated, and saved as a single parquet file. **Re-run `run_dedup.py` whenever loaders or normalization logic changes.**
-
-### Step 1 — Raw data
-
-Data is stored in `data/raw/`:
-
-| Source | Location | Notes |
-|---|---|---|
-| UGPhysics | HuggingFace (`luffycodes/ugphysics`) | loaded via `loaders.py` |
-| PHYSICS (Yale) | `data/raw/yale-physics/` | git submodule |
-| OlympiadBench | `data/raw/grader-repos/OlympiadBench/` | git submodule |
-| PHYBench | HuggingFace | loaded via `loaders.py` |
-| SciBench_RL | HuggingFace | loaded via `loaders.py` |
-| ABench-Physics | `data/raw/abench/` | eval only (Phy_A, Phy_B CSV) |
-
-### Step 2 — Build training parquet
+Run once after cloning (or after any loader/dedup logic changes):
 
 ```bash
-$CMD python -u scripts/run_dedup.py
-# Output: data/processed/candidates_deduped.parquet (~6,866 rows)
+. .env                          # load machine-local overrides if any
+bash scripts/prepare_data.sh    # downloads everything, validates, builds parquet
 ```
 
-This runs three passes:
-1. **Exact dedup** — SHA-256 on normalized question text
-2. **Fuzzy dedup** — MinHash LSH at Jaccard ≥ 0.8
-3. **Contamination check** — removes training rows that overlap with any eval set
+This single script runs four steps:
+1. **Download** — HuggingFace datasets + Yale NLP Physics JSONL files + ABench CSVs
+2. **Validate** — checks all loaders produce sane output (`validate_loaders.py`)
+3. **Build raw parquet** — loads all sources into `data/processed/candidates_raw.parquet`
+4. **Dedup** — exact + fuzzy (MinHash LSH) + eval-contamination check → `data/processed/candidates_deduped.parquet` (~6,866 rows)
 
-Priority when deduplicating: `OlympiadBench > PHYSICS > UGPhysics > PHYBench > SciBench_RL`
+### Dataset sources
 
-Answer types are normalized to canonical labels (`numerical`, `expression`, `equation`, `interval`, `mcq`, `true_false`, `open_end`).
+| Source | Type | Location after download | Role |
+|---|---|---|---|
+| desimfj/PHYSICS | HuggingFace | `data/hf_cache` | Training (Tier 1 eval held-out) |
+| UGPhysics/ugphysics | HuggingFace | `data/hf_cache` | Training |
+| lscpku/OlympiadBench-official | HuggingFace | `data/hf_cache` | Training |
+| Eureka-Lab/PHYBench | HuggingFace | `data/hf_cache` | Training |
+| Sihangli/scibench-rl | HuggingFace | `data/hf_cache` | Training |
+| CritPt-Benchmark/CritPt | HuggingFace | `data/hf_cache` | Eval Tier 3 |
+| yale-nlp/Physics (GitHub) | 6 JSONL files | `data/raw/yale-physics/` | Eval Tier 3 |
+| inclusionAI/ABench (GitHub) | 2 CSV files | `data/raw/abench/` | Eval Tier 2 |
 
-### Step 3 — Validate parquet
+Yale and ABench are **eval-only** benchmarks. They are never in the training set — the dedup pipeline explicitly removes any training candidates that overlap with them.
+
+### Zero-shot baseline
 
 ```bash
-$CMD python -u scripts/validate_parquet.py
-# Checks: canonical types, row count, 200-row smoke verify
+sbatch scripts/zero_shot_preview.sbatch   # quick smoke test (n_per_tier=5)
+sbatch --export=ALL,CHUNK_ID=0,N_CHUNKS=4 scripts/zero_shot_chunk.sbatch  # full run
 ```
-
-### Step 4 — Zero-shot baseline
-
-```bash
-$CMD_GPU python -u scripts/run_zero_shot.py \
-    --n_per_tier 200 \
-    --output data/results/zero_shot_scores.parquet
-```
-
-Uses vLLM, thinking enabled, `max_new_tokens=4096`.
 
 ---
 
@@ -175,12 +179,13 @@ score = verify_answer(
 
 ## Models
 
-- **Primary**: `Qwen/Qwen3.5-4B` (Base → SFT warm-up → GRPO)
-- **Scaling check**: `Qwen/Qwen3.5-9B`
+- **Primary**: `Qwen/Qwen3.5-4B` (base vs instruct TBD; see `docs/standalone_proposal_v2_5_2.md` §5)
+- **Debug**: `Qwen/Qwen3.5-0.6B`
 
 ## Training Pipeline (planned)
 
-1. Base zero-shot baseline (`scripts/run_zero_shot.py`)
-2. SFT warm-up on training corpus
-3. GRPO with physics verifier reward (via VeRL)
-4. Evaluation on all three tiers
+1. Fixed-action baseline profiling (Answer / Check / Think-Deep / Tool-Check)
+2. Heuristic + classifier router baseline
+3. SFT warm-up for action-conditioned formatting
+4. GRPO with correctness-minus-cost reward (via VeRL)
+5. Routing analysis vs falsifiable prediction

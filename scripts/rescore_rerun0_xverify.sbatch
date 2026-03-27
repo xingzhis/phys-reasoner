@@ -15,13 +15,14 @@
 # Submit:
 #   sbatch scripts/rescore_rerun0_xverify.sbatch
 
-ROOT=/gpfs/radev/scratch/krishnaswamy_smita/xs272/phys-reasoner
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# Load machine-local overrides if present
+[ -f "$ROOT/.env" ] && source "$ROOT/.env"
 SIF=$ROOT/verl_vllm017.latest.sif
 OVERLAY=$ROOT/phys-reasoner-overlay-017.img
 
 export PYTHONUNBUFFERED=1
 export PYTHONNOUSERSITE=1
-export HF_HOME=$ROOT/hf_cache
 export OMP_NUM_THREADS=8
 
 echo "Job:    $SLURM_JOB_ID  ($SLURM_JOB_NAME)"
@@ -34,7 +35,6 @@ apptainer exec --nv \
   --no-home \
   --bind /etc/pki:/etc/pki \
   --env "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
-  --env "HF_HOME=$HF_HOME" \
   --env "PYTHONNOUSERSITE=1" \
   "$SIF" \
   python -u "$ROOT/scripts/rescore_xverify.py" \
@@ -49,7 +49,6 @@ apptainer exec --nv \
   --no-home \
   --bind /etc/pki:/etc/pki \
   --env "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
-  --env "HF_HOME=$HF_HOME" \
   --env "PYTHONNOUSERSITE=1" \
   "$SIF" \
   python -u "$ROOT/scripts/rescore_xverify.py" \

@@ -15,7 +15,9 @@
 # e.g.  sbatch --export=ALL,XV_MODEL=IAAR-Shanghai/xVerify-7B-I,XV_OUTPUT=data/results/rescore_7b_all8.parquet scripts/rescore_all_chunks.sbatch
 #        sbatch --export=ALL,XV_MODEL=IAAR-Shanghai/xVerify-3B-Ib,XV_OUTPUT=data/results/rescore_3b_all8.parquet scripts/rescore_all_chunks.sbatch
 
-ROOT=/gpfs/radev/scratch/krishnaswamy_smita/xs272/phys-reasoner
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# Load machine-local overrides if present
+[ -f "$ROOT/.env" ] && source "$ROOT/.env"
 SIF=$ROOT/verl_vllm017.latest.sif
 OVERLAY=$ROOT/phys-reasoner-overlay-017.img
 
@@ -25,7 +27,6 @@ if [ -z "$XV_MODEL" ] || [ -z "$XV_OUTPUT" ]; then
 fi
 
 export PYTHONUNBUFFERED=1
-export HF_HOME=$ROOT/hf_cache
 export OMP_NUM_THREADS=8
 
 echo "Job:    $SLURM_JOB_ID  ($SLURM_JOB_NAME)"
@@ -47,7 +48,6 @@ apptainer exec --nv \
   --overlay "$OVERLAY:ro" \
   --bind /etc/pki:/etc/pki \
   --env "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
-  --env "HF_HOME=$HF_HOME" \
   --env "PYTHONNOUSERSITE=1" \
   "$SIF" \
   python -u "$ROOT/scripts/rescore_xverify.py" \

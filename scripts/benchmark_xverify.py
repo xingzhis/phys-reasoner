@@ -15,18 +15,14 @@ from __future__ import annotations
 import argparse
 import os
 import time
+from pathlib import Path
 
 import pandas as pd
 
-os.environ.setdefault(
-    "HF_HOME",
-    "/gpfs/radev/scratch/krishnaswamy_smita/xs272/phys-reasoner/hf_cache",
-)
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+os.environ.setdefault("HF_HOME", str(_PROJECT_ROOT / "hf_cache"))
 
-_PARQUET = (
-    "/gpfs/radev/scratch/krishnaswamy_smita/xs272/phys-reasoner"
-    "/data/processed/candidates_deduped.parquet"
-)
+_PARQUET = str(_PROJECT_ROOT / "data/processed/candidates_deduped.parquet")
 _MODELS = [
     "IAAR-Shanghai/xVerify-0.5B-I",
     "IAAR-Shanghai/xVerify-3B-Ib",
