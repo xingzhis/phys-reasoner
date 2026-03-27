@@ -1,6 +1,8 @@
-# Do Verifiable Rewards Teach Physics?
+# Adaptive Compute Routing for Physics Reasoning
 
-Research project studying whether RLVR (Reinforcement Learning with Verifiable Rewards) improves physics reasoning and whether gains transfer beyond textbook problems to dynamic and research-level tasks.
+Research project training a small open model (Qwen3.5-4B) to route each physics problem to the right compute mode — direct answer, structured internal verification, deeper reasoning, or restricted tool-based verification — using SFT + RL with a correctness-minus-cost reward.
+
+Core claim: a learned routing policy achieves a better accuracy-cost frontier than fixed strategies or heuristic routers, with interpretable structure across problem types.
 
 Target venue: NeurIPS 2026.
 
@@ -177,12 +179,13 @@ score = verify_answer(
 
 ## Models
 
-- **Primary**: `Qwen/Qwen3.5-4B` (Base → SFT warm-up → GRPO)
-- **Scaling check**: `Qwen/Qwen3.5-9B`
+- **Primary**: `Qwen/Qwen3.5-4B` (base vs instruct TBD; see `docs/standalone_proposal_v2_5_2.md` §5)
+- **Debug**: `Qwen/Qwen3.5-0.6B`
 
 ## Training Pipeline (planned)
 
-1. Base zero-shot baseline (`scripts/run_zero_shot.py`)
-2. SFT warm-up on training corpus
-3. GRPO with physics verifier reward (via VeRL)
-4. Evaluation on all three tiers
+1. Fixed-action baseline profiling (Answer / Check / Think-Deep / Tool-Check)
+2. Heuristic + classifier router baseline
+3. SFT warm-up for action-conditioned formatting
+4. GRPO with correctness-minus-cost reward (via VeRL)
+5. Routing analysis vs falsifiable prediction

@@ -4,35 +4,35 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Active Plan
 
-**Read first:** `.claude/plans/clever-launching-moonbeam.md` — the 2-month implementation plan. Currently at end of Phase 1 / start of Phase 2.
-
-**Verifier MVP plan:** `.claude/plans/scalable-snacking-feigenbaum.md` — Phases A–E complete. Phase F (zero-shot baseline) in progress. See plan Status section for exact state and pending items before GRPO training.
+**Read first:** `.claude/plans/adaptive-compute-routing.md` — the 6-week implementation plan. Started 2026-03-27, Week 1 in progress.
 
 ## Project Overview
 
-Research project: "Do Verifiable Rewards Teach Physics?" — building a physics answer verifier and training LLMs with RLVR (Reinforcement Learning with Verifiable Rewards) to study whether reasoning gains transfer beyond textbook problems to dynamic and research-level physics tasks. Target venue: NeurIPS 2026.
+Research project: "Adaptive Compute Routing with Verification-Oriented Tool Use for Physics Reasoning" — training a small open model (Qwen3.5-4B) to route each physics problem to the right compute mode (Answer / Check / Think-Deep / Tool-Check) using SFT + RL. Core claim: a learned routing policy achieves a better accuracy-cost frontier than fixed strategies or heuristic routers, with interpretable structure. Target venue: NeurIPS 2026.
 
-## Planned Architecture
+Proposal: `docs/standalone_proposal_v2_5_2.md`
+Checklist: `docs/implementation_checklist_v2_5_2.md`
+
+## Architecture
 
 Three main components:
 
-1. **Physics Answer Verifier** (Python library): Layered verification pipeline for physics answers:
-   - Numerical answers with units (via `pint`)
-   - Symbolic expressions (via `SymPy`)
-   - Multi-part answers
-   - Order-of-magnitude estimates
-   - LLM fallback for edge cases
-   - Target: ≥95% precision vs human annotations
+1. **Four-Action Framework**: Model chooses per-problem:
+   - **Answer** — direct response (low cost, easy problems)
+   - **Check** — answer + structured internal verification + optional revision (medium cost)
+   - **Think-Deep** — extended reasoning trace before answering (medium-high cost)
+   - **Tool-Check** — restricted external symbolic/numeric verification + optional revision (high cost)
 
-2. **RLVR Training Pipeline**: GRPO training (via VeRL) on physics corpus (~25-27k problems from PHYSICS + UGPhysics + OlympiadBench):
-   - Base models: Qwen3.5-4B (primary), Qwen3.5-9B (scaling check)
-   - Pipeline: Base → SFT warm-up → GRPO with physics-aware verifier reward
-   - Baselines: Base zero-shot, SFT-only, SFT+RLVR, Best-of-N
+2. **SFT + RL Training Pipeline**:
+   - Model: Qwen3.5-4B (base vs instruct TBD — decide before SFT; see proposal §5.1); debug: Qwen3.5-0.6B
+   - Reward: R = R_correct − λ·C_action
+   - Primary data: `candidates_deduped.parquet` (~6,866 rows) + Dr. SCI physics subset
+   - Secondary benchmark: MATH-500 hard subset
 
-3. **Three-Tier Evaluation**:
-   - Tier 1: Textbook (in-domain held-out split from PHYSICS)
-   - Tier 2: Dynamic robustness (ABench-Physics Phy_B)
-   - Tier 3: Frontier/research-level (CritPt ~70 PhD-level problems)
+3. **Verification Tool Stack** (restricted wrappers over existing verifier):
+   - `check_equation` / `check_root` — via SymPy (math_verify_wrapper)
+   - `check_units` — via pint (unit_check)
+   - `plug_values`, `compare_expr` — via SymPy + NumPy
 
 ## Environment
 
