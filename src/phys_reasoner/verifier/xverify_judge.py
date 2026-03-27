@@ -28,11 +28,9 @@ class XVerifyJudge:
     ):
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            model_name, local_files_only=True
-        )
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.model = AutoModelForCausalLM.from_pretrained(
-            model_name, dtype="auto", device_map=device, local_files_only=True
+            model_name, dtype="auto", device_map=device
         )
         self.model.eval()
         self._device = device

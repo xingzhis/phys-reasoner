@@ -11,7 +11,9 @@
 #SBATCH --output=logs/%x_%j.log
 #SBATCH --error=logs/%x_%j.err
 
-ROOT=/gpfs/radev/scratch/krishnaswamy_smita/xs272/phys-reasoner
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# Load machine-local overrides if present
+[ -f "$ROOT/.env" ] && source "$ROOT/.env"
 SIF=$ROOT/verl_vllm017.latest.sif
 OVERLAY=$ROOT/phys-reasoner-overlay-017.img
 
@@ -22,7 +24,6 @@ if [ -z "$CHUNK_ID" ] || [ -z "$N_CHUNKS" ]; then
 fi
 
 export PYTHONUNBUFFERED=1
-export HF_HOME=$ROOT/hf_cache
 export OMP_NUM_THREADS=8
 
 echo "Job:    $SLURM_JOB_ID  ($SLURM_JOB_NAME)"
@@ -34,7 +35,6 @@ apptainer exec --nv \
   --overlay "$OVERLAY:ro" \
   --bind /etc/pki:/etc/pki \
   --env "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
-  --env "HF_HOME=$HF_HOME" \
   --env "PYTHONNOUSERSITE=1" \
   "$SIF" \
   python -u "$ROOT/scripts/run_zero_shot.py" \
