@@ -59,7 +59,8 @@ def build_prompt(problem: str, tokenizer) -> str:
     )
 
 
-def run_inference(df: pd.DataFrame, model_name: str, max_new_tokens: int) -> tuple[list[str], list[bool]]:
+def run_inference(df: pd.DataFrame, model_name: str, max_new_tokens: int,
+                  gpu_memory_utilization: float = 0.9) -> tuple[list[str], list[bool]]:
     """Run vLLM batch inference. Returns (predictions, truncated_flags).
 
     In non-thinking mode there is no <think> trace so raw output == prediction.
@@ -75,7 +76,7 @@ def run_inference(df: pd.DataFrame, model_name: str, max_new_tokens: int) -> tup
         download_dir=hf_home,
         trust_remote_code=True,
         max_model_len=max_new_tokens + 4096,
-        gpu_memory_utilization=0.75,
+        gpu_memory_utilization=gpu_memory_utilization,
     )
     tokenizer = llm.get_tokenizer()
 
@@ -168,6 +169,8 @@ def main() -> None:
     parser.add_argument("--chunk_id", type=int, default=0)
     parser.add_argument("--n_chunks", type=int, default=1)
     parser.add_argument("--max_samples", type=int, default=None, help="hard cap on rows, useful for smoke tests")
+    parser.add_argument("--gpu_memory_utilization", type=float, default=0.9,
+                        help="vLLM GPU memory fraction (default 0.9; reduce if OOM on shared nodes)")
     args = parser.parse_args()
 
     print(f"Loading sample from {args.input} (n_per_tier={args.n_per_tier}, chunk={args.chunk_id}/{args.n_chunks})...", flush=True)
@@ -179,7 +182,8 @@ def main() -> None:
     print(f"  Sample size: {len(df)} rows", flush=True)
 
     print(f"Running inference with {args.model} (thinking OFF)...", flush=True)
-    predictions, truncated, token_counts = run_inference(df, args.model, args.max_new_tokens)
+    predictions, truncated, token_counts = run_inference(df, args.model, args.max_new_tokens,
+                                                          gpu_memory_utilization=args.gpu_memory_utilization)
 
     print("Scoring predictions...", flush=True)
     results_df = score_predictions(df, predictions, truncated, token_counts)

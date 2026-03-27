@@ -456,6 +456,37 @@ Run the same zero-shot evaluation with Qwen3's **thinking mode disabled** (`enab
 | multi(2)-equation | 130 | 0.0% | 6.2% | **10.0%** |
 | interval | 65 | 6.2% | 9.2% | **12.3%** |
 
+### Caveat: truncated samples included in all accuracy numbers
+
+All accuracy figures above include truncated outputs. Truncated outputs score near-zero (rule: ~1%, xV-7B: ~4–7%) because the answer is cut off. This suppresses the overall accuracy and makes the think vs no-think comparison partially confounded:
+
+- **Think-ON** truncated at 32,768 tokens — only very long, hard problems hit the limit
+- **No-Think** truncated at 8,192 tokens — moderate-difficulty problems that happen to be verbose also get cut
+
+The truncated sets are therefore *different problems at different difficulty levels*, so restricting to non-truncated samples is not a clean apples-to-apples comparison either (easier problems are less likely to truncate under either condition).
+
+### Non-truncated accuracy (+xVerify-7B)
+
+| | Think-ON | No-Think | Gap |
+|---|---|---|---|
+| Non-truncated n | 5,355 (78.0%) | 5,298 (77.2%) | — |
+| Overall +xV-7B | **49.0%** | **40.3%** | −8.7pp |
+| Truncated-only +xV-7B | 6.8% | 4.0% | — |
+
+**By source, non-truncated only (+xVerify-7B)**
+
+| Source | Think-ON n | Think-ON xV-7B | NoThink n | NoThink xV-7B | Gap |
+|--------|-----------|----------------|-----------|---------------|-----|
+| SciBench_RL | 262 | 89.7% | 257 | 79.4% | −10.3pp |
+| PHYSICS | 675 | 46.7% | 675 | 38.7% | −8.0pp |
+| UGPhysics | 4,241 | 47.2% | 4,207 | 38.6% | −8.6pp |
+| OlympiadBench | 154 | 39.6% | 134 | 28.4% | −11.2pp |
+| PHYBench | 23 | 47.8% | 25 | 28.0% | −19.8pp |
+
+> **PHYBench caveat:** both conditions truncate ~75–77% of PHYBench samples, leaving only 23–25 non-truncated rows. The PHYBench non-truncated numbers are unreliable (high variance, likely selection bias toward easy problems).
+
+The gap on non-truncated samples (~8–9pp) is consistent with the all-sample gap (~8pp), suggesting truncation does not strongly confound the think vs no-think comparison at the overall level. The fairest comparison would be a joint re-run where both conditions are given the same token budget — left for future work.
+
 ### Key observations
 
 - Thinking mode provides a consistent **~7–8pp lift** across all sources with xVerify-7B scoring.
@@ -467,6 +498,73 @@ Run the same zero-shot evaluation with Qwen3's **thinking mode disabled** (`enab
 ### Authoritative no-think baseline
 
 **`data/results/zero_shot_nothink_xverify_7b.parquet`** — use this for all think vs no-think comparisons.
+
+---
+
+## No-Think Zero-Shot Baseline — Qwen3.5-0.8B (2026-03-26)
+
+### Setup
+
+- **Script:** `scripts/run_zero_shot_nothink.py` + `scripts/zero_shot_nothink_08b.sbatch`
+- **Model:** `Qwen/Qwen3.5-0.8B`, bfloat16, vLLM 0.17
+- **Thinking mode:** `enable_thinking=False`
+- **Sampling:** temperature=0.7, top_p=0.8, top_k=20
+- **max_new_tokens:** 8192; max_model_len: 12288
+- **Input:** `data/processed/candidates_deduped.parquet` (all 6,866 training candidates)
+- **Output:** `data/results/zero_shot_nothink_08b.parquet`
+- **Rescored:** `data/results/zero_shot_nothink_08b_xverify_7b.parquet` (7B)
+- **Job:** 1428883 (A100, ~47 min)
+
+### Token distribution
+
+- Mean: 4,103 tokens; min: 163; max: 8,192
+- Truncated at 8,192: **2,457/6,866 (35.8%)** — notably higher than 4B no-think (22.8%)
+
+### Results — all samples (n=6,866)
+
+| Source | Rule-only | +xVerify-7B | n |
+|--------|-----------|-------------|---|
+| SciBench_RL | 24.3% | 28.9% | 280 |
+| PHYSICS | 6.3% | 9.6% | 805 |
+| UGPhysics | 6.0% | 9.4% | 5,451 |
+| OlympiadBench | 2.2% | 10.9% | 230 |
+| PHYBench | 0.0% | 0.0% | 100 |
+| **OVERALL** | **6.6%** | **10.1%** | **6,866** |
+
+### Results — non-truncated only (n=4,409, 64.2%)
+
+| Source | Rule-only | +xVerify-7B | n |
+|--------|-----------|-------------|---|
+| SciBench_RL | 29.3% | 34.5% | 232 |
+| PHYSICS | 9.0% | 13.1% | 543 |
+| UGPhysics | 9.1% | 13.3% | 3,482 |
+| OlympiadBench | 2.4% | 14.3% | 126 |
+| PHYBench | 0.0% | 0.0% | 26 |
+| **OVERALL** | **9.9%** | **14.3%** | **4,409** |
+
+### Comparison: 0.8B vs 4B, no-think (+xVerify-7B)
+
+| Source | 0.8B (all) | 4B (all) | Δ | 0.8B (non-trunc) | 4B (non-trunc) | Δ |
+|--------|-----------|---------|---|-----------------|----------------|---|
+| SciBench_RL | 28.9% | 73.2% | −44.3pp | 34.5% | 79.4% | −44.9pp |
+| PHYSICS | 9.6% | 33.2% | −23.6pp | 13.1% | 38.7% | −25.6pp |
+| UGPhysics | 9.4% | 30.7% | −21.3pp | 13.3% | 38.6% | −25.3pp |
+| OlympiadBench | 10.9% | 19.1% | −8.2pp | 14.3% | 28.4% | −14.1pp |
+| PHYBench | 0.0% | 8.0% | −8.0pp | 0.0% | 28.0% | −28.0pp |
+| **OVERALL** | **10.1%** | **32.0%** | **−21.9pp** | **14.3%** | **40.3%** | **−26.0pp** |
+
+PHYBench non-truncated numbers are unreliable for 0.8B (only 26 samples survive; ~74% truncation rate).
+
+### Key observations
+
+- 0.8B is dramatically weaker than 4B under no-think: **−22pp overall, −26pp non-truncated**.
+- Higher truncation rate (35.8% vs 22.8%) — 0.8B writes more tokens per step without making progress.
+- xVerify-7B lift is modest (+3.5pp overall) vs 4B (+14.3pp), consistent with 0.8B generating fewer correct but non-standard-format answers and more genuinely wrong ones.
+- OlympiadBench shows the best xVerify lift (+8.7pp all / +11.9pp non-trunc), suggesting rule matching fails on its answer formats even when answers are correct.
+
+### Authoritative file
+
+**`data/results/zero_shot_nothink_08b_xverify_7b.parquet`**
 
 ---
 
@@ -494,3 +592,4 @@ Run the same zero-shot evaluation with Qwen3's **thinking mode disabled** (`enab
 | `scripts/zero_shot_nothink_smoke.sbatch` | SLURM: 1-sample smoke test for no-think pipeline |
 | `scripts/zero_shot_nothink_full.sbatch` | SLURM: full no-think run (all 6,866 samples, single job) |
 | `scripts/rescore_nothink_xverify.sbatch` | SLURM: xVerify rescore for no-think output (set XV_MODEL + XV_OUTPUT) |
+| `scripts/zero_shot_nothink_08b.sbatch` | SLURM: full no-think run for Qwen3.5-0.8B (all 6,866 samples, single job) |

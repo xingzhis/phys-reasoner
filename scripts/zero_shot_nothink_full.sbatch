@@ -35,9 +35,10 @@ apptainer exec --nv \
   --env "PYTHONNOUSERSITE=1" \
   "$SIF" \
   python -u "$ROOT/scripts/run_zero_shot_nothink.py" \
-    --input          "$ROOT/data/processed/candidates_deduped.parquet" \
-    --n_per_tier     10000 \
-    --max_new_tokens 8192 \
-    --output         "$ROOT/data/results/zero_shot_nothink.parquet"
+    --input                  "$ROOT/data/processed/candidates_deduped.parquet" \
+    --n_per_tier             10000 \
+    --max_new_tokens         8192 \
+    --gpu_memory_utilization 0.9 \
+    --output                 "$ROOT/data/results/zero_shot_nothink.parquet"
 
 echo "Done: $?"
