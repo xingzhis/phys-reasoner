@@ -163,8 +163,11 @@ def validate_ugphysics(cache_dir):
     valid_codes = {"NV", "EX", "EQ", "MC", "TF", "IN"}
     invalid = set()
     for r in rows:
-        # Multi-part: "NV, EX" style
-        parts = [p.strip() for p in r.answer_type.split(",")]
+        # Multi-part: list ["NV", "EX"] or legacy string "NV, EX" style
+        if isinstance(r.answer_type, list):
+            parts = [p.strip() for p in r.answer_type]
+        else:
+            parts = [p.strip() for p in r.answer_type.split(",")]
         for p in parts:
             if p not in valid_codes:
                 invalid.add(p)
