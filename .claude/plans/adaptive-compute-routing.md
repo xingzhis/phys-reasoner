@@ -31,31 +31,43 @@ Train a small open model (Qwen3.5-4B) to route each physics problem to one of fo
 
 ## Week 1 — 2026-03-27 to 2026-04-02
 
-**Goal:** Baselines profiled, router baseline built, data splits frozen.
+**Goal:** Dr. SCI investigation underway, corpus decision imminent, splits frozen.
 
-Tasks:
-- [ ] Freeze train/dev/test splits from `candidates_deduped.parquet`
-- [ ] Inspect and explore Dr. SCI dataset (MiniByte-666/Dr.SCI on HF); filter physics + rule_verifiable; document row counts and answer-type distribution
+**Dr. SCI investigation** (see `.claude/plans/drsci-investigation.md` for full detail):
+- [x] Download and explore Dr. SCI — 115,497 physics + match_rule=True rows saved to `data/processed/drsci_physics.parquet`
+- [ ] Phase 1: Dedup + eval contamination check → `data/processed/drsci_physics_deduped.parquet`
+- [ ] Phase 1: Answer format audit (gold-gold round-trip, source stratification, English filter)
+- [ ] Phase 2: Verifier round-trip + answer_type inference + unit tests (`tests/test_drsci_verifier.py`)
+
+**Corpus decision gates on Phase 1–2 results** (target: complete by end of Week 1)
+
+**Deferred to Week 2** (blocked by corpus decision):
+- [ ] Freeze final train/dev/test splits
 - [ ] Build answer extraction + correctness evaluator for all four action schemas
 - [ ] Implement four fixed prompting templates (Answer, Check, Think-Deep, Tool-Check)
 - [ ] Run fixed-action profiling on dev subset: accuracy, token cost, latency, failure modes
-- [ ] Build heuristic router (features: question length, equation density, unit presence, symbolic/numeric structure, source dataset)
-- [ ] Decide cost definition: tokens only, latency, or weighted combination
+- [ ] Build heuristic router
+- [ ] Decide cost definition
 
 **Outputs:**
-- Baseline accuracy table
-- Baseline latency/token-cost table
-- Heuristic router implementation
-- Dr. SCI data inspection report (row count, answer types, quality notes)
+- Dr. SCI dedup report (contamination counts, post-dedup size)
+- Verifier round-trip pass rate by source and answer type
+- Preliminary corpus decision (or decision pending Phase 3 Goldilocks)
 
 ---
 
 ## Week 2 — 2026-04-03 to 2026-04-09
 
-**Goal:** SFT data ready, parser working, tool wrappers working, SFT checkpoint stable.
+**Goal:** Corpus finalized, SFT data ready, parser working, tool wrappers working, SFT checkpoint stable.
 
-Tasks:
-- [ ] Integrate Dr. SCI physics subset into training corpus (after Week 1 inspection)
+**Dr. SCI investigation continued** (see `.claude/plans/drsci-investigation.md`):
+- [ ] Phase 3: Zero-shot Goldilocks profiling — stratified 600-row sample, pass@1 by difficulty/source (sbatch)
+- [ ] Phase 3: Analyze Goldilocks slice; estimate effective training set size
+- [ ] Phase 4: Corpus decision — mixing ratio or Dr. SCI primary; freeze splits
+- [ ] Phase 4: If Dr. SCI primary — add `DrSCI` source to schema, write loader, update dedup pipeline
+
+**SFT pipeline:**
+- [ ] Integrate finalized corpus (after Week 1/2 decision)
 - [ ] Sample 200–500 verifier-friendly items for Check demonstrations
 - [ ] Generate/template structured Check demonstrations with required schema fields
 - [ ] Create Tool-Check demonstrations using only restricted wrapper calls
