@@ -8,12 +8,14 @@
 
 set -e
 
+export PYTHONNOUSERSITE=1   # must be exported before any apptainer invocation
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SIF=$ROOT/verl_vllm017.latest.sif
 OVERLAY=$ROOT/phys-reasoner-overlay-017.img
 [ -f "$ROOT/.env" ] && source "$ROOT/.env"
 
-RUN="PYTHONNOUSERSITE=1 apptainer exec --overlay $OVERLAY:ro --bind /etc/pki:/etc/pki $SIF"
+RUN="apptainer exec --overlay $OVERLAY:ro --bind /etc/pki:/etc/pki $SIF"
 
 echo "=== [1/4] Download all datasets ==="
 $RUN python "$ROOT/scripts/download_datasets.py" \

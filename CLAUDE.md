@@ -66,10 +66,11 @@ PYTHONNOUSERSITE=1 apptainer exec --nv --overlay "$OVERLAY" --bind /etc/pki:/etc
 
 **Always set `PYTHONNOUSERSITE=1`**: prevents `~/.local/lib/python3.12/site-packages` from leaking into the container and shadowing overlay packages (e.g. old `huggingface-hub==0.36.2` in `~/.local` would shadow `1.7.2` in the overlay, breaking transformers).
 
-Run tests:
+Run tests (interactive — use legacy overlay for proper HF hub metadata):
 ```bash
-PYTHONNOUSERSITE=1 apptainer exec --overlay "$OVERLAY" --bind /etc/pki:/etc/pki "$SIF" python3 -m pytest tests/ -v
+PYTHONNOUSERSITE=1 apptainer exec --overlay "$ROOT/phys-reasoner-overlay.img" --bind /etc/pki:/etc/pki "$SIF" python3 -m pytest tests/ -v
 ```
+Note: `-017.img` has a broken `importlib.metadata` entry for `huggingface_hub`, causing `test_schema.py` loader tests to fail with `PackageNotFoundError`. The legacy `phys-reasoner-overlay.img` has proper HF hub metadata and fixes this. Keep `-017.img` for all sbatch jobs (the legacy overlay has FUSE2FS mount issues on some compute nodes).
 
 HF model cache: `HF_HOME=$ROOT/hf_cache` — xVerify models are pre-cached; always use `local_files_only=True` when loading them to avoid network calls to the HF API.
 

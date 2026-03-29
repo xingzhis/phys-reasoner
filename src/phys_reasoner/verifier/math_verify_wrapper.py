@@ -234,8 +234,14 @@ def rule_verify(pred_str: str, gold_str: str, tolerance: float = 0.05) -> bool |
 
     # --- Numerical percentage tolerance pre-check (raw strings) ---
     try:
-        if _within_tolerance(float(gold_str.strip()), float(pred_str.strip())):
+        g_plain = float(gold_str.strip())
+        p_plain = float(pred_str.strip())
+        if _within_tolerance(g_plain, p_plain):
             return True
+        # Short-circuit False: both are plain Python floats that differ beyond tolerance.
+        # Without this guard, math_verify.parse() silently drops Python e-notation exponents
+        # (e.g. "1.5e-3" and "1.5e-6" both parse to 1.5), producing a false positive.
+        return False
     except (ValueError, TypeError):
         pass
 
