@@ -19,10 +19,7 @@
 # Then merge with: python scripts/merge_rerun_chunks.py
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-# Load machine-local overrides if present
-[ -f "$ROOT/.env" ] && source "$ROOT/.env"
-SIF=$ROOT/verl_vllm017.latest.sif
-OVERLAY=$ROOT/phys-reasoner-overlay-017.img
+source "$ROOT/env.sh"
 
 if [ -z "$CHUNK_ID" ] || [ -z "$N_CHUNKS" ]; then
     echo "Error: CHUNK_ID and N_CHUNKS must be set via sbatch --export"

@@ -12,24 +12,28 @@ Target venue: NeurIPS 2026.
 
 All commands run inside an Apptainer container. The base SIF is read-only; a writable overlay holds all installed packages.
 
+**One-time setup per session:**
+
 ```bash
-ROOT=$(pwd)   # repo root — derived automatically in sbatch scripts
-SIF=$ROOT/verl_vllm017.latest.sif
-OVERLAY=$ROOT/phys-reasoner-overlay-017.img
-
-CMD="PYTHONNOUSERSITE=1 apptainer exec --overlay $OVERLAY --bind /etc/pki:/etc/pki $SIF"
-CMD_GPU="PYTHONNOUSERSITE=1 apptainer exec --nv --overlay $OVERLAY --bind /etc/pki:/etc/pki $SIF"
-
-# Run tests
-$CMD python -m pytest tests/ -v
-
-# GPU inference/training
-$CMD_GPU python scripts/run_zero_shot.py ...
+source env.sh   # sets ROOT, SIF, OVERLAY, HF_HOME, PYTHONNOUSERSITE
 ```
 
-**`PYTHONNOUSERSITE=1` is required** — prevents `~/.local` packages from shadowing the overlay.
+After sourcing, use these aliases for interactive commands:
 
-HuggingFace models are loaded from the standard cache (`~/.cache/huggingface`). Models download automatically on first use if internet is available.
+```bash
+# CPU
+apptainer exec --overlay "$OVERLAY" --bind /etc/pki:/etc/pki "$SIF" <command>
+
+# GPU
+apptainer exec --nv --overlay "$OVERLAY" --bind /etc/pki:/etc/pki "$SIF" <command>
+
+# Run tests
+apptainer exec --overlay "$OVERLAY" --bind /etc/pki:/etc/pki "$SIF" python -m pytest tests/ -v
+```
+
+All sbatch scripts source `env.sh` automatically — no manual setup needed for batch jobs.
+
+**`PYTHONNOUSERSITE=1` is required** — prevents `~/.local` packages from shadowing the overlay. `env.sh` exports it automatically.
 
 ### Machine-local configuration
 
@@ -37,14 +41,10 @@ Copy `.env.example` to `.env` (gitignored) to override machine-specific settings
 
 ```bash
 cp .env.example .env
-# Edit .env as needed (HF_HOME, Slurm partition/QOS, etc.)
+# Edit .env as needed (HF_HOME, SIF, OVERLAY, Slurm partition/QOS, etc.)
 ```
 
-Sbatch scripts automatically source `.env` from the project root if it exists. For interactive use, source it in your shell first:
-
-```bash
-. .env   # or: source .env
-```
+`env.sh` sources `.env` automatically. Defaults: `HF_HOME=$ROOT/hf_cache`, `SIF`/`OVERLAY` at standard filenames in `$ROOT`.
 
 ### Installing packages into the overlay
 

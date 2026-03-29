@@ -16,10 +16,7 @@
 # 7B:  sbatch --export=ALL,XV_MODEL=IAAR-Shanghai/xVerify-7B-I,XV_OUTPUT=data/results/rescore_7b_v3.parquet scripts/rescore_xverify.sbatch
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-# Load machine-local overrides if present
-[ -f "$ROOT/.env" ] && source "$ROOT/.env"
-SIF=$ROOT/verl_vllm017.latest.sif
-OVERLAY=$ROOT/phys-reasoner-overlay-017.img
+source "$ROOT/env.sh"
 
 if [ -z "$XV_MODEL" ] || [ -z "$XV_OUTPUT" ]; then
     echo "Error: XV_MODEL and XV_OUTPUT must be set via sbatch --export"

@@ -12,10 +12,7 @@
 #SBATCH --error=logs/%x_%j.err
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-# Load machine-local overrides if present
-[ -f "$ROOT/.env" ] && source "$ROOT/.env"
-SIF=$ROOT/verl_vllm017.latest.sif
-OVERLAY=$ROOT/phys-reasoner-overlay-017.img
+source "$ROOT/env.sh"
 
 # Required: CHUNK_ID (0-indexed), N_CHUNKS — passed via sbatch --export
 if [ -z "$CHUNK_ID" ] || [ -z "$N_CHUNKS" ]; then

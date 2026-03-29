@@ -15,10 +15,7 @@
 # Runs all samples in one job — outputs are short (~1-2k tokens) so no chunking needed.
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-# Load machine-local overrides if present
-[ -f "$ROOT/.env" ] && source "$ROOT/.env"
-SIF=$ROOT/verl_vllm017.latest.sif
-OVERLAY=$ROOT/phys-reasoner-overlay-017.img
+source "$ROOT/env.sh"
 
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=8

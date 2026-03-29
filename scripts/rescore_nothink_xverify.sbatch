@@ -16,10 +16,7 @@
 #   sbatch --export=ALL,XV_MODEL=IAAR-Shanghai/xVerify-3B-Ib scripts/rescore_nothink_xverify.sbatch
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-# Load machine-local overrides if present
-[ -f "$ROOT/.env" ] && source "$ROOT/.env"
-SIF=$ROOT/verl_vllm017.latest.sif
-OVERLAY=$ROOT/phys-reasoner-overlay-017.img
+source "$ROOT/env.sh"
 
 XV_MODEL=${XV_MODEL:-IAAR-Shanghai/xVerify-3B-Ib}
 XV_OUTPUT=${XV_OUTPUT:-$ROOT/data/results/zero_shot_nothink_xverify.parquet}
