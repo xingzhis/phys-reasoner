@@ -234,8 +234,8 @@ def main() -> None:
         help="Output of run_zero_shot_drsci.py",
     )
     parser.add_argument(
-        "--deduped", default="data/processed/drsci_physics_deduped.parquet",
-        help="Post-dedup Dr. SCI parquet",
+        "--deduped", default="data/processed/drsci_physics_clean.parquet",
+        help="Cleaned Dr. SCI parquet (has inferred_answer_type column)",
     )
     parser.add_argument(
         "--corpus",  default="data/processed/candidates_deduped.parquet",

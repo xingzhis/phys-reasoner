@@ -568,6 +568,222 @@ PHYBench non-truncated numbers are unreliable for 0.8B (only 26 samples survive;
 
 ---
 
+## Pass@k / Goldilocks Difficulty Profiling (2026-03-30)
+
+### Motivation
+
+To identify which problems are "learnable" for GRPO training (the Goldilocks zone), we need a per-problem difficulty estimate: too easy → always correct, no gradient; too hard → never correct, no gradient. We estimate difficulty via **empirical pass rate** over k independently sampled completions: `pass_rate = n_correct / k`. Problems where `pass_rate ∈ [0.15, 0.85]` are considered learnable.
+
+### How pass@k is computed here (vs. standard definition)
+
+The standard (unbiased) **pass@k** estimator from the Codex paper is:
+
+```
+pass@k = E[1 − C(n−c, k) / C(n, k)]
+```
+
+where n = number of samples drawn per problem, c = number of correct samples among them. When k = n, this reduces to: `pass@k = 1 if c ≥ 1 else 0` — a binary "did any sample pass?"
+
+**We do not use the standard estimator.** Instead we compute:
+
+```
+pass_rate = c / n   (empirical mean accuracy, i.e. unbiased estimator of pass@1)
+```
+
+This is the **expected accuracy of a single randomly drawn completion**, estimated from n = 8 samples. It serves as a continuous difficulty score in [0, 1], which is what Goldilocks filtering requires. A binary pass@k would collapse all problems with ≥1 correct answer into the same bucket, losing all difficulty resolution.
+
+Both metrics use the same n=8 samples. Our `pass_rate` is strictly more informative for Goldilocks selection; the standard pass@k is more relevant for estimating functional solve-rate (e.g. with best-of-n decoding).
+
+### Truncation handling
+
+A completion truncated at `max_new_tokens` typically has no `\boxed{}` and scores 0.
+
+Two metrics are tracked per problem:
+- **`pass_rate`** — `n_correct / k`: truncated completions count as incorrect. This is the conservative Goldilocks signal and is used as the primary metric.
+- **`pass_rate_nontrunc`** — `n_correct / (k − n_truncated)`: truncated completions excluded from denominator. Separates "wrong answer" from "ran out of tokens." Useful when truncation rate is high.
+- **`n_truncated`** — count of truncated completions per problem. Problems with `n_truncated ≥ k/2` have unreliable pass rates (most of their samples never produced an answer) and should be treated with caution in Goldilocks selection.
+
+### Infrastructure note: why xVerify is separate
+
+vLLM holds ~90% of GPU memory during inference. Loading xVerify on top would OOM. The correct pipeline is:
+
+1. **Inference job** (`run_zero_shot_corpus_passk.py` / `run_zero_shot_drsci.py`): vLLM generates k completions, saves `all_texts: list[str]` (all k rollout texts) + `scores` (rule-only).
+2. **Rescore job** (`rescore_passk_xverify.py`): loads xVerify only (no vLLM), iterates over `all_texts`, overwrites `scores` / `pass_rate` with xVerify results, preserves rule-only scores in `*_rule` columns.
+
+All k rollout texts are saved so rescoring never requires re-inference.
+
+---
+
+### Corpus pass@8 (6.8k training corpus, stratified sample) (2026-03-30)
+
+**Setup:**
+- Script: `scripts/run_zero_shot_corpus_passk.py` + `scripts/zero_shot_corpus_passk.sbatch`
+- Model: `Qwen/Qwen3.5-4B`, thinking OFF, temperature=0.7/top_p=0.8/top_k=20
+- Sample: stratified by (source × simplified answer_type), 20 rows/stratum → **n=311 problems**
+- k = 8 completions per problem (2,488 total inference calls)
+- max_new_tokens: 8192; rule-only scoring during inference, xVerify-7B rescored separately
+- Output: `data/results/zero_shot_corpus_passk.parquet` (inference + rule scores)
+- Rescored: `data/results/zero_shot_corpus_passk_xv7b.parquet` (xVerify-7B scores, job 1445187)
+
+**Truncation:**
+
+| | Count | % |
+|---|---|---|
+| Truncated completions | 550 / 2,488 | 22.1% |
+| Problems with ≥4/8 truncated | 71 / 311 | 22.8% |
+
+**Overall accuracy (pass@1 estimated from k=8):**
+
+| | All completions | Excl. truncated | Goldilocks [15%–85%] |
+|---|---|---|---|
+| Rule-only | 19.2% | 22.7% | 29/311 (9.3%) |
+| **xVerify-7B** | **30.3%** | **36.3%** | **52/311 (16.7%)** |
+
+**By source (xVerify-7B):**
+
+| Source | n | rule (all) | xv7b (all) | xv7b (excl-trunc) | Goldilocks |
+|--------|---|---|---|---|---|
+| SciBench_RL | 20 | 60.6% | 70.6% | 73.8% | 8/20 (40.0%) |
+| PHYSICS | 107 | 22.1% | 30.8% | 34.0% | 12/107 (11.2%) |
+| UGPhysics | 120 | 16.8% | 30.3% | 35.8% | 22/120 (18.3%) |
+| OlympiadBench | 44 | 8.5% | 18.8% | 25.4% | 6/44 (13.6%) |
+| PHYBench | 20 | 0.0% | 12.5% | 34.8% | 4/20 (20.0%) |
+
+PHYBench is the most truncation-distorted: 12.5% (all) vs 34.8% (excl-truncated) — its problems require long derivations that don't fit in 8192 tokens.
+
+**By answer type (xVerify-7B):**
+
+| Type | n | rule (all) | xv7b (all) | xv7b (excl-trunc) |
+|------|---|---|---|---|
+| numerical | 80 | 41.1% | 48.1% | 56.6% |
+| expression | 80 | 2.7% | 25.2% | 32.1% |
+| equation | 43 | 1.7% | 28.2% | 34.5% |
+| mcq | 40 | 40.9% | 40.9% | 43.1% |
+| true_false | 22 | 25.6% | 25.6% | 31.2% |
+| multi | 41 | 4.6% | 3.7% | 4.2% |
+| interval | 5 | 0.0% | 0.0% | 0.0% |
+
+Key observations:
+- Rule-only nearly fails on expression/equation (1–3%); xVerify recovers to 25–34%. xVerify is essential.
+- Multi-part answers remain broken (~4%) under both rule and xVerify — a persistent verifier gap.
+- Goldilocks yield is low overall (16.7%) but SciBench_RL is richest (40%).
+
+---
+
+### Dr. SCI gold quality: prose-style answer detection and drop (2026-03-30)
+
+A spot-check of Dr. SCI pass@k false negatives revealed a class of gold answers that are computation
+narratives or explanatory prose rather than clean mathematical expressions — e.g.
+`t = -Tln(0.01) = 4.61T`, `x(t) = A*cos(ωt+φ), where ω = sqrt(k/m), A is amplitude...`,
+`The final voltage across the 1μF capacitor is \frac{5000}{13}V.`
+These score near-zero (7.2% pass@8 vs 24.3% for clean gold) and contribute no useful training
+signal since neither rule nor xVerify can reliably judge correctness against prose golds.
+
+**Detection heuristics** (added as step 6 in `drsci_clean.py`, tag: `prose_gold_dropped`):
+
+| Pattern | Rule | Example |
+|---|---|---|
+| `var_equals_chain` | `^[A-Za-z_] = .{5,} = [0-9]` | `k = mg/x = 784 N/m` |
+| `plain_prose_long` | no LaTeX markup + English words + len>60 | `x(t) = A*cos(ωt+φ), where ω = sqrt(k/m)...` |
+| `prose_sentence` | starts Capital+lowercase word + len>40 | `The final voltage across the 1μF capacitor is...` |
+| `label_colon_math` | `[Word]+: $math` or `[Word]+: \math` | `Geodesic equation: {D/Dt}{ds/dt} = 0` |
+| `multiline_prose` | newline + alphabetic char | multi-sentence derivations |
+| `approx_numeric` | `\approx [digit]` or `approximately [digit]` | `I = ... \approx -1.23 A` (pure `\approx` as math symbol is NOT flagged) |
+
+**Numbers (from `drsci_physics_deduped.parquet`, 112,369 rows):**
+
+| Drop reason | Count | % |
+|---|---|---|
+| `truncated_dropped` | 46 | 0.04% |
+| `prose_dropped` (step 5, existing) | 3,633 | 3.2% |
+| `prose_gold_dropped` (step 6, new) | 1,532 | 1.4% |
+| **Final clean rows** | **107,158** | **95.3%** |
+
+Note: 786 of the originally-flagged 2,318 rows were already removed by the earlier `prose_dropped`
+step (overlapping patterns); only the 1,532 not caught earlier are newly dropped here.
+
+**Distribution impact** (verified before dropping):
+
+| | equation | expression | numerical | mcq |
+|---|---|---|---|---|
+| Before | 35.9% | 20.2% | 21.8% | 19.4% |
+| After | 35.1% | 20.5% | 22.1% | 19.7% |
+| Δ | −0.8pp | +0.3pp | +0.3pp | +0.3pp |
+
+`mcq` and `numerical` types have zero flagged rows — those distributions are completely unaffected.
+No source loses more than 1pp on any answer-type bucket.
+
+**Authoritative clean file:** `data/processed/drsci_physics_clean.parquet` — **107,158 rows**, regenerated 2026-03-30.
+
+---
+
+### Dr. SCI pass@8 (Goldilocks sample) (2026-03-30)
+
+**Setup:**
+- Script: `scripts/run_zero_shot_drsci.py` + `scripts/zero_shot_drsci_sample.sbatch`
+- Model: `Qwen/Qwen3.5-4B`, thinking OFF, temperature=0.7/top_p=0.8/top_k=20
+- Input: `data/processed/drsci_goldilocks_sample.parquet` (599 rows, stratified from clean parquet)
+- k = 8 completions per problem (4,792 total inference calls)
+- max_new_tokens: 8192
+- Output: `data/results/zero_shot_drsci_sample.parquet` (inference + rule scores)
+- Rescored: `data/results/zero_shot_drsci_sample_xv7b.parquet` (xVerify-7B, job 1445224)
+
+**Truncation:**
+
+| | Count | % |
+|---|---|---|
+| Truncated completions | 723 / 4,792 | 15.1% |
+| Problems with ≥4/8 truncated | 78 / 599 | 13.0% |
+
+Lower truncation than corpus (15% vs 22%) — Dr. SCI answers tend to be shorter expressions.
+
+**Overall accuracy (pass@1 estimated from k=8):**
+
+| | All completions | Excl. truncated | Goldilocks [15%–85%] |
+|---|---|---|---|
+| Rule-only | 16.0% | 18.7% | 68/599 (11.4%) |
+| **xVerify-7B** | **23.8%** | **27.5%** | **108/599 (18.0%)** |
+
+xVerify recovers +7.8pp overall. Unverifiable rows drop from 20.9% (rule) to 3.2% (xVerify) — xVerify resolves most of the previously unscored equation/expression answers.
+
+**By source (xVerify-7B):**
+
+| Source | n | rule (all) | xv7b (all) | xv7b (excl-trunc) | Goldilocks |
+|--------|---|---|---|---|---|
+| MegaScience | 319 | 23.7% | 29.4% | 35.6% | 73/319 (22.9%) |
+| WebInstruct-Verified | 52 | 10.6% | 28.1% | 30.6% | 12/52 (23.1%) |
+| natural_reasoning | 228 | 6.5% | 14.9% | 15.9% | 23/228 (10.1%) |
+
+`natural_reasoning` is the weakest source and lowest Goldilocks yield (10.1%) — its problems are harder or less well-matched to the model's capabilities. `MegaScience` and `WebInstruct-Verified` are comparable in Goldilocks yield (~23%).
+
+**By answer type (xVerify-7B):**
+
+| Type | n | rule (all) | xv7b (all) | xv7b (excl-trunc) | Goldilocks |
+|------|---|---|---|---|---|
+| numerical | 131 | 23.3% | 28.9% | 31.6% | 25/131 (19.1%) |
+| expression | 118 | 8.2% | 21.8% | 24.9% | 18/118 (15.3%) |
+| equation | 212 | 0.5% | 11.4% | 13.2% | 24/212 (11.3%) |
+| mcq | 119 | 45.9% | 45.9% | 55.2% | 41/119 (34.5%) |
+| unknown | 19 | 0.0% | 0.0% | 0.0% | 0/19 (0.0%) |
+
+Key observations:
+- `equation` goes from 0.5% (rule) to 11.4% (xVerify) — rule verifier nearly blind to equation-type answers; xVerify essential.
+- `mcq` is unchanged by xVerify (rule already handles exact match) but shows the highest Goldilocks yield (34.5%).
+- `unknown` (19 rows) scores 0% under both — these are unannotated answer types where neither rule nor xVerify can judge correctness.
+
+**Comparison with 6.8k corpus sample:**
+
+| | Corpus (n=311) | Dr. SCI (n=599) |
+|---|---|---|
+| xv7b pass@8 (all) | 30.3% | 23.8% |
+| xv7b pass@8 (excl-trunc) | 36.3% | 27.5% |
+| Goldilocks (xv7b) | 16.7% | 18.0% |
+| Truncation rate | 22.1% | 15.1% |
+
+Dr. SCI is harder overall (−6.5pp) but yields slightly more Goldilocks problems (18.0% vs 16.7%) — its difficulty distribution is better spread across the learnable zone once xVerify resolves the equation scoring.
+
+---
+
 ## Scripts Reference
 
 | Script | Purpose |
@@ -583,6 +799,12 @@ PHYBench non-truncated numbers are unreliable for 0.8B (only 26 samples survive;
 | `scripts/diagnose_verifier.py` | Full pipeline trace: gold_parts, pred_parts, rule, xVerify per sample |
 | `scripts/run_zero_shot_rerun.py` | Re-run truncated samples with extended token budget |
 | `scripts/merge_rerun_chunks.py` | Merge rerun chunks back into full baseline parquet |
+| `scripts/run_zero_shot_corpus_passk.py` | Pass@k inference on stratified corpus sample (saves all_texts for rescoring) |
+| `scripts/run_zero_shot_drsci.py` | Pass@k inference on Dr. SCI Goldilocks sample (saves all_texts for rescoring) |
+| `scripts/rescore_passk_xverify.py` | Re-score pass@k parquet (all_texts) with xVerify; preserves rule scores in *_rule columns |
+| `scripts/zero_shot_corpus_passk.sbatch` | SLURM job: corpus pass@k inference |
+| `scripts/zero_shot_drsci_sample.sbatch` | SLURM job: Dr. SCI pass@k inference |
+| `scripts/rescore_passk_xverify.sbatch` | SLURM job: xVerify rescore of any pass@k parquet |
 | `scripts/zero_shot_diag.sbatch` | SLURM: diagnostic run (30 min, --max_samples 10) |
 | `scripts/zero_shot_preview.sbatch` | SLURM: small preview run (n_per_tier=5) |
 | `scripts/zero_shot_chunk.sbatch` | SLURM: full chunked run template |

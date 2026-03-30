@@ -17,9 +17,37 @@ Fixes four categories of formatting artifacts found in drsci_physics_deduped.par
      e.g. "\\\\frac{1}{2}" (4 backslashes) instead of "\\frac{1}{2}" (2 backslashes).
      Heuristic: if every LaTeX command is preceded by ≥2 backslashes, halve them.
 
-  4. Truncated answers (0.0%, 26 rows)
+  4. Truncated answers (0.0%, 46 rows)
      Answers with unclosed braces — string was cut off mid-expression.
      These are dropped rather than mangled.
+
+  5. Prose leakthrough (3.3%, 3,633 rows)
+     Multi-block or bare multi-line prose that survived all extraction steps.
+     These are dropped (tag: prose_dropped).
+
+  6. Prose-style gold answers (2.1%, 2,318 rows) — dropped
+     Gold strings that are computation narratives, definition clauses, or
+     explanatory sentences rather than clean mathematical answers.
+     Six detected patterns (all concentrate in equation/expression types;
+     distribution impact < 1pp per source after dropping):
+
+       a. has_approximately  — e.g. "I = ... \\approx -1.23 A" with numeric eval
+                               NOTE: pure LaTeX \\approx as a math symbol is NOT
+                               flagged — only strings where \\approx precedes a
+                               plain numeric result.
+       b. var_equals_chain   — "X = computation = final_value" chains
+                               e.g. "k = mg/x = 784 N/m"
+       c. plain_prose_long   — no LaTeX commands, multiple English words, >60 chars
+                               e.g. "x(t) = A*cos(ωt + φ), where ω = sqrt(k/m), ..."
+       d. prose_sentence     — starts with Capital + lowercase word, len > 40
+                               e.g. "The final voltage across the 1μF capacitor is ..."
+       e. label_colon_math   — English label + colon + math
+                               e.g. "Geodesic equation: {D/Dt}{ds/dt} = 0"
+       f. multiline_prose    — newline followed by an alphabetic character
+                               e.g. multi-sentence derivations
+
+     Distribution impact of dropping: equation share decreases < 1pp per source;
+     mcq and numerical shares are completely unaffected (0 rows flagged in those types).
 
 Outputs data/processed/drsci_physics_clean.parquet.
 
@@ -202,6 +230,12 @@ def clean_ground_truth(s: str) -> tuple[str, str]:
     if re.search(r"\n\s*[A-Za-z]", s) or (re.match(r"^[A-Z][a-z]+ [a-z]", s) and len(s) > 30):
         return original, "prose_dropped"
 
+    # --- 6. Prose-style gold: computation narratives / definition clauses ---
+    # These survived all extraction steps but are not clean mathematical answers.
+    # Dropping them removes 2.1% of rows with < 1pp distribution impact.
+    if _is_prose_gold(s):
+        return original, "prose_gold_dropped"
+
     return original, "unchanged"
 
 
@@ -212,6 +246,46 @@ def clean_ground_truth(s: str) -> tuple[str, str]:
 def _has_unclosed_braces(s: str) -> bool:
     depth = sum(1 if c == "{" else -1 if c == "}" else 0 for c in s)
     return depth > 0
+
+
+def _is_prose_gold(s: str) -> bool:
+    """Detect gold answers that are computation narratives or explanatory prose.
+
+    Six patterns — all concentrate in equation/expression types.  Dropping them
+    removes 2.1% of rows with < 1pp impact on any source × answer-type bucket.
+
+    Patterns:
+      a. var_equals_chain  — "X = calc = numeric_result"
+      b. plain_prose_long  — no LaTeX markup, multiple English words, len > 60
+      c. prose_sentence    — starts Capital + lowercase word, len > 40
+      d. label_colon_math  — "EnglishWord(s): $math" or "EnglishWord(s): \\math"
+      e. multiline_prose   — newline followed by an alphabetic character
+      f. has_approximately — "\approx" or "approximately" followed by a plain
+                             numeric result (NOT pure LaTeX \approx as a symbol)
+    """
+    # a. computation chain: "X = ... = number"
+    if re.search(r'^[A-Za-z_]\s*=\s*.{5,}=\s*[0-9]', s):
+        return True
+    # b. no LaTeX markup, multiple English words, long
+    if (len(s) > 60
+            and not re.search(r'[\\{}_^]', s)
+            and re.search(r'[a-z]{4,}\s[a-z]{4,}', s)):
+        return True
+    # c. starts with prose sentence
+    if re.match(r'^[A-Z][a-z]+ [a-z]', s) and len(s) > 40:
+        return True
+    # d. "Label: $math" or "Label: \math"
+    if re.search(r'[A-Za-z]{3,}:\s*[\$\\]', s):
+        return True
+    # e. newline + letter (multi-sentence)
+    if re.search(r'\n\s*[A-Za-z]', s):
+        return True
+    # f. \approx or "approximately" preceding a bare numeric result
+    if re.search(r'\\approx\s*[-−]?[0-9]', s):
+        return True
+    if re.search(r'\bapproximately\s+[-−]?[0-9]', s, re.IGNORECASE):
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -265,7 +339,7 @@ def main() -> None:
     print(f"\n=== Cleaning summary ===")
     for tag in ["unchanged", "prose_extracted", "display_math_extracted",
                 "dollar_stripped", "double_unescaped",
-                "truncated_dropped", "prose_dropped"]:
+                "truncated_dropped", "prose_dropped", "prose_gold_dropped"]:
         n = tag_counts.get(tag, 0)
         print(f"  {tag:<25} {n:>6}  ({n/total:.1%})")
 
@@ -276,12 +350,14 @@ def main() -> None:
         print(f"  {str(src):<35}  changed={changed:>5} ({changed/len(grp):.1%})")
 
     # --- Drop truncated + prose ---
-    drop_tags = {"truncated_dropped", "prose_dropped"}
-    n_trunc = tag_counts.get("truncated_dropped", 0)
+    drop_tags = {"truncated_dropped", "prose_dropped", "prose_gold_dropped"}
+    n_trunc      = tag_counts.get("truncated_dropped", 0)
     n_prose_drop = tag_counts.get("prose_dropped", 0)
+    n_prose_gold = tag_counts.get("prose_gold_dropped", 0)
     df_clean = df[~df["_clean_tag"].isin(drop_tags)].copy()
-    print(f"\n  Dropped truncated rows:  {n_trunc}")
-    print(f"  Dropped prose rows:      {n_prose_drop}")
+    print(f"\n  Dropped truncated rows:      {n_trunc}")
+    print(f"  Dropped prose rows:          {n_prose_drop}")
+    print(f"  Dropped prose-gold rows:     {n_prose_gold}")
     print(f"  Final clean rows: {len(df_clean):,}")
 
     # --- Spot-check prose extractions ---
@@ -320,6 +396,8 @@ def main() -> None:
     print(f"\n=== Answer type distribution after cleaning ===")
     from collections import Counter as C
     types_after = [infer_answer_type(gt) for gt in df_clean[gt_col].fillna("").astype(str)]
+    df_clean = df_clean.copy()
+    df_clean["inferred_answer_type"] = types_after
     tc = C(types_after)
     for at in ["numerical", "expression", "equation", "mcq", "unknown"]:
         n = tc.get(at, 0)
