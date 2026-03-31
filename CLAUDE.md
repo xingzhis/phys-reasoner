@@ -4,39 +4,43 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Active Plan
 
-**Read first:** `.claude/plans/adaptive-compute-routing.md` — the 6-week implementation plan. Started 2026-03-27, Week 2 in progress.
+**Read first:** `.claude/plans/physcode.md` — the 6-week implementation plan. Started 2026-03-31, Week 1 in progress.
 
 **Session notes (start here for new sessions):** `.claude/session-notes.md` — current state, completed work, and next steps in priority order.
 
-**Key decisions:** `docs/training-decisions.md` — SFT skip rationale, Goldilocks B+C strategy, dataset sizes, baseline numbers.
+**Key decisions:** `docs/training-decisions.md` — Goldilocks B+C strategy, dataset sizes, baseline numbers, TIR-specific decisions.
 
 ## Project Overview
 
-Research project: "Adaptive Compute Routing with Verification-Oriented Tool Use for Physics Reasoning" — training a small open model (Qwen3.5-4B) to route each physics problem to the right compute mode (Answer / Check / Think-Deep / Tool-Check) using SFT + RL. Core claim: a learned routing policy achieves a better accuracy-cost frontier than fixed strategies or heuristic routers, with interpretable structure. Target venue: NeurIPS 2026.
+Research project: "PhysCode: Tool-Integrated Reasoning for Physics Problem Solving via RLVR" — training Qwen3.5-4B with RLVR to solve physics problems using single-block TIR: model reasons, executes one Python/SymPy code block, receives output, reasons to final answer. Core claim: execution-based reward eliminates the symbolic verification noise (~68% LaTeX FN rate on expression types) that degrades CoT-GRPO, connecting empirically to the RLVεR theoretical framework. Target venue: NeurIPS 2026.
 
-Proposal: `docs/standalone_proposal_v2_5_2.md`
-Checklist: `docs/implementation_checklist_v2_5_2.md`
+Proposal: `docs/physcode_proposal_v5.md`
 
 ## Architecture
 
 Three main components:
 
-1. **Four-Action Framework**: Model chooses per-problem:
-   - **Answer** — direct response (low cost, easy problems)
-   - **Check** — answer + structured internal verification + optional revision (medium cost)
-   - **Think-Deep** — extended reasoning trace before answering (medium-high cost)
-   - **Tool-Check** — restricted external symbolic/numeric verification + optional revision (high cost)
+1. **TIR Trajectory Format** (single code block per rollout):
+   ```
+   [think] reasoning... [code] import sympy... print(...) [/code] [output] result [think] interpretation... [answer] \boxed{X}
+   ```
+   - Model generates until `[/code]` stop token
+   - Sandbox executes code (30s timeout, subprocess isolation)
+   - `[output] {result}\n` injected as fixed continuation
+   - Model resumes to `[answer]` stop token
 
-2. **SFT + RL Training Pipeline**:
-   - Model: Qwen3.5-4B (base vs instruct TBD — decide before SFT; see proposal §5.1); debug: Qwen3.5-0.6B
-   - Reward: R = R_correct − λ·C_action
-   - Primary data: `candidates_deduped.parquet` (~6,866 rows) + Dr. SCI physics subset
+2. **GRPO Training Pipeline**:
+   - Model: Qwen3.5-4B instruct (thinking OFF); debug: Qwen3.5-0.8B
+   - Reward: binary R_correct on final \boxed{} (λ=0 initially; token cost penalty in late ablation)
+   - Primary data: Dr. SCI clean (~65k numerical + expression + MCQ) + 6.8k curated corpus
+   - Curriculum: numerical first → expression + MCQ
+   - SFT: conditional on Stage 0 probe (skip if zero-shot TIR hit rate ≥15%)
    - Secondary benchmark: MATH-500 hard subset
 
-3. **Verification Tool Stack** (restricted wrappers over existing verifier):
-   - `check_equation` / `check_root` — via SymPy (math_verify_wrapper)
-   - `check_units` — via pint (unit_check)
-   - `plug_values`, `compare_expr` — via SymPy + NumPy
+3. **Verification Stack** (unchanged from existing pipeline):
+   - `src/phys_reasoner/verifier/` — rule verifier + xVerify-7B fallback
+   - Execution reward: final \boxed{} verified against gold answer
+   - LaTeX FN rate measurement: per-type, used for RQ2 correlation analysis
 
 ## Environment
 

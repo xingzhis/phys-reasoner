@@ -4,19 +4,25 @@ Last updated: 2026-03-30
 
 ---
 
-## SFT Stage: Skipped
+## SFT Stage: Conditional on Stage 0 Probe
 
-**Decision:** Do not run SFT before GRPO. Go directly from clean data → GRPO training.
+**Decision:** Run a 100-problem zero-shot TIR probe (Stage 0) before committing to SFT.
+
+**Threshold:** If verifier hit rate on the TIR zero-shot probe ≥ 15% → skip SFT entirely.
+If < 15% → generate 2–5k TIR demonstrations via GPT-4o/Claude (auto-exec filtered) and fine-tune to stabilize format.
 
 **Rationale:**
-1. GRPO with reward `R = R_correct − λ·C_action` discovers routing directly through reward signal — no oracle routing labels needed. The model explores all four actions and learns to prefer cheaper ones when they work.
-2. SFT routing labels would be derived from noisy pass@k estimates on a small sample. Training on these could bias the model toward a fixed policy before GRPO can explore.
-3. Qwen3.5-4B instruct follows action-selection instructions well enough for GRPO to start from. No warm-start required.
-4. Consistent with DAPO, Dr. GRPO, and similar papers that go directly from instruct model to GRPO.
+1. Qwen3.5-4B instruct (thinking OFF) may already produce valid single-block TIR format at useful rates, making SFT unnecessary overhead.
+2. SFT is only needed to stabilize code format, SymPy usage, and post-execution reasoning — not to teach physics reasoning.
+3. Auto-exec filter on SFT demos ensures only working code examples are used.
+4. Papers like DAPO and Dr. GRPO show GRPO works from instruct model directly.
 
-**Fallback:** If early GRPO training is unstable (reward stuck near zero for many steps), run a short warm-up SFT phase using only high-confidence **Answer** examples (problems where pass@8 > 0.85 — the model almost always gets these right with a direct response). This stabilises the policy without imposing a routing prior. Treat as a last resort, not a default step.
+**Fallback:** If GRPO training is unstable (reward stuck near zero), warm-start from SFT checkpoint. Treat as last resort.
 
-**Impact on checklist:** Week 2 SFT tasks (SFT data generation, Check demonstrations, SFT training) are removed. Week 2 is now focused entirely on the four prompting templates, parser, and tool wrappers — which are still needed for GRPO's action space.
+**Stage 0 probe details:**
+- 100 problems stratified across numerical / expression / MCQ
+- Measure: execution success rate, verifier hit rate, per-type accuracy
+- Prompt for single-block TIR format: `[think]…[code]…[/code][output]…[think]…[answer]\boxed{}`
 
 ---
 
@@ -98,14 +104,28 @@ The plan `floating-percolating-thunder.md` (numerical equiv checker) is **stale/
 
 ---
 
+## TIR Training Decisions (PhysCode, 2026-03-31)
+
+**Reward:** Binary R_correct on final `\boxed{}` answer (λ=0 initially). Token cost penalty added only in late ablation.
+
+**Curriculum:** Numerical problems first (cleanest execution path, highest zero-shot accuracy). Expand to expression + MCQ once training is stable.
+
+**TIR format:** Single code block per trajectory — `[think]…[code]…[/code][output]…[think]…[answer]\boxed{}`. Multi-block explicitly out of scope for MVP.
+
+**Execution sandbox:** 30s timeout, subprocess + resource limits. Timeout distribution should be profiled on dev set before training.
+
+**CoT-GRPO baseline:** Must be run in parallel with TIR-GRPO for comparison (same data, same checkpoints). Required for RQ1 and RQ2.
+
+---
+
 ## Immediate Next Steps (priority order)
 
-1. **Add `_train_weight` column** to both clean parquets (Strategy B above).
-2. **Write four prompting templates** — Answer / Check / Think-Deep / Tool-Check. These define the action space for GRPO. Required before any training.
-3. **Implement parser** for Check and Tool-Check structured outputs (schema validation, required fields).
-4. **Implement tool wrappers** — `check_equation`, `check_units`, `plug_values`, `check_root`, `compare_expr`.
-5. **Set up GRPO with verl** — reward function, online filter (Strategy C), cost penalty λ.
-6. **Dev run** on ~500 problems (Qwen3.5-0.6B or 4B) to validate reward signal before full training.
+1. **VeRL single-block injection** — implement and smoke-test mid-sequence `[output]` injection (gating item).
+2. **Stage 0 probe** — 100-problem TIR zero-shot; decide SFT go/no-go.
+3. **Execution sandbox** — subprocess isolation, 30s timeout.
+4. **LaTeX FN rate measurement** — per-type FN rate on training corpus (gold-vs-gold round-trip with rule verifier).
+5. **Add `_train_weight` column** to both clean parquets (Goldilocks B above).
+6. **GRPO setup with verl** — binary reward, online filter (C above), numerical curriculum.
 
 ---
 
