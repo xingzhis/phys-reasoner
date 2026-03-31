@@ -403,14 +403,14 @@ Expression-type gains are the most informative: the model needs space to derive 
 
 ### Motivation
 
-Run the same zero-shot evaluation with Qwen3's **thinking mode disabled** (`enable_thinking=False`) to quantify the value of chain-of-thought for physics problem solving. Serves as a direct ablation: same model, same corpus, same verifier pipeline.
+Run the same zero-shot evaluation with Qwen3.5's **thinking mode disabled** (`enable_thinking=False`) to quantify the value of chain-of-thought for physics problem solving. Serves as a direct ablation: same model, same corpus, same verifier pipeline.
 
 ### Setup
 
 - **Script:** `scripts/run_zero_shot_nothink.py` + `scripts/zero_shot_nothink_full.sbatch`
 - **Model:** `Qwen/Qwen3.5-4B`, bfloat16, vLLM 0.17
 - **Thinking mode:** `enable_thinking=False` in chat template
-- **Sampling:** temperature=0.7, top_p=0.8, top_k=20 (Qwen3 official non-thinking params — no presence_penalty)
+- **Sampling:** temperature=0.7, top_p=0.8, top_k=20 (Qwen3.5 official non-thinking params — no presence_penalty)
 - **max_new_tokens:** 8192; max_model_len: 12288
 - **Input:** `data/processed/candidates_deduped.parquet` (all 6,866 training candidates)
 - **Output:** `data/results/zero_shot_nothink.parquet`

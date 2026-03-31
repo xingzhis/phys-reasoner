@@ -114,6 +114,26 @@ The plan `floating-percolating-thunder.md` (numerical equiv checker) is **stale/
 
 **Execution sandbox:** 30s timeout, subprocess + resource limits. Timeout distribution should be profiled on dev set before training.
 
+### xVerify in reward function — open infrastructure problem
+
+The rule-only verifier has ~68% FN rate on expression types (confirmed in experiments). This means many correct model answers get reward=0, directly hurting GRPO signal quality for expressions.
+
+**Why xVerify can't be the default in `reward.py` today:**
+VeRL calls `compute_score()` per-sample. xVerify-7B needs ~14GB GPU RAM and ~0.5s/call when warm. Loading it inside the reward function is not feasible (cold-load per call, or OOM with rollout model on same GPU).
+
+**Options (in order of practicality):**
+
+| Option | When | Notes |
+|--------|------|-------|
+| **Rule-only, numerical curriculum** | Smoke test + Phase 1 | Rule verifier FN rate on numerical is low (~5–10%). Start here. |
+| **Dedicated reward GPU** | Production run | Run xVerify-7B on a separate A100; call via socket/HTTP from `compute_score()`. VeRL's custom reward function supports this pattern. |
+| **Batch post-scoring** | Ablation only | Score rollout batch rule-first; queue expression-type unknowns for xVerify; update rewards before GRPO update step. Requires VeRL reward API change. |
+| **xVerify co-located (careful)** | If reward GPU unavailable | Load xVerify-7B once as a module-level singleton in the reward worker process. Only works if VeRL uses a dedicated reward worker process (not same as rollout). |
+
+**Current default in `reward.py`:** `xverify_judge=None` (rule-only). This is correct for the smoke test.
+
+**Action required before full expression-type training:** set up a dedicated reward GPU running `xverify_judge` and wire it into `compute_score`. File an explicit task when starting the production run.
+
 **CoT-GRPO baseline:** Must be run in parallel with TIR-GRPO for comparison (same data, same checkpoints). Required for RQ1 and RQ2.
 
 ---

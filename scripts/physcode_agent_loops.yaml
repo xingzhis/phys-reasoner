@@ -1,0 +1,7 @@
+# VeRL agent loop registry config.
+# Loaded via: actor_rollout_ref.rollout.agent.agent_loop_config_path=scripts/physcode_agent_loops.yaml
+# VeRL reads this at AgentLoopWorker.__init__ and calls hydra.utils.instantiate(_target_).
+# The _target_ import triggers @register("physcode_tir") automatically.
+
+- name: physcode_tir
+  _target_: phys_reasoner.tir.tir_agent_loop.PhysCodeTIRAgentLoop

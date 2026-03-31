@@ -55,6 +55,23 @@ PYTHONNOUSERSITE=1 apptainer exec --overlay "$OVERLAY" --bind /etc/pki:/etc/pki 
     pip install -e "$ROOT[dev]"
 ```
 
+Then clone and install verl (with `--no-deps` to avoid dependency conflicts):
+
+```bash
+git clone https://github.com/volcengine/verl.git verl_repo
+PYTHONNOUSERSITE=1 apptainer exec --overlay "$OVERLAY" --bind /etc/pki:/etc/pki "$SIF" \
+    pip install -e verl_repo --no-deps
+```
+
+Finally, upgrade huggingface-hub and transformers for verl compatibility:
+
+```bash
+PYTHONNOUSERSITE=1 apptainer exec --overlay "$OVERLAY" --bind /etc/pki:/etc/pki "$SIF" \
+    pip install --upgrade huggingface-hub transformers --no-deps
+```
+
+This ensures verl can download and load models from HuggingFace without version conflicts.
+
 ---
 
 ## Data Pipeline
@@ -116,7 +133,7 @@ Three steps:
 2. **Dedup** — `drsci_dedup.py`: exact + fuzzy (MinHash LSH, Jaccard ≥ 0.8) + eval-contamination check → `drsci_physics_deduped.parquet` (~112k rows)
 3. **Clean** — `drsci_clean.py`: fixes ground_truth formatting artifacts → `drsci_physics_clean.parquet` (~108k rows, final)
 
-**Note:** Step 2 uses the legacy overlay (`phys-reasoner-overlay.img`) — the `-017` overlay has broken `importlib.metadata` for `huggingface_hub`, which is required by the eval-contamination check. Steps 1 and 3 use the standard `-017` overlay.
+**Note:** All steps use the standard `-017` overlay after the huggingface-hub + transformers upgrade (see [Installing packages into the overlay](#installing-packages-into-the-overlay)).
 
 ### Cleaning steps applied
 

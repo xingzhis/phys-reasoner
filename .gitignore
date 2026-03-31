@@ -35,6 +35,7 @@ overlay*/
 *.img
 *.img.bak
 *.img.bak2
+*.img.backup
 
 # Logs & wandb
 wandb/

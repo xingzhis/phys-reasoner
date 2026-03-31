@@ -53,8 +53,7 @@ Two files are relevant:
 | File | Purpose |
 |---|---|
 | `verl_vllm017.latest.sif` | Base Apptainer SIF (read-only; never modify) |
-| `phys-reasoner-overlay-017.img` | **Primary overlay** — use for all sbatch jobs and interactive work |
-| `phys-reasoner-overlay.img` | Legacy overlay — has FUSE2FS mount issues on some nodes; avoid for sbatch |
+| `phys-reasoner-overlay-017.img` | **Primary overlay** — use for all sbatch jobs and interactive work after post-install upgrades |
 
 The overlay holds all pip-installed packages (phys-reasoner, scipy, huggingface-hub, etc.) layered on top of the base SIF.
 
@@ -72,13 +71,12 @@ PYTHONNOUSERSITE=1 apptainer exec --overlay "$OVERLAY" --bind /etc/pki:/etc/pki 
 PYTHONNOUSERSITE=1 apptainer exec --nv --overlay "$OVERLAY" --bind /etc/pki:/etc/pki "$SIF" <command>
 ```
 
-**Always set `PYTHONNOUSERSITE=1`**: prevents `~/.local/lib/python3.12/site-packages` from leaking into the container and shadowing overlay packages (e.g. old `huggingface-hub==0.36.2` in `~/.local` would shadow `1.7.2` in the overlay, breaking transformers).
+**Always set `PYTHONNOUSERSITE=1`**: prevents `~/.local/lib/python3.12/site-packages` from leaking into the container and shadowing overlay packages (e.g. old `huggingface-hub==0.36.2` in `~/.local` would shadow the upgraded version in the overlay, breaking transformers).
 
-Run tests (interactive — use legacy overlay for proper HF hub metadata):
+Run tests (interactive — use `-017` overlay):
 ```bash
-PYTHONNOUSERSITE=1 apptainer exec --overlay "$ROOT/phys-reasoner-overlay.img" --bind /etc/pki:/etc/pki "$SIF" python3 -m pytest tests/ -v
+PYTHONNOUSERSITE=1 apptainer exec --overlay "$OVERLAY" --bind /etc/pki:/etc/pki "$SIF" python3 -m pytest tests/ -v
 ```
-Note: `-017.img` has a broken `importlib.metadata` entry for `huggingface_hub`, causing `test_schema.py` loader tests to fail with `PackageNotFoundError`. The legacy `phys-reasoner-overlay.img` has proper HF hub metadata and fixes this. Keep `-017.img` for all sbatch jobs (the legacy overlay has FUSE2FS mount issues on some compute nodes).
 
 HF model cache: `HF_HOME=$ROOT/hf_cache` — xVerify models are pre-cached; always use `local_files_only=True` when loading them to avoid network calls to the HF API.
 
@@ -97,7 +95,7 @@ PYTHONNOUSERSITE=1 apptainer exec --overlay "$OVERLAY" --bind /etc/pki:/etc/pki 
     pip install "<package>==<version>"
 ```
 
-**Do NOT upgrade `huggingface-hub`** — keep the base SIF's `0.36.2`. See "Known overlay pitfalls" below.
+**Upgrade `huggingface-hub` and `transformers`** after initial overlay install (see README § "Installing packages into the overlay").
 
 ### sbatch jobs
 
@@ -118,13 +116,13 @@ sbatch --export=ALL,XV_MODEL=IAAR-Shanghai/xVerify-7B-I,XV_OUTPUT=data/results/r
 - **FUSE2FS "unchecked fs" warning**: if the overlay was not cleanly unmounted (e.g. node crash during a writable session), other nodes may fail to mount it. Symptom: packages installed in the overlay are invisible and the base SIF's old versions are used instead. Fix: run `e2fsck -fp <overlay.img>` while the overlay is not mounted.
 - **`~/.local` shadowing**: always use `PYTHONNOUSERSITE=1`. The base SIF has `huggingface-hub==0.36.2`; `~/.local` may also have stale packages. The overlay has the correct versions.
 - **HF API calls in sbatch**: compute nodes may not have outbound HTTPS. Use `local_files_only=True` in any `from_pretrained` call when the model is already in `hf_cache`.
-- **Do NOT upgrade `huggingface-hub`**: keep the base SIF's `0.36.2`. With hub `>=1.3.0`, `list_repo_tree` exists and transformers `list_repo_templates` makes a live HTTP call for `additional_chat_templates` — this raises a fatal 404 for models that don't have that directory (e.g. `Qwen3.5-4B`). With `0.36.2`, `list_repo_tree` is absent so the call fails silently and inference works fine. The transformers `dependency_versions_check` warning about hub `<1.0` is harmless — ignore it.
+- **Upgrade `huggingface-hub` and `transformers`**: the base SIF's `0.36.2` is outdated. After `pip install -e .[dev]`, run `pip install --upgrade huggingface-hub transformers --no-deps` to get verl-compatible versions (1.8.0+ and 5.4.0+). This resolves the 404 issue with newer transformers and enables proper model downloading.
 
 ## Key Dependencies (Planned)
 
 - `pint` — unit handling for physics answers
 - `sympy` — symbolic math equivalence checking
 - `scipy>=1.11` — required by transformers (qwen2 object detection loss module loads it at model-load time)
-- `huggingface-hub` — use base SIF's `0.36.2`; do NOT upgrade (see "Known overlay pitfalls")
+- `huggingface-hub` — upgrade to 1.8.0+ after initial install (see README § "Installing packages into the overlay")
 - `verl` — GRPO/RLVR training framework
 - Qwen3.5 model family via HuggingFace

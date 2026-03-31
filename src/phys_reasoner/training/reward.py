@@ -16,6 +16,11 @@ def compute_score(
 
     Returns 1.0 (correct), 0.0 (wrong or unverifiable).
     Unverifiable answers (-1.0 from verify_answer) are treated as wrong during training.
+
+    xverify_judge=None (default): rule-only verification. Correct for smoke tests and
+    numerical-only curriculum. Rule verifier has ~68% FN rate on expression types —
+    for production expression-type training, pass a warm xVerify-7B judge loaded on a
+    dedicated reward GPU. See docs/training-decisions.md § "xVerify in reward function".
     """
     from phys_reasoner.verifier.router import verify_answer
 

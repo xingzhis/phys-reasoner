@@ -27,33 +27,52 @@ Last updated: 2026-03-31
 - **New direction** (PhysCode): single-block TIR + RLVR, execution-based reward
 - See `docs/physcode_proposal_v5.md` and `.claude/plans/physcode.md`
 
+### TIR rollout format: single-turn (decided 2026-03-31)
+- **Decision**: single-block TIR, NOT multi-turn (no ToolAgentLoop / SGLang multi-turn)
+- **Rationale**: (1) multi-turn adds ~1.5 weeks engineering (SGLang switch, ToolAgentLoop integration, sequence stitching bugs); (2) the paper's core claim (execution-based reward eliminates LaTeX FN noise) is orthogonal to number of turns; (3) Dr. SCI physics problems are overwhelmingly closed-form — 85–90% solvable in one block; (4) single-turn = cleaner experimental design (only variable is execution vs. not)
+- **Re-evaluate if**: Stage 0 probe shows execution success <30% and failure mode is clearly "code error multi-turn would fix"
+- **Implementation**: custom stop-string injection wrapper (~100 LOC) with vLLM, NOT ToolAgentLoop
+
+### Model name
+- Using **Qwen3.5-4B** (not Qwen3-4B). References to "Qwen3-4B" in `docs/grpo_training.md` are intentional — that doc describes POLARIS results which use the older Qwen3-4B.
+
 ---
 
 ## What to do next (in order)
 
-### 1. VeRL single-block injection — GATING ITEM
-Implement and smoke-test the mid-sequence injection in VeRL rollout:
-1. Model generates until `[/code]` stop token
-2. Execute code in sandbox (30s timeout, subprocess + resource limits)
-3. Inject `[output] {result}\n` as fixed continuation
-4. Model resumes until `[answer]` stop token
-5. Extract `\boxed{}` and verify with existing pipeline
+### 1. TIR injection pipeline — IMPLEMENTED (2026-03-31), needs smoke test
+Files written:
+- `src/phys_reasoner/tir/sandbox.py` — subprocess execution, whitelist, timeout
+- `src/phys_reasoner/tir/prompts.py` — TIR_SYSTEM_PROMPT, CODE_STOP, extract_code()
+- `src/phys_reasoner/tir/tir_agent_loop.py` — @register("physcode_tir") VeRL subclass
+- `src/phys_reasoner/eval/stage0_probe.py` — standalone vLLM probe (no Ray)
+- `scripts/grpo_train.sh` + `scripts/train_physcode.py` — training launcher
+- `scripts/stage0_probe.sbatch` — sbatch job for Stage 0
+- `tests/test_tir.py` (43 tests, pass) + `tests/test_tir_verl.py` (needs -017.img)
 
-Nothing else can proceed until this works end-to-end.
+Key design decisions:
+- **No [/answer] stop token** — phase 2 runs to EOS/max_tokens; `_extract_boxed()` extracts answer
+- **[answer] is a prompt-only marker** — not a stop signal
+- **Model path**: use `Qwen/Qwen3.5-4B` HF ID; auto-downloads to HF_HOME if not cached
+- **gold-vs-gold FN test**: already exists in `scripts/drsci_audit.py:run_round_trip()` (NOT in latex_fn_rate.py — that was deleted as redundant)
 
-### 2. Stage 0 probe (100-problem TIR zero-shot)
-- Run Qwen3.5-4B instruct (thinking OFF) with single-block TIR prompt on 100 problems from training corpus
-- Measure: execution success rate, verifier hit rate, per-type breakdown (numerical/expression/MCQ)
-- Decision threshold: hit rate ≥15% → skip SFT; <15% → generate 2–5k TIR demos
+Parameters to tune before production run (see Stage 0 probe results):
+- `max_response_length` (default 4096): raise if `p1_truncated > 5%` in probe output
+- `sandbox_timeout` (default 30s): profile on SymPy-heavy Dr. SCI problems
+- `temperature/top_p/top_k` (0.7/0.8/20): Qwen defaults, not tuned
+- `lr` (1e-6): conservative; try 3e-6 in ablation
+- Algorithm (GRPO): defer DAPO/GSPO/CiSPO until first smoke run
 
-### 3. Execution sandbox
-- Subprocess isolation, 30s timeout, resource limits
-- Profile timeout distribution on Dr. SCI SymPy expressions
+### 2. Stage 0 probe — NEXT ACTION
+`sbatch scripts/stage0_probe.sbatch` — runs 100-problem TIR zero-shot
+- Check: `p1_truncated` rate, `exec_success_rate`, `verifier_hit_rate` per type
+- Decision: hit_rate ≥ 0.15 on numerical → skip SFT
 
-### 4. LaTeX FN rate measurement
-- Run rule verifier on training corpus gold-vs-gold round-trip
-- Measure per-type FN rate: numerical, expression, equation, MCQ
-- This quantifies the reward noise for RQ2
+### 3. gold-vs-gold FN rate on Dr. SCI (RQ2 baseline)
+`drsci_audit.py` already has `run_round_trip()`. Run on `drsci_physics_clean.parquet`.
+Was done on old 6.8k corpus; needs fresh run on Dr. SCI clean corpus.
+
+### 4. Add `_train_weight` column (Goldilocks B strategy)
 
 ### 5. Add `_train_weight` column to both parquets (Goldilocks B strategy)
 Small script mapping `(source × answer_type)` → Goldilocks-rate-based weight.
