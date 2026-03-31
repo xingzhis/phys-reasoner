@@ -2,13 +2,15 @@
 
 ## Immediate Decisions
 
-- Main model: **Qwen3-4B-Base**.
-- Debug model: **Qwen3-0.6B**.
-- Primary dataset: cleaned physics corpus (~6k).
+- Main model: **Qwen3.5-4B** (instruct variant confirmed — see verifier experiments).
+- Debug model: **Qwen3.5-0.6B**.
+- Primary dataset: `candidates_deduped.parquet` (6,866) + `drsci_physics_clean.parquet` (107,158). Combined: ~114k.
 - Secondary benchmark: **MATH-500 hard subset**.
 - Actions: **Answer / Check / Think-Deep / Tool-Check**.
 - Reward: \(R = R_{\text{correct}} - \lambda C_{\text{action}}\).
 - Tools: restricted verification-only wrappers.
+- **SFT stage: SKIPPED** — go directly to GRPO. See `docs/training-decisions.md`.
+- **Goldilocks strategy: B + C** — bucket weights at load time + online [0.05, 0.95] filter in GRPO. See `docs/training-decisions.md`.
 
 ---
 
@@ -61,12 +63,20 @@ Required fields:
 
 ## Week 2 Tasks
 
-### SFT data
+> **Note (2026-03-30): SFT stage removed.** No SFT data generation or SFT training.
+> Week 2 focuses on templates, parser, tools, and training data weights — everything needed to
+> launch GRPO directly. See `docs/training-decisions.md` for rationale.
 
-- Sample 200–500 verifier-friendly items for Check examples.
-- Generate or template structured Check demonstrations.
-- Create tool-check demonstrations using only wrapper calls.
-- Validate final-answer formatting.
+### Training data weights
+
+- Add `_train_weight` column to `candidates_deduped.parquet` and `drsci_physics_clean.parquet`
+  using measured Goldilocks rates per `(source × answer_type)` bucket (Strategy B).
+- Implement online [0.05, 0.95] pass-rate filter in verl reward wrapper (Strategy C).
+
+### Prompting templates
+
+- Write four fixed-action prompt templates: Answer / Check / Think-Deep / Tool-Check.
+- Each template must produce a parseable structured output ending with `FINAL_ANSWER`.
 
 ### Parser
 
@@ -84,16 +94,12 @@ Required fields:
   - optional `compare_expr`
 - Ensure deterministic outputs for logging.
 
-### SFT training
-
-- Train a small SFT model on schema compliance and action-conditioned behavior.
-- Evaluate parse success before any RL.
-
 ### Week 2 outputs
 
+- Both parquets with `_train_weight` column.
+- Four working prompt templates.
 - Working parser.
 - Working restricted tool API.
-- SFT checkpoint with stable schemas.
 
 ---
 

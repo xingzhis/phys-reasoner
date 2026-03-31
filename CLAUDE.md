@@ -4,7 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Active Plan
 
-**Read first:** `.claude/plans/adaptive-compute-routing.md` — the 6-week implementation plan. Started 2026-03-27, Week 1 in progress.
+**Read first:** `.claude/plans/adaptive-compute-routing.md` — the 6-week implementation plan. Started 2026-03-27, Week 2 in progress.
+
+**Session notes (start here for new sessions):** `.claude/session-notes.md` — current state, completed work, and next steps in priority order.
+
+**Key decisions:** `docs/training-decisions.md` — SFT skip rationale, Goldilocks B+C strategy, dataset sizes, baseline numbers.
 
 ## Project Overview
 
