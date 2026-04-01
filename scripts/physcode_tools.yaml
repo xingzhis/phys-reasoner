@@ -1,0 +1,8 @@
+# PhysCode tool config — loaded by VeRL's ToolAgentLoop via tool_config_path.
+# See: verl/tools/utils/tool_registry.py initialize_tools_from_config()
+tools:
+  - class_name: phys_reasoner.tir.python_sandbox_tool.PythonSandboxTool
+    config:
+      type: native
+      timeout: 30.0
+      max_output_bytes: 4096
