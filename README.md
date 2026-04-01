@@ -63,14 +63,7 @@ PYTHONNOUSERSITE=1 apptainer exec --overlay "$OVERLAY" --bind /etc/pki:/etc/pki 
     pip install -e verl_repo --no-deps
 ```
 
-Finally, upgrade huggingface-hub and transformers for verl compatibility:
-
-```bash
-PYTHONNOUSERSITE=1 apptainer exec --overlay "$OVERLAY" --bind /etc/pki:/etc/pki "$SIF" \
-    pip install --upgrade huggingface-hub transformers --no-deps
-```
-
-This ensures verl can download and load models from HuggingFace without version conflicts.
+**⚠️ DO NOT upgrade `huggingface-hub` and `transformers`** — the overlay defaults are stable and fully tested. Upgrading breaks environment compatibility. All tests pass with the current versions.
 
 ---
 
@@ -133,7 +126,7 @@ Three steps:
 2. **Dedup** — `drsci_dedup.py`: exact + fuzzy (MinHash LSH, Jaccard ≥ 0.8) + eval-contamination check → `drsci_physics_deduped.parquet` (~112k rows)
 3. **Clean** — `drsci_clean.py`: fixes ground_truth formatting artifacts → `drsci_physics_clean.parquet` (~108k rows, final)
 
-**Note:** All steps use the standard `-017` overlay after the huggingface-hub + transformers upgrade (see [Installing packages into the overlay](#installing-packages-into-the-overlay)).
+**Note:** All steps use the standard `-017` overlay. Do NOT upgrade `huggingface-hub` and `transformers`; the defaults are stable.
 
 ### Cleaning steps applied
 

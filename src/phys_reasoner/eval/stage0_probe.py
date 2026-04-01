@@ -3,6 +3,12 @@
 Runs entirely on one GPU via vLLM.LLM (no Ray, no VeRL).
 Measures: format adherence, exec success, verifier hit rate.
 
+CRITICAL — THINKING MODE:
+    apply_chat_template is called with enable_thinking=False (see build_tir_prompt).
+    This MUST stay False. Qwen3.5 defaults to thinking=ON which causes the model to
+    emit native <think>...</think> tokens, break the TIR format, and leak </think>
+    mid-response. See prompts.py for full explanation.
+
 Decision gate: if verifier_hit_rate >= 0.15 on numerical problems → skip SFT.
 
 The probe saves `p1_stop_reason` and `p2_stop_reason` to the output so you can
@@ -59,7 +65,7 @@ def run_probe(
     parquet_path: str,
     n_samples: int = 100,
     seed: int = 42,
-    max_new_tokens: int = 4096,
+    max_new_tokens: int = 8192,
     sandbox_timeout: float = 30.0,
     output_path: str | None = None,
 ) -> pd.DataFrame:
@@ -78,15 +84,29 @@ def run_probe(
         model=model_path,
         dtype="bfloat16",
         enable_prefix_caching=True,
-        max_model_len=max_new_tokens + 2048,  # prompt budget
+        max_model_len=max_new_tokens + 4096,  # prompt budget + 4096 for system/question
         gpu_memory_utilization=0.90,
     )
     tokenizer = llm.get_tokenizer()
 
     # --- Build prompts ---
-    messages_list = [build_tir_prompt(str(row["problem"])) for _, row in df.iterrows()]
+    # Handle both column names: "problem" (corpus) and "extra_info.question" (Dr. SCI)
+    def get_problem_text(row):
+        if "problem" in row and pd.notna(row["problem"]):
+            return str(row["problem"])
+        elif "extra_info.question" in row and pd.notna(row["extra_info.question"]):
+            return str(row["extra_info.question"])
+        else:
+            raise ValueError(f"No problem/question column found in row: {row.index}")
+
+    messages_list = [build_tir_prompt(get_problem_text(row)) for _, row in df.iterrows()]
+    # enable_thinking=False injects <think>\n\n</think>\n\n into the generation prompt,
+    # which suppresses Qwen3.5's native chain-of-thought thinking tokens and lets the
+    # model respond directly in our TIR format.
     phase1_prompts = [
-        tokenizer.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
+        tokenizer.apply_chat_template(
+            msgs, tokenize=False, add_generation_prompt=True, enable_thinking=False
+        )
         for msgs in messages_list
     ]
 
@@ -109,6 +129,7 @@ def run_probe(
     exec_stdouts: list[str] = []
     p1_stop_reasons: list[str] = []
     tokens_used_p1: list[int] = []
+    already_answered_flags: list[bool] = []  # True = model answered in p1, skip p2
 
     for i, out in enumerate(phase1_outputs):
         p1_out = out.outputs[0]
@@ -132,18 +153,26 @@ def run_probe(
             exec_stdouts.append("")
             output_injection = f"{OUTPUT_PREFIX}(no code block){OUTPUT_SUFFIX}"
 
-        phase2_prompts.append(phase1_prompts[i] + p1_text + output_injection)
+        # If the model already wrote a \boxed{} answer in phase 1 without a code block
+        # (skipped straight to answer), don't inject output — that would corrupt the
+        # already-valid answer. Use a dummy prompt with max_tokens=1 to skip phase 2.
+        already_answered = (code_str is None) and (p1_stop == "stop") and (_extract_boxed(p1_text) is not None)
+        already_answered_flags.append(already_answered)
+        if already_answered:
+            phase2_prompts.append(phase1_prompts[i] + p1_text)  # dummy — will use max_tokens=1
+        else:
+            phase2_prompts.append(phase1_prompts[i] + p1_text + output_injection)
 
     # --- Phase 2: no stop token — generate to EOS/max_tokens ---
     # Per-request SamplingParams to handle variable remaining budgets.
     phase2_params_list = [
         SamplingParams(
-            max_tokens=max(64, max_new_tokens - used),
+            max_tokens=1 if already_answered_flags[i] else max(64, max_new_tokens - used),
             temperature=0.7,
             top_p=0.8,
             top_k=20,
         )
-        for used in tokens_used_p1
+        for i, used in enumerate(tokens_used_p1)
     ]
     phase2_outputs = llm.generate(phase2_prompts, phase2_params_list)
 
@@ -153,13 +182,19 @@ def run_probe(
 
     for i, (_, row) in enumerate(df.iterrows()):
         p2_out = phase2_outputs[i].outputs[0]
-        p2_text = p2_out.text
         p2_stop = p2_out.finish_reason or "unknown"
 
-        # p2_text now includes "[/answer]" at the end (if stop was hit).
-        # Extract \boxed{} from the full phase 2 text.
-        boxed = _extract_boxed(p2_text)
-        format_ok = code_extracted_flags[i] and (boxed is not None)
+        if already_answered_flags[i]:
+            # Model answered in phase 1 without code — use p1 text directly.
+            p2_text = ""
+            p2_stop = "skip"
+            boxed = _extract_boxed(phase1_texts[i])
+            format_ok = False  # no code block, so format is not fully compliant
+        else:
+            p2_text = p2_out.text
+            # Extract \boxed{} from phase 2 text.
+            boxed = _extract_boxed(p2_text)
+            format_ok = code_extracted_flags[i] and (boxed is not None)
 
         # Truncation diagnostics
         p1_truncated = p1_stop_reasons[i] != "stop"
@@ -248,7 +283,7 @@ def main() -> None:
     parser.add_argument("--parquet", required=True)
     parser.add_argument("--n_samples", type=int, default=100)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--max_new_tokens", type=int, default=4096)
+    parser.add_argument("--max_new_tokens", type=int, default=8192)
     parser.add_argument("--sandbox_timeout", type=float, default=30.0)
     parser.add_argument("--output", default=None)
     args = parser.parse_args()

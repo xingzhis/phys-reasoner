@@ -85,6 +85,14 @@ echo "Response:   $MAX_RESPONSE_LEN tokens"
 # Launch via standard VeRL entrypoint.
 # physcode_agent_loops.yaml tells VeRL to load PhysCodeTIRAgentLoop via
 # hydra.utils.instantiate(_target_=...) — no custom wrapper needed.
+#
+# CRITICAL — THINKING MODE: both enable_thinking flags below MUST stay False.
+# Qwen3.5 defaults to thinking=ON (<think>...</think> native CoT). If either
+# flag is removed or set to True, the model breaks the TIR format and emits
+# stray </think> tokens. Two flags are needed:
+#   data.apply_chat_template_kwargs.enable_thinking=False  (chat template / agent loop)
+#   actor_rollout_ref.model.enable_thinking=False          (model-level inference)
+# See src/phys_reasoner/tir/prompts.py for full explanation.
 # ---------------------------------------------------------------------------
 apptainer exec --nv \
   --overlay "$OVERLAY:ro" \
@@ -105,6 +113,7 @@ apptainer exec --nv \
     data.max_response_length=$MAX_RESPONSE_LEN \
     data.filter_overlong_prompts=True \
     data.truncation=error \
+    data.apply_chat_template_kwargs.enable_thinking=False \
     actor_rollout_ref.model.path="$MODEL_PATH" \
     actor_rollout_ref.model.enable_thinking=False \
     actor_rollout_ref.model.use_remove_padding=True \

@@ -1,6 +1,6 @@
 # Session Notes — for next session context
 
-Last updated: 2026-03-31
+Last updated: 2026-04-01
 
 ---
 
@@ -27,54 +27,121 @@ Last updated: 2026-03-31
 - **New direction** (PhysCode): single-block TIR + RLVR, execution-based reward
 - See `docs/physcode_proposal_v5.md` and `.claude/plans/physcode.md`
 
-### TIR rollout format: single-turn (decided 2026-03-31)
-- **Decision**: single-block TIR, NOT multi-turn (no ToolAgentLoop / SGLang multi-turn)
-- **Rationale**: (1) multi-turn adds ~1.5 weeks engineering (SGLang switch, ToolAgentLoop integration, sequence stitching bugs); (2) the paper's core claim (execution-based reward eliminates LaTeX FN noise) is orthogonal to number of turns; (3) Dr. SCI physics problems are overwhelmingly closed-form — 85–90% solvable in one block; (4) single-turn = cleaner experimental design (only variable is execution vs. not)
-- **Re-evaluate if**: Stage 0 probe shows execution success <30% and failure mode is clearly "code error multi-turn would fix"
-- **Implementation**: custom stop-string injection wrapper (~100 LOC) with vLLM, NOT ToolAgentLoop
+### TIR format: SWITCHING TO NATIVE TOOL-CALLING (decision 2026-04-01)
+- **Old plan**: custom `[code]...[/code]` stop-string injection
+- **Decision**: switch to Qwen3.5's native tool-call format before the full Stage 0 probe
+- See "IMMEDIATE NEXT STEPS" below for full rationale and implementation plan
 
 ### Model name
 - Using **Qwen3.5-4B** (not Qwen3-4B). References to "Qwen3-4B" in `docs/grpo_training.md` are intentional — that doc describes POLARIS results which use the older Qwen3-4B.
 
 ---
 
-## What to do next (in order)
+## IMMEDIATE NEXT STEPS (start here next session)
 
-### 1. TIR injection pipeline — IMPLEMENTED (2026-03-31), needs smoke test
-Files written:
-- `src/phys_reasoner/tir/sandbox.py` — subprocess execution, whitelist, timeout
-- `src/phys_reasoner/tir/prompts.py` — TIR_SYSTEM_PROMPT, CODE_STOP, extract_code()
-- `src/phys_reasoner/tir/tir_agent_loop.py` — @register("physcode_tir") VeRL subclass
-- `src/phys_reasoner/eval/stage0_probe.py` — standalone vLLM probe (no Ray)
-- `scripts/grpo_train.sh` + `scripts/train_physcode.py` — training launcher
-- `scripts/stage0_probe.sbatch` — sbatch job for Stage 0
-- `tests/test_tir.py` (43 tests, pass) + `tests/test_tir_verl.py` (needs -017.img)
+### ⚠️ BLOCKER: Switch TIR format to Qwen native tool-calling
 
-Key design decisions:
-- **No [/answer] stop token** — phase 2 runs to EOS/max_tokens; `_extract_boxed()` extracts answer
-- **[answer] is a prompt-only marker** — not a stop signal
-- **Model path**: use `Qwen/Qwen3.5-4B` HF ID; auto-downloads to HF_HOME if not cached
-- **gold-vs-gold FN test**: already exists in `scripts/drsci_audit.py:run_round_trip()` (NOT in latex_fn_rate.py — that was deleted as redundant)
+The custom `[code]...[/code]` format was smoke-tested on 2 samples (Qwen3.5-4B, `enable_thinking=False`) and revealed fundamental fragility. **Do not run the full 100-sample probe or begin training until this is fixed.**
 
-Parameters to tune before production run (see Stage 0 probe results):
-- `max_response_length` (default 4096): raise if `p1_truncated > 5%` in probe output
-- `sandbox_timeout` (default 30s): profile on SymPy-heavy Dr. SCI problems
-- `temperature/top_p/top_k` (0.7/0.8/20): Qwen defaults, not tuned
-- `lr` (1e-6): conservative; try 3e-6 in ablation
-- Algorithm (GRPO): defer DAPO/GSPO/CiSPO until first smoke run
+#### What went wrong (smoke test findings, 2026-04-01)
 
-### 2. Stage 0 probe — NEXT ACTION
-`sbatch scripts/stage0_probe.sbatch` — runs 100-problem TIR zero-shot
-- Check: `p1_truncated` rate, `exec_success_rate`, `verifier_hit_rate` per type
-- Decision: hit_rate ≥ 0.15 on numerical → skip SFT
+**Failure 1 — Wrong closing tag** (sample 1, equation type):
+- Model wrote `</code>` (HTML-style) instead of `[/code]` (our format)
+- Stop token `[/code]` never fired; `code_extracted=False`; no execution
+- Model then wrote `[output]` and `[answer]` itself (hallucinated the output)
+- This will happen at nontrivial frequency during training, producing zero-reward rollouts with noisy gradients
 
-### 3. gold-vs-gold FN rate on Dr. SCI (RQ2 baseline)
+**Failure 2 — Phase 2 loops** (sample 0, numerical type):
+- Model solved the problem analytically in the reasoning section, wrote `[answer] \boxed{...}` mid-reasoning, THEN wrote the code block (backwards order)
+- After `[output]` injection, phase 2 saw a "complete" TIR trajectory and started a NEW TIR cycle — looped through reasoning+code+output+answer again, hit max_tokens
+- Root cause: model has no trained sense of when the TIR cycle ends; without special tokens, it repeats the pattern
+
+**Failure 3 — Redundant calculation** (sample 0):
+- Model fully computed the answer analytically in reasoning, THEN wrote identical code to confirm
+- Code is not discovering the answer, just rubber-stamping it
+- Less critical during training (reward still fires) but bad for learning the intended behavior
+
+**Root cause of all three**: `[code]...[/code]` is an invented format the model has never been trained on. It has no semantic meaning, collides with HTML (`</code>`), and gives no signal for when the turn ends.
+
+#### The fix: Qwen native tool-calling
+
+Qwen3.5 is trained on tool-call format:
+```
+<tool_call>
+{"name": "python", "arguments": {"code": "..."}}
+</tool_call>
+<tool_response>
+{"output": "..."}
+</tool_response>
+final answer text... \boxed{X}
+```
+
+Advantages:
+- `</tool_call>` is a **special token** — no HTML confusion, model knows exactly when to emit it
+- Model is pre-trained to wait after `<tool_response>` before writing the final answer — eliminates the looping issue
+- Single-round restriction is natural: inject `<tool_response>` once, model writes final answer and EOS
+- More stable training signal — the tool-call pattern is deeply in the base model weights
+
+VeRL compatibility: minimal changes. The agent loop structure is identical:
+- Phase 1: stop at `</tool_call>` (special token, trivially detectable)
+- Parse JSON from tool call to extract code string
+- Execute code via `sandbox.py` (unchanged)
+- Inject `<tool_response>{"output": "..."}</tool_response>` (response_mask=0)
+- Phase 2: run to EOS
+
+#### Implementation plan (≈1 day)
+
+1. **`prompts.py`**: Rewrite `TIR_SYSTEM_PROMPT` for tool-call format. Register a `python` tool in the system prompt via `apply_chat_template(tools=[...])`. Remove `CODE_STOP`; add `TOOL_CALL_STOP` (the `</tool_call>` special token ID).
+
+2. **`tir_agent_loop.py`**: Replace stop-string logic with tool-call token detection. Replace JSON-injection with `<tool_response>` format. Parse code from `arguments.code` field.
+
+3. **`stage0_probe.py`**: Update phase 1 stop to use the `</tool_call>` token. Update output injection to use `<tool_response>` format. Update `extract_code` to parse from JSON.
+
+4. **`grpo_train.sh`**: Pass `tools=[...]` in `apply_chat_template_kwargs` (or handle in agent loop). Keep `enable_thinking=False`.
+
+5. **Tests**: Update `tests/test_tir.py` for new format. Smoke test on 2 samples before full probe.
+
+Key unknown: whether VeRL's `apply_chat_template_kwargs` can pass `tools=[...]` list, or whether the agent loop needs to handle tool schema directly. Check `verl_repo/verl/experimental/agent_loop/agent_loop.py:apply_chat_template` first.
+
+---
+
+## Existing work: TIR pipeline files (partially obsolete — update for tool-calling)
+
+Files that will need updating:
+- `src/phys_reasoner/tir/prompts.py` — rewrite system prompt and stop token
+- `src/phys_reasoner/tir/tir_agent_loop.py` — rewrite phase 1 stop + injection format
+- `src/phys_reasoner/eval/stage0_probe.py` — rewrite phase 1 stop + injection format
+
+Files that stay the same:
+- `src/phys_reasoner/tir/sandbox.py` — unchanged, code execution is format-agnostic
+- `src/phys_reasoner/verifier/` — unchanged
+- `scripts/grpo_train.sh` — minor update only (tool schema in kwargs)
+- `scripts/stage0_probe.sbatch` — unchanged
+
+Critical settings that MUST remain (even after switch):
+- **`enable_thinking=False` everywhere** — Qwen3.5 defaults to thinking=ON; must be set in `apply_chat_template` (probe) and `data.apply_chat_template_kwargs.enable_thinking=False` (training). Forgetting either silently breaks the model. See `src/phys_reasoner/tir/prompts.py` module docstring.
+
+---
+
+## ⚠️ DATA QUALITY ISSUE — Figure/Image References (deferred)
+
+~4.2% of Dr. SCI (≈4,526 / 107,158 problems) reference a figure, graph, diagram, or image
+not present in the text. Unanswerable from text alone — model hallucinates a graph shape.
+- Spread evenly: natural_reasoning 4.4%, WebInstruct-Verified 4.3%, MegaScience 4.1%
+- **NOT yet filtered** from `data/processed/drsci_physics_clean.parquet`
+- Needs careful regex design + spot-checking (words like "shown", "table", "graph" are ambiguous)
+- **Action**: design filter, add drop step to `scripts/drsci_clean.py`, regenerate parquet before training
+- **Deferred until**: tool-call switch is done and smoke test passes
+
+---
+
+## Other pending items (lower priority)
+
+### gold-vs-gold FN rate on Dr. SCI (RQ2 baseline)
 `drsci_audit.py` already has `run_round_trip()`. Run on `drsci_physics_clean.parquet`.
 Was done on old 6.8k corpus; needs fresh run on Dr. SCI clean corpus.
 
-### 4. Add `_train_weight` column (Goldilocks B strategy)
-
-### 5. Add `_train_weight` column to both parquets (Goldilocks B strategy)
+### Add `_train_weight` column (Goldilocks B strategy)
 Small script mapping `(source × answer_type)` → Goldilocks-rate-based weight.
 See lookup table in `docs/training-decisions.md`.
 
@@ -94,13 +161,12 @@ See lookup table in `docs/training-decisions.md`.
 | PhysCode proposal | `docs/physcode_proposal_v5.md` |
 | PhysCode plan | `.claude/plans/physcode.md` |
 | Dr. SCI cleaning script | `scripts/drsci_clean.py` |
-| Pass@k inference (Dr. SCI) | `scripts/run_zero_shot_drsci.py` |
-| Pass@k inference (corpus) | `scripts/run_zero_shot_corpus_passk.py` |
-| xVerify rescore (pass@k) | `scripts/rescore_passk_xverify.py` |
+| Smoke test readable outputs | `smoke_results_4b.txt`, `smoke_results_v3_nothink.txt` |
 
 ## Sbatch templates
 | Job | Script |
 |-----|--------|
+| Stage 0 probe | `scripts/stage0_probe.sbatch` |
 | Dr. SCI pass@k | `scripts/zero_shot_drsci_sample.sbatch` |
 | Corpus pass@k | `scripts/zero_shot_corpus_passk.sbatch` |
 | xVerify rescore (any pass@k) | `scripts/rescore_passk_xverify.sbatch` |
@@ -111,5 +177,5 @@ See lookup table in `docs/training-decisions.md`.
 - SIF: `verl_vllm017.latest.sif`
 - Overlay: `phys-reasoner-overlay-017.img` (use for all sbatch jobs)
 - Always: `export PYTHONNOUSERSITE=1` before apptainer calls
-- HF cache: `hf_cache/` — use `local_files_only=True` for xVerify on compute nodes
+- HF cache: `hf_cache/` — use HF model IDs directly (all nodes have internet); never hardcode snapshot paths
 - GPU partition: `gpu`, qos `qos_nmi`, gres `h200:1`

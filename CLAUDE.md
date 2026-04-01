@@ -22,12 +22,14 @@ Three main components:
 
 1. **TIR Trajectory Format** (single code block per rollout):
    ```
-   [think] reasoning... [code] import sympy... print(...) [/code] [output] result [think] interpretation... [answer] \boxed{X}
+   reasoning... [code] import sympy... print(...) [/code] [output] result interpretation... [answer] \boxed{X}
    ```
+   - **No `[think]`/`[/think]` tags** — Qwen3.5 uses `<think>...</think>` (angle brackets) for native chain-of-thought; our square-bracket `[think]` conflicted with that and caused `</think>` leakage. Format uses plain reasoning text instead.
+   - **`enable_thinking=False` everywhere** — must be set in `apply_chat_template` (probe) and `data.apply_chat_template_kwargs.enable_thinking=False` (training). This injects `<think>\n\n</think>\n\n` to suppress native CoT.
    - Model generates until `[/code]` stop token
    - Sandbox executes code (30s timeout, subprocess isolation)
    - `[output] {result}\n` injected as fixed continuation
-   - Model resumes to `[answer]` stop token
+   - Model resumes to EOS/max_tokens; `[answer]` is a format marker only, not a stop token
 
 2. **GRPO Training Pipeline**:
    - Model: Qwen3.5-4B instruct (thinking OFF); debug: Qwen3.5-0.8B
@@ -53,9 +55,9 @@ Two files are relevant:
 | File | Purpose |
 |---|---|
 | `verl_vllm017.latest.sif` | Base Apptainer SIF (read-only; never modify) |
-| `phys-reasoner-overlay-017.img` | **Primary overlay** — use for all sbatch jobs and interactive work after post-install upgrades |
+| `phys-reasoner-overlay-017.img` | **Primary overlay** — use for all sbatch jobs and interactive work |
 
-The overlay holds all pip-installed packages (phys-reasoner, scipy, huggingface-hub, etc.) layered on top of the base SIF.
+The overlay holds all pip-installed packages (phys-reasoner, scipy, huggingface-hub, transformers, etc.) layered on top of the base SIF. **Do NOT upgrade huggingface-hub or transformers.**
 
 ### Running commands
 
@@ -71,7 +73,7 @@ PYTHONNOUSERSITE=1 apptainer exec --overlay "$OVERLAY" --bind /etc/pki:/etc/pki 
 PYTHONNOUSERSITE=1 apptainer exec --nv --overlay "$OVERLAY" --bind /etc/pki:/etc/pki "$SIF" <command>
 ```
 
-**Always set `PYTHONNOUSERSITE=1`**: prevents `~/.local/lib/python3.12/site-packages` from leaking into the container and shadowing overlay packages (e.g. old `huggingface-hub==0.36.2` in `~/.local` would shadow the upgraded version in the overlay, breaking transformers).
+**Always set `PYTHONNOUSERSITE=1`**: prevents `~/.local/lib/python3.12/site-packages` from leaking into the container and shadowing overlay packages.
 
 Run tests (interactive — use `-017` overlay):
 ```bash
@@ -95,7 +97,7 @@ PYTHONNOUSERSITE=1 apptainer exec --overlay "$OVERLAY" --bind /etc/pki:/etc/pki 
     pip install "<package>==<version>"
 ```
 
-**Upgrade `huggingface-hub` and `transformers`** after initial overlay install (see README § "Installing packages into the overlay").
+**⚠️ DO NOT upgrade `huggingface-hub` and `transformers`** — the overlay defaults are stable. See "Known overlay pitfalls" for details.
 
 ### sbatch jobs
 
@@ -116,13 +118,13 @@ sbatch --export=ALL,XV_MODEL=IAAR-Shanghai/xVerify-7B-I,XV_OUTPUT=data/results/r
 - **FUSE2FS "unchecked fs" warning**: if the overlay was not cleanly unmounted (e.g. node crash during a writable session), other nodes may fail to mount it. Symptom: packages installed in the overlay are invisible and the base SIF's old versions are used instead. Fix: run `e2fsck -fp <overlay.img>` while the overlay is not mounted.
 - **`~/.local` shadowing**: always use `PYTHONNOUSERSITE=1`. The base SIF has `huggingface-hub==0.36.2`; `~/.local` may also have stale packages. The overlay has the correct versions.
 - **HF API calls in sbatch**: compute nodes may not have outbound HTTPS. Use `local_files_only=True` in any `from_pretrained` call when the model is already in `hf_cache`.
-- **Upgrade `huggingface-hub` and `transformers`**: the base SIF's `0.36.2` is outdated. After `pip install -e .[dev]`, run `pip install --upgrade huggingface-hub transformers --no-deps` to get verl-compatible versions (1.8.0+ and 5.4.0+). This resolves the 404 issue with newer transformers and enables proper model downloading.
+- **DO NOT upgrade `huggingface-hub` and `transformers`**: The overlay defaults (`huggingface-hub==0.36.2`, `transformers==4.57.6`) are stable and fully tested. Upgrading breaks environment compatibility. If you see an error mentioning HF packages, diagnose the root cause first rather than blindly upgrading.
 
 ## Key Dependencies (Planned)
 
 - `pint` — unit handling for physics answers
 - `sympy` — symbolic math equivalence checking
 - `scipy>=1.11` — required by transformers (qwen2 object detection loss module loads it at model-load time)
-- `huggingface-hub` — upgrade to 1.8.0+ after initial install (see README § "Installing packages into the overlay")
+- `huggingface-hub==0.36.2` — stable; do not upgrade
 - `verl` — GRPO/RLVR training framework
 - Qwen3.5 model family via HuggingFace

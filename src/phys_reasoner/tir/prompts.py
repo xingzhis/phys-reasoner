@@ -1,6 +1,20 @@
 """Centralized TIR format constants: system prompt, stop tokens, allowed packages.
 
 Import from here in both stage0_probe.py and tir_agent_loop.py.
+
+CRITICAL — THINKING MODE:
+    Qwen3.5 uses <think>...</think> (angle brackets) for native chain-of-thought.
+    We MUST disable this everywhere via enable_thinking=False in apply_chat_template.
+    Failure to do so causes the model to enter native CoT mode, ignore our TIR
+    format, and emit stray </think> tokens mid-response.
+
+    The TIR format deliberately uses NO [think]/[/think] tags to avoid any
+    collision with the native thinking tokens.
+
+    Required in every call site:
+      - stage0_probe.py: tokenizer.apply_chat_template(..., enable_thinking=False)
+      - grpo_train.sh: data.apply_chat_template_kwargs.enable_thinking=False
+      - tir_agent_loop.py: passes through apply_chat_template_kwargs from data config
 """
 
 from __future__ import annotations
@@ -36,24 +50,29 @@ ALLOWED_PACKAGES_STR = (
 
 TIR_SYSTEM_PROMPT = (
     "You are an expert physics problem solver.\n"
-    "Reason step by step, then write Python code to compute the answer.\n"
+    "Respond using EXACTLY this format — do not describe or explain it, just use it directly:\n"
     "\n"
-    "Follow this EXACT format — every tag is required:\n"
-    "  [think] your reasoning [code] your Python code [/code]\n"
-    "  [output] (the code output is filled in here automatically)\n"
-    "  [think] interpret the result [answer] \\boxed{{final answer}}\n"
+    "<step-by-step reasoning>\n"
+    "[code]\n"
+    "<python code that prints the answer>\n"
+    "[/code]\n"
+    "[output] <filled in automatically — do not write this line>\n"
+    "<interpret the output and confirm the answer>\n"
+    "[answer] \\boxed{{<final answer>}}\n"
     "\n"
-    "Rules for the [code] block:\n"
-    f"  - Allowed packages: {ALLOWED_PACKAGES_STR}\n"
-    "  - You MUST print your final computed value with print(), e.g. print(result)\n"
-    "  - Do not import packages not in the allowed list\n"
-    "  - The code runs in isolation; define all variables inside it\n"
+    "Code block rules:\n"
+    f"  Allowed packages: {ALLOWED_PACKAGES_STR}\n"
+    "  Must call print() to output the final value. Define all variables inside the block.\n"
     "\n"
-    "Rules for the [answer] block:\n"
-    "  - Write the final answer as \\boxed{{value}} immediately after [answer]\n"
-    "  - Include units if relevant, e.g. \\boxed{{9.8 \\, \\mathrm{{m/s^2}}}}\n"
-    "  - Use the code output to verify your answer before writing it\n"
-    "  - Stop after writing \\boxed{{...}}"
+    "Example:\n"
+    "A ball falls from rest for t=2s under g=9.8 m/s^2. Distance = 0.5*g*t^2.\n"
+    "[code]\n"
+    "g = 9.8\n"
+    "t = 2.0\n"
+    "print(0.5 * g * t**2)\n"
+    "[/code]\n"
+    "[output] 19.6\n"
+    "The code gives 19.6 m. [answer] \\boxed{{19.6 \\, \\mathrm{{m}}}}\n"
 )
 
 # ---------------------------------------------------------------------------

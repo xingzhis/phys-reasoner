@@ -3,9 +3,15 @@
 Subclasses AgentLoopBase and registers as "physcode_tir".
 
 Trajectory format:
-  [think] reasoning [code] python code [/code]
+  reasoning text [code] python code [/code]
   [output] execution result
-  [think] interpretation [answer] \\boxed{final answer}
+  interpretation text [answer] \\boxed{final answer}
+
+CRITICAL — THINKING MODE: Qwen3.5 native <think>...</think> CoT MUST be disabled.
+    enable_thinking=False is passed via data.apply_chat_template_kwargs in the training
+    config (grpo_train.sh). The TIR format has NO [think]/[/think] tags — they collide
+    with native thinking tokens and cause </think> leakage and format breakdown.
+    See prompts.py module docstring for full explanation.
 
 Phase 1: generate until [/code]  → response_mask all 1s
   execute_code()
