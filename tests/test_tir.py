@@ -1,7 +1,7 @@
 """Tests for the TIR pipeline: sandbox, prompts, stage0 helpers.
 
 No GPU required, no VeRL required.
-VeRL-dependent agent loop tests are in tests/test_tir_verl.py.
+VeRL-dependent tool tests are in tests/test_tir_verl.py.
 
 Run:
     python -m pytest tests/test_tir.py -v
@@ -14,9 +14,10 @@ import pytest
 from phys_reasoner.tir.sandbox import ALLOWED_PACKAGES, SandboxResult, execute_code, _check_imports
 from phys_reasoner.tir.prompts import (
     ALLOWED_PACKAGES_STR,
-    CODE_STOP,
+    PYTHON_TOOL_SCHEMA,
+    TOOL_CALL_STOP,
     TIR_SYSTEM_PROMPT,
-    extract_code,
+    extract_tool_call_code,
 )
 from phys_reasoner.eval.stage0_probe import _extract_boxed, build_tir_prompt
 
@@ -142,18 +143,20 @@ class TestExecuteCode:
 # ---------------------------------------------------------------------------
 
 class TestPrompts:
-    def test_code_stop_token(self):
-        assert CODE_STOP == "[/code]"
+    def test_tool_call_stop_token(self):
+        assert TOOL_CALL_STOP == "</tool_call>"
 
     def test_no_answer_stop_token(self):
         # Phase 2 has no stop token — generation runs to EOS/max_tokens.
-        # Occam's razor: chat-fine-tuned models emit EOS naturally after response.
         import phys_reasoner.tir.prompts as p
         assert not hasattr(p, "ANSWER_STOP"), "ANSWER_STOP should not exist in prompts"
 
-    def test_system_prompt_has_format_tags(self):
-        for tag in ["[code]", "[/code]", "[answer]"]:
-            assert tag in TIR_SYSTEM_PROMPT, f"Tag '{tag}' missing from system prompt"
+    def test_no_code_stop_token(self):
+        # Old [/code] stop token is gone.
+        import phys_reasoner.tir.prompts as p
+        assert not hasattr(p, "CODE_STOP"), "CODE_STOP should not exist — use TOOL_CALL_STOP"
+
+    def test_system_prompt_has_boxed(self):
         assert r"\boxed" in TIR_SYSTEM_PROMPT
 
     def test_system_prompt_instructs_print(self):
@@ -169,32 +172,54 @@ class TestPrompts:
                 f"'{pkg}' in prompts.ALLOWED_PACKAGES_STR but not in sandbox.ALLOWED_PACKAGES"
             )
 
+    def test_python_tool_schema_structure(self):
+        assert PYTHON_TOOL_SCHEMA["type"] == "function"
+        fn = PYTHON_TOOL_SCHEMA["function"]
+        assert fn["name"] == "python"
+        assert "code" in fn["parameters"]["properties"]
+        assert "code" in fn["parameters"]["required"]
+
 
 # ---------------------------------------------------------------------------
-# prompts.extract_code
+# prompts.extract_tool_call_code
 # ---------------------------------------------------------------------------
 
-class TestExtractCode:
-    def test_basic(self):
-        assert extract_code("[code] print(42) [/code]") == "print(42)"
+class TestExtractToolCallCode:
+    def _wrap_json(self, code: str) -> str:
+        import json
+        return f'<tool_call>\n{json.dumps({"name": "python", "arguments": {"code": code}})}\n</tool_call>'
 
-    def test_multiline(self):
-        text = "[code]\nimport sympy\nprint(1)\n[/code]"
-        result = extract_code(text)
+    def _wrap_xml(self, code: str) -> str:
+        return f"<tool_call>\n<function=python>\n<parameter=code>\n{code}\n</parameter>\n</function>\n</tool_call>"
+
+    def test_basic_xml(self):
+        assert extract_tool_call_code(self._wrap_xml("print(42)")) == "print(42)"
+
+    def test_multiline_xml(self):
+        code = "import sympy\nprint(1)"
+        result = extract_tool_call_code(self._wrap_xml(code))
         assert result is not None and "import sympy" in result
 
+    def test_json_still_supported(self):
+        assert extract_tool_call_code(self._wrap_json("print(42)")) == "print(42)"
+
     def test_returns_last_block(self):
-        assert extract_code("[code] x=1 [/code] text [code] x=2 [/code]") == "x=2"
+        block1 = self._wrap_xml("x=1")
+        block2 = self._wrap_xml("x=2")
+        assert extract_tool_call_code(f"{block1} text {block2}") == "x=2"
 
     def test_no_block(self):
-        assert extract_code("no code here") is None
+        assert extract_tool_call_code("no tool call here") is None
 
-    def test_unclosed_block(self):
-        assert extract_code("[code] x=1") is None
+    def test_malformed_json(self):
+        assert extract_tool_call_code("<tool_call>not json</tool_call>") is None
 
-    def test_empty_block(self):
-        # Empty block is valid — sandbox will return empty stdout
-        result = extract_code("[code][/code]")
+    def test_missing_code_key(self):
+        assert extract_tool_call_code('<tool_call>{"name":"python","arguments":{}}</tool_call>') is None
+        assert extract_tool_call_code("<tool_call><function=python></function></tool_call>") is None
+
+    def test_empty_code(self):
+        result = extract_tool_call_code(self._wrap_xml(""))
         assert result == ""
 
 
@@ -220,8 +245,7 @@ class TestExtractBoxed:
         assert _extract_boxed("no boxed here") is None
 
     def test_full_trajectory_format(self):
-        # The answer comes BETWEEN [answer] and [/answer] — extract_boxed must find it
-        text = r"[think] done [answer] \boxed{42 \, \mathrm{J}} [/answer]"
+        text = r"The distance is \boxed{42 \, \mathrm{J}}"
         result = _extract_boxed(text)
         assert result is not None and "42" in result
 

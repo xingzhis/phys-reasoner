@@ -1,158 +1,148 @@
-"""Agent loop tests requiring VeRL. Skipped if VeRL is not installed.
+"""PythonSandboxTool tests requiring VeRL. Skipped if VeRL is not installed.
 
 Run with the -017.img overlay (has VeRL):
     python -m pytest tests/test_tir_verl.py -v
+
+Covers two levels:
+  - YAML config loading: verifies physcode_tools.yaml is valid and PythonSandboxTool
+    is instantiable via VeRL's initialize_tools_from_config() — same code path as training.
+  - Tool execution: verifies sandbox execution, error handling, schema correctness.
 """
 
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
-from unittest.mock import AsyncMock, MagicMock
+from pathlib import Path
 
 import pytest
 
 pytest.importorskip("verl", reason="VeRL not installed")
 
-from verl.experimental.agent_loop.agent_loop import AgentLoopOutput  # noqa: E402
-from phys_reasoner.tir.prompts import CODE_STOP  # noqa: E402
-from phys_reasoner.tir.tir_agent_loop import PhysCodeTIRAgentLoop  # noqa: E402
+from verl.tools.schemas import ToolResponse  # noqa: E402
+from verl.tools.utils.tool_registry import initialize_tools_from_config  # noqa: E402
+from phys_reasoner.tir.python_sandbox_tool import PythonSandboxTool  # noqa: E402
+
+# Path to the tool config used in training
+TOOLS_YAML = Path(__file__).parent.parent / "scripts" / "physcode_tools.yaml"
 
 
 # ---------------------------------------------------------------------------
-# Fixtures
+# Fixture
 # ---------------------------------------------------------------------------
-
-@dataclass
-class FakeTokenOutput:
-    token_ids: list
-    stop_reason: str = "completed"
-    log_probs: list = None
-    routed_experts: list = None
-    extra_fields: dict = None
-    num_preempted: int = None
-
-    def __post_init__(self):
-        if self.extra_fields is None:
-            self.extra_fields = {}
-
-
-class FakeTok:
-    """Minimal tokenizer mock: 1 token per character."""
-
-    def encode(self, text, add_special_tokens=False):
-        return list(range(len(text)))
-
-    def decode(self, ids, skip_special_tokens=False):
-        return "[think] reasoning [code]\nprint(99)\n[/code]"
-
-    def apply_chat_template(self, msgs, tokenize=True, add_generation_prompt=True):
-        return list(range(10)) if tokenize else "<prompt>"
-
-    def pad(self, inputs, **kwargs):
-        return inputs
-
 
 @pytest.fixture()
-def agent_loop():
-    p1_text = "[think] reasoning [code]\nprint(99)\n[/code]"
-    p2_text = r"[think] got 99 [answer] \boxed{99} [/answer]"
-
-    server = MagicMock()
-    server.generate = AsyncMock(
-        side_effect=[
-            FakeTokenOutput(token_ids=list(range(len(p1_text))), stop_reason="completed"),
-            FakeTokenOutput(token_ids=list(range(len(p2_text))), stop_reason="completed"),
-        ]
+def tool() -> PythonSandboxTool:
+    return PythonSandboxTool(
+        config={"type": "native", "timeout": 5.0, "max_output_bytes": 4096},
+        tool_schema=None,  # get_openai_tool_schema() provides it
     )
-
-    rollout_cfg = MagicMock()
-    rollout_cfg.prompt_length = 512
-    rollout_cfg.response_length = 2048
-
-    loop = PhysCodeTIRAgentLoop.__new__(PhysCodeTIRAgentLoop)
-    loop.config = MagicMock()
-    loop.rollout_config = rollout_cfg
-    loop.prompt_length = rollout_cfg.prompt_length
-    loop.response_length = rollout_cfg.response_length
-    loop.server_manager = server
-    loop.tokenizer = FakeTok()
-    loop.processor = None
-    loop.dataset_cls = MagicMock()
-    loop.data_config = MagicMock()
-    loop.apply_chat_template_kwargs = {}
-    loop.system_prompt = None
-    loop.loop = asyncio.new_event_loop()
-
-    async def _apply_chat_template(messages, **kwargs):
-        return list(range(10))
-
-    loop.apply_chat_template = _apply_chat_template
-    return loop
 
 
 def _run(coro):
     return asyncio.get_event_loop().run_until_complete(coro)
 
 
-RAW_PROMPT = {"raw_prompt": [{"role": "user", "content": "What is 99?"}]}
-
 # ---------------------------------------------------------------------------
-# Tests
+# YAML config loading — same path as training (initialize_tools_from_config)
 # ---------------------------------------------------------------------------
 
-def test_run_returns_agent_loop_output(agent_loop):
-    output = _run(agent_loop.run(sampling_params={"temperature": 0.7}, **RAW_PROMPT))
-    assert isinstance(output, AgentLoopOutput)
+def test_tools_yaml_exists():
+    assert TOOLS_YAML.exists(), f"physcode_tools.yaml not found at {TOOLS_YAML}"
 
 
-def test_response_mask_has_zeros_for_injection(agent_loop):
-    """Injected [output] tokens must have mask=0 (no gradient)."""
-    output = _run(agent_loop.run(sampling_params={"temperature": 0.7}, **RAW_PROMPT))
-    assert 0 in output.response_mask, "No injection tokens (no zeros in response_mask)"
-    assert 1 in output.response_mask, "No LLM tokens (no ones in response_mask)"
+def test_tools_yaml_loads_python_sandbox_tool():
+    """Verify physcode_tools.yaml is parseable and produces a PythonSandboxTool."""
+    tools = initialize_tools_from_config(str(TOOLS_YAML))
+    assert len(tools) == 1, f"Expected 1 tool, got {len(tools)}"
+    assert isinstance(tools[0], PythonSandboxTool)
 
 
-def test_response_ids_within_budget(agent_loop):
-    output = _run(agent_loop.run(sampling_params={"temperature": 0.7}, **RAW_PROMPT))
-    assert len(output.response_ids) <= agent_loop.rollout_config.response_length
-    assert len(output.response_ids) == len(output.response_mask)
+def test_tools_yaml_tool_name_is_python():
+    """Tool name must be 'python' — that's what Qwen3.5 emits in <tool_call>."""
+    tools = initialize_tools_from_config(str(TOOLS_YAML))
+    assert tools[0].name == "python"
 
 
-def test_server_called_twice(agent_loop):
-    """Phase 1 and Phase 2 each call server.generate once."""
-    _run(agent_loop.run(sampling_params={"temperature": 0.7}, **RAW_PROMPT))
-    assert agent_loop.server_manager.generate.call_count == 2
+def test_tools_yaml_tool_has_code_parameter():
+    """Tool schema must have 'code' as a required parameter."""
+    tools = initialize_tools_from_config(str(TOOLS_YAML))
+    schema = tools[0].tool_schema.model_dump()
+    props = schema["function"]["parameters"]["properties"]
+    assert "code" in props
+    assert "code" in schema["function"]["parameters"]["required"]
 
 
-def test_phase1_uses_code_stop(agent_loop):
-    _run(agent_loop.run(sampling_params={}, **RAW_PROMPT))
-    sp = agent_loop.server_manager.generate.call_args_list[0].kwargs["sampling_params"]
-    assert CODE_STOP in sp["stop"]
+# ---------------------------------------------------------------------------
+# Schema
+# ---------------------------------------------------------------------------
+
+def test_tool_schema_name_is_python(tool):
+    assert tool.name == "python"
 
 
-def test_phase2_has_no_stop_token(agent_loop):
-    """Phase 2 must NOT have a stop token — generation runs to EOS/max_tokens.
-    Answer is extracted via _extract_boxed() on the full output.
-    """
-    _run(agent_loop.run(sampling_params={}, **RAW_PROMPT))
-    sp = agent_loop.server_manager.generate.call_args_list[1].kwargs["sampling_params"]
-    assert "stop" not in sp or not sp.get("stop"), (
-        f"Phase 2 should have no stop tokens, but got stop={sp.get('stop')}"
+def test_tool_schema_has_code_parameter(tool):
+    schema = tool.tool_schema.model_dump()
+    props = schema["function"]["parameters"]["properties"]
+    assert "code" in props
+    assert "code" in schema["function"]["parameters"]["required"]
+
+
+# ---------------------------------------------------------------------------
+# Execution
+# ---------------------------------------------------------------------------
+
+def test_tool_basic_execution(tool):
+    response, reward, metrics = _run(tool.execute("id1", {"code": "print(99)"}))
+    assert isinstance(response, ToolResponse)
+    assert response.text == "99"
+    assert reward == 0.0
+    assert metrics["exec_success"] is True
+
+
+def test_tool_multiline_output(tool):
+    response, _, metrics = _run(tool.execute("id1", {"code": "print('a'); print('b')"}))
+    assert "a" in response.text and "b" in response.text
+    assert metrics["exec_success"] is True
+
+
+def test_tool_exec_error(tool):
+    response, _, metrics = _run(tool.execute("id1", {"code": "1 / 0"}))
+    assert "(execution error)" in response.text
+    assert metrics["exec_success"] is False
+
+
+def test_tool_syntax_error(tool):
+    response, _, metrics = _run(tool.execute("id1", {"code": "def f(: pass"}))
+    assert "(execution error)" in response.text
+    assert metrics["exec_success"] is False
+
+
+def test_tool_timeout(tool):
+    # Fixture sets timeout=5.0 — override via a short-timeout tool
+    short_tool = PythonSandboxTool(
+        config={"type": "native", "timeout": 1.0, "max_output_bytes": 4096},
+        tool_schema=None,
     )
+    response, _, metrics = _run(short_tool.execute("id1", {"code": "import time; time.sleep(30)"}))
+    assert "(execution error)" in response.text
+    assert metrics["exec_success"] is False
 
 
-def test_injection_mask_zeros_are_contiguous(agent_loop):
-    """The injected [output] block should appear as a contiguous run of zeros
-    between the phase1 ones and the phase2 ones."""
-    output = _run(agent_loop.run(sampling_params={}, **RAW_PROMPT))
-    mask = output.response_mask
+def test_tool_disallowed_package(tool):
+    response, _, metrics = _run(tool.execute("id1", {"code": "import torch; print(torch.__version__)"}))
+    assert "(execution error)" in response.text
+    assert metrics["exec_success"] is False
 
-    # Find the zero block
-    zero_indices = [i for i, m in enumerate(mask) if m == 0]
-    if not zero_indices:
-        pytest.fail("No zeros in response_mask — injection did not happen")
 
-    # Contiguity: no gaps in zero_indices
-    for a, b in zip(zero_indices, zero_indices[1:]):
-        assert b == a + 1, f"Zero block not contiguous: gap at positions {a}-{b}"
+def test_tool_no_output(tool):
+    # No print() — not an error, just empty stdout → "(no output)"
+    response, _, metrics = _run(tool.execute("id1", {"code": "x = 1 + 1"}))
+    assert response.text == "(no output)"
+    assert metrics["exec_success"] is True  # no error; caller sees "(no output)" text
+
+
+def test_tool_sympy(tool):
+    code = "import sympy; x = sympy.Symbol('x'); print(sympy.diff(x**3, x))"
+    response, _, metrics = _run(tool.execute("id1", {"code": code}))
+    assert "3*x**2" in response.text
+    assert metrics["exec_success"] is True

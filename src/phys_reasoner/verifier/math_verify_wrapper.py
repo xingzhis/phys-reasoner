@@ -274,8 +274,10 @@ def rule_verify(pred_str: str, gold_str: str, tolerance: float = 0.05) -> bool |
     if gold_lhs and pred_lhs and gold_lhs != pred_lhs:
         return None  # both equations, different LHS structures
 
-    gold_parsed = parse(gold_pre)
-    pred_parsed = parse(pred_pre)
+    # parsing_timeout=None disables signal.alarm()-based timeout so parse() works
+    # in non-main threads (e.g. VeRL's RewardLoopWorker Ray actor).
+    gold_parsed = parse(gold_pre, parsing_timeout=None)
+    pred_parsed = parse(pred_pre, parsing_timeout=None)
     if not gold_parsed or not pred_parsed:
         return None
 
@@ -332,6 +334,7 @@ def rule_verify(pred_str: str, gold_str: str, tolerance: float = 0.05) -> bool |
         return True
 
     try:
-        return verify(gold_parsed, pred_parsed, float_rounding=6, timeout_seconds=5)
+        # timeout_seconds=None avoids signal.alarm() so verify() works in threads.
+        return verify(gold_parsed, pred_parsed, float_rounding=6, timeout_seconds=None)
     except Exception:
         return None

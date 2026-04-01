@@ -6,23 +6,36 @@ from __future__ import annotations
 def compute_score(
     solution_str: str,
     ground_truth: str | list[str],
-    answer_type: str,
+    # VeRL's naive reward manager passes these kwargs; metadata lives in extra_info.
+    data_source: str = "",
+    extra_info: dict | None = None,
+    # Kept for direct callers (tests, stage0_probe); VeRL does NOT pass these.
+    answer_type: str = "numerical",
     unit: str = "",
     tolerance: float = 0.05,
     xverify_judge=None,
     problem: str = "",
+    **_kwargs,
 ) -> float:
     """VeRL reward function.
 
     Returns 1.0 (correct), 0.0 (wrong or unverifiable).
     Unverifiable answers (-1.0 from verify_answer) are treated as wrong during training.
 
+    VeRL's naive reward manager calls compute_score(solution_str, ground_truth, data_source,
+    extra_info). The verifier fields (answer_type, unit, tolerance) come from extra_info
+    which is populated by build_training_parquets.py / the smoke parquet generator.
+
     xverify_judge=None (default): rule-only verification. Correct for smoke tests and
-    numerical-only curriculum. Rule verifier has ~68% FN rate on expression types —
-    for production expression-type training, pass a warm xVerify-7B judge loaded on a
-    dedicated reward GPU. See docs/training-decisions.md § "xVerify in reward function".
+    numerical-only curriculum. Rule verifier has ~68% FN rate on expression types.
     """
     from phys_reasoner.verifier.router import verify_answer
+
+    if extra_info:
+        answer_type = extra_info.get("answer_type", answer_type)
+        unit = extra_info.get("unit", unit)
+        tolerance = float(extra_info.get("tolerance", tolerance))
+        problem = extra_info.get("problem", problem)
 
     score = verify_answer(
         pred_text=solution_str,
