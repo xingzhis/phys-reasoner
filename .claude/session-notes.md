@@ -142,6 +142,30 @@ that unambiguously reference an external figure: "as shown in the figure", "refe
 
 ---
 
+## VeRL TIR smoke test lessons (validated 2026-04-01)
+
+These were confirmed by getting `smoke_tir.sh` (Qwen3-0.6B, A40, 2 training steps) to pass end-to-end.
+
+### 1. `multi_turn.format=hermes` — not `qwen3_coder`
+VeRL's ToolAgentLoop template must be set to `hermes`. `qwen3_coder` caused parse failures.
+Applied in: `scripts/grpo_train.sh` TIR_ARGS and `scripts/smoke_tir.sh`.
+
+### 2. `max_user_turns=1` is required
+Without `actor_rollout_ref.rollout.multi_turn.max_user_turns=1`, the agent loop can run
+extra user turns unexpectedly. Was missing from `grpo_train.sh` TIR_ARGS; added 2026-04-01.
+
+### 3. `load_format=safetensors` (not `dummy`)
+`dummy` skips real weight loading — FSDP→vLLM weight sync fails silently, producing training
+runs that appear to work but use random weights. Default in `grpo_train.sh` changed to
+`safetensors`. Only use `dummy` for pure architecture smoke tests with no weight dependency.
+
+### 4. Slurm `--mem` must be large enough to avoid Ray OOM
+Ray's object store / worker init hits OOM with a cryptic hidden error when `--mem` is too small.
+Symptom: silent crash during Ray init, no GPU errors, no obvious Python traceback.
+Fix: request `--mem=64G` or more in sbatch/interactive sessions depending on model size.
+
+---
+
 ## Other pending items (lower priority)
 
 ### gold-vs-gold FN rate on Dr. SCI (RQ2 baseline)
