@@ -56,14 +56,22 @@ $RUN_LEGACY python "$ROOT/scripts/drsci_dedup.py" \
     --cache_dir "$ROOT/data/hf_cache"
 
 echo ""
-echo "=== [3/3] Clean ground_truth strings ==="
+echo "=== [3/4] Clean ground_truth strings ==="
 $RUN python "$ROOT/scripts/drsci_clean.py" \
     --input  "$DEDUPED" \
     --output "$CLEAN"
 
 echo ""
+echo "=== [4/4] Build VeRL-ready training parquet (figure filter + prompt rebuild) ==="
+$RUN python "$ROOT/scripts/build_training_parquets.py" \
+    --drsci-only \
+    --drsci-input  "$CLEAN" \
+    --drsci-output "$ROOT/data/processed/drsci_train.parquet"
+
+echo ""
 echo "=== Done ==="
-echo "Dr. SCI training corpus: $CLEAN"
+echo "Intermediate clean:      $CLEAN"
+echo "VeRL training corpus:    $ROOT/data/processed/drsci_train.parquet"
 
 # ---------------------------------------------------------------------------
 # Optional: audit report (informational, no GPU needed)

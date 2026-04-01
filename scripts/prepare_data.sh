@@ -32,12 +32,20 @@ $RUN python "$ROOT/scripts/explore_quality.py" \
     --save "$ROOT/data/processed/candidates_raw.parquet"
 
 echo ""
-echo "=== [4/4] Dedup (exact + fuzzy + contamination check) ==="
+echo "=== [4/5] Dedup (exact + fuzzy + contamination check) ==="
 $RUN python "$ROOT/scripts/run_dedup.py" \
     --input     "$ROOT/data/processed/candidates_raw.parquet" \
     --output    "$ROOT/data/processed/candidates_deduped.parquet" \
     --cache_dir "$ROOT/data/hf_cache"
 
 echo ""
+echo "=== [5/5] Build VeRL-ready training parquet (prompt rebuild) ==="
+$RUN python "$ROOT/scripts/build_training_parquets.py" \
+    --corpus-only \
+    --corpus-input  "$ROOT/data/processed/candidates_deduped.parquet" \
+    --corpus-output "$ROOT/data/processed/corpus_train.parquet"
+
+echo ""
 echo "=== Done ==="
-echo "Training corpus: $ROOT/data/processed/candidates_deduped.parquet"
+echo "Intermediate deduped:  $ROOT/data/processed/candidates_deduped.parquet"
+echo "VeRL training corpus:  $ROOT/data/processed/corpus_train.parquet"
