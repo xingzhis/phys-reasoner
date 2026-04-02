@@ -8,7 +8,14 @@ Target venue: NeurIPS 2026. Proposal: `docs/physcode_proposal_v5.md`.
 
 ## Environment
 
-All commands run inside an Apptainer container. The base SIF is read-only; a writable overlay holds all installed packages.
+All commands run inside an Apptainer container. The base SIF is read-only; a writable overlay image holds additional installed packages.
+
+**Container images:**
+
+| File | Purpose |
+|---|---|
+| `verl_vllm017.latest.sif` | Base Apptainer SIF — vllm 0.17.0, transformers 4.57.6 |
+| `phys-reasoner-overlay-017b.img` | **Active overlay** — holds project packages + `/opt/phys-extras/` |
 
 **One-time setup per session:**
 
@@ -19,17 +26,24 @@ source env.sh   # sets ROOT, SIF, OVERLAY, HF_HOME, PYTHONNOUSERSITE
 After sourcing, use these aliases for interactive commands:
 
 ```bash
-# CPU
-apptainer exec --overlay "$OVERLAY" --bind /etc/pki:/etc/pki "$SIF" <command>
+# CPU (add PYTHONPATH for upgraded packages in /opt/phys-extras/)
+PYTHONNOUSERSITE=1 apptainer exec \
+  --overlay "$OVERLAY" --bind /etc/pki:/etc/pki \
+  --env "PYTHONPATH=/opt/phys-extras/" "$SIF" <command>
 
 # GPU
-apptainer exec --nv --overlay "$OVERLAY" --bind /etc/pki:/etc/pki "$SIF" <command>
+PYTHONNOUSERSITE=1 apptainer exec --nv \
+  --overlay "$OVERLAY" --bind /etc/pki:/etc/pki \
+  --env "PYTHONPATH=/opt/phys-extras/" "$SIF" <command>
 
 # Run tests
-apptainer exec --overlay "$OVERLAY" --bind /etc/pki:/etc/pki "$SIF" python -m pytest tests/ -v
+PYTHONNOUSERSITE=1 apptainer exec \
+  --overlay "$OVERLAY" --bind /etc/pki:/etc/pki \
+  --env "PYTHONPATH=/opt/phys-extras/" "$SIF" \
+  python3 -m pytest tests/ -v
 ```
 
-All sbatch scripts source `env.sh` automatically.
+All sbatch scripts source `env.sh` and pass `PYTHONPATH=/opt/phys-extras/` automatically.
 
 **`PYTHONNOUSERSITE=1` is required** — prevents `~/.local` packages from shadowing the overlay. `env.sh` exports it automatically.
 
@@ -39,50 +53,81 @@ All sbatch scripts source `env.sh` automatically.
 cp .env.example .env   # override HF_HOME, SIF, OVERLAY, Slurm partition/QOS, etc.
 ```
 
-### Installing packages into the overlay
+### Fresh environment setup (one-time, from scratch)
 
 ```bash
-PYTHONNOUSERSITE=1 apptainer exec --overlay "$OVERLAY" --bind /etc/pki:/etc/pki "$SIF" \
-    pip install -e "$ROOT[dev]"
+# 1. Pull the SIF and create the overlay (sbatch — takes ~10 min)
+sbatch pull_docker.sbatch
+
+# 2. Install all packages into the overlay (run on login node, ~5 min)
+bash scripts/setup_overlay.sh
 ```
 
-**⚠️ DO NOT upgrade `huggingface-hub` and `transformers`** — the overlay defaults are stable and fully tested.
+`setup_overlay.sh` installs:
+- `phys-reasoner[dev]` (project + all declared deps)
+- `verl` from `verl_repo/` with `--no-deps`
+- `transformers==5.3.0`, `huggingface_hub==1.8.0`, `flash-linear-attention` into `/opt/phys-extras/`
+- Runs `e2fsck` to mark the overlay clean for compute nodes
+
+**Why `/opt/phys-extras/`?** The 017 SIF ships transformers 4.57.6 (no qwen3_5 support). We need 5.3.0. Upgrading in-place via pip fails on RHEL 8 compute nodes — OverlayFS whiteout entries for SIF packages are not respected when the overlay is mounted `:ro`. The `--target /opt/phys-extras/` approach writes fresh files to a new path, and `PYTHONPATH` makes Python find them first. No whiteout needed.
 
 ---
 
 ## TIR Trajectory Format
 
-Each solution follows a fixed single-execution structure (using Qwen's native tool-call tokens):
+Each solution follows a fixed single-execution structure using Qwen3.5's native XML tool-call tokens:
 
 ```
+<think>
+...reasoning...
+</think>
 <tool_call>
-{"name": "python", "arguments": {"code": "import sympy as sp\n..."}}
+<function=python>
+<parameter=code>
+import sympy as sp
+# code here
+print(result)
+</parameter>
+</function>
 </tool_call>
 <tool_response>
 {"output": "31622.776"}
 </tool_response>
-So ω ≈ 3.16 × 10⁴ rad/s. [answer] \boxed{C}
+So ω ≈ 3.16 × 10⁴ rad/s. \boxed{C}
 ```
 
-The model generates exactly one code block per trajectory. The sandbox executes it, injects the output, and the model reasons to a final `\boxed{}` answer. The verifier checks the final answer — not the code output directly.
+The model generates exactly one code block per trajectory. The sandbox executes it, injects the tool response, and the model reasons to a final `\boxed{}` answer. The verifier checks the final answer.
 
-**Why native tool-call tokens**: Qwen3.5's `</tool_call>` is a special token the model is pre-trained on — no format confusion, no looping issues. Custom bracket formats (`[code]...[/code]`) are fragile with this model.
+**`enable_thinking` per phase:**
+- **Phase 1 (generation)**: `enable_thinking=True` — reasoning goes into `<think>...</think>`, keeping Python code clean
+- **Phase 2 (after tool response)**: `enable_thinking=False` — model writes final answer directly
 
-**`enable_thinking=False` is required everywhere** — Qwen3.5 defaults to thinking mode ON (`<think>...</think>`), which breaks the TIR format. Two flags needed in training: `data.apply_chat_template_kwargs.enable_thinking=False` and `actor_rollout_ref.model.enable_thinking=False`. See `src/phys_reasoner/tir/prompts.py` for full explanation.
+With thinking suppressed in phase 1, reasoning leaks into Python code comments (no plain-content slot in Qwen3.5's tool-call assistant turn). Always use thinking=True for phase 1. See `src/phys_reasoner/tir/prompts.py` for full explanation.
+
+**Token length warning**: thinking traces can be very long on hard problems (`response_length/clip_ratio ≈ 0.94` at 1536 tokens). Planned mitigations: token-budget injection, stop-thinking at threshold, RL length penalty.
+
+**Why native tool-call tokens**: Qwen3.5's `</tool_call>` is a special token the model is pre-trained on — no format confusion, no looping issues. Custom bracket formats (`[code]...[/code]`) are fragile.
+
+**Qwen3 vs Qwen3.5 tool-call format difference:**
+
+| Model | Format | VeRL `multi_turn.format` |
+|---|---|---|
+| Qwen3 (0.6B, 1.7B, 4B) | hermes: `{"name": "python", "arguments": {...}}` | `hermes` |
+| Qwen3.5 (0.8B, 4B) | qwen3_coder: `<function=python><parameter=code>...</parameter></function>` | `qwen3_coder` |
 
 ---
 
 ## Training Pipeline
 
 **Stage 0 — Zero-shot probe:**
-Run 100-problem zero-shot check (Qwen3.5-4B instruct, thinking off). Measure execution success and verifier hit rate. If hit rate ≥ 15% on numerical problems → skip SFT.
+Run 100-problem zero-shot check (Qwen3.5-4B instruct, thinking on). Measure execution success and verifier hit rate. If hit rate ≥ 15% on numerical problems → skip SFT.
 
 ```bash
 sbatch scripts/stage0_probe.sbatch
 ```
 
 **Stage 1 — SFT (conditional):**
-If zero-shot format compliance < 15%, fine-tune on 2–5k TIR demonstrations. Likely skippable with the instruct model.
+If zero-shot format compliance < 15%, fine-tune on 2–5k TIR demonstrations.
 
 **Stage 2 — GRPO:**
 Binary reward on final `\boxed{}` answer via VeRL. Curriculum: numerical first → expression + MCQ.
@@ -90,6 +135,34 @@ Binary reward on final `\boxed{}` answer via VeRL. Curriculum: numerical first �
 ```bash
 sbatch scripts/grpo_train.sh
 ```
+
+### Required VeRL overrides for Qwen3.5-4B
+
+These must be in every GRPO/smoke run for Qwen3.5-4B to work correctly:
+
+```bash
+# Use SDPA (not flash_attention_2) for FSDP actor/ref.
+# VeRL's Ulysses monkey-patch conflicts with Qwen3.5's hybrid attention
+# (GDN linear layers + full attention layers) in transformers 5.3.0.
+'+actor_rollout_ref.model.override_config={attn_implementation:sdpa}'
+
+# Offload optimizer state to CPU — AdamW for 4.54B params needs ~36 GB GPU
+# (2 moments × float32). With vLLM KV cache this exceeds H200's 80 GB.
+actor_rollout_ref.actor.fsdp_config.optimizer_offload=True
+
+# Explicit FSDP wrap class — Qwen3_5ForCausalLM incorrectly lists
+# Qwen3_5VisionBlock in _no_split_modules (it's a text-only model).
+# Without this, VeRL crashes looking for the non-existent vision block.
+'+actor_rollout_ref.actor.fsdp_config.wrap_policy.transformer_layer_cls_to_wrap=[Qwen3_5DecoderLayer]'
+'+actor_rollout_ref.ref.fsdp_config.wrap_policy.transformer_layer_cls_to_wrap=[Qwen3_5DecoderLayer]'
+
+# TIR multi-turn format for Qwen3.5
+actor_rollout_ref.rollout.multi_turn.format=qwen3_coder
+actor_rollout_ref.rollout.multi_turn.enable=true
+actor_rollout_ref.rollout.agent.default_agent_loop=tool_agent
+```
+
+See `scripts/smoke_tir_qwen35.sh` for the complete validated configuration.
 
 ---
 
@@ -103,7 +176,7 @@ bash scripts/prepare_drsci.sh   # download → dedup → clean
 
 Final file: `data/processed/drsci_physics_clean.parquet`
 
-Cleaning steps: prose extraction, dollar-stripping, double-unescaping, truncated drops, prose-gold drops. Known issue: ~4.2% of problems reference figures/diagrams not present in text — filter pending.
+Cleaning steps: prose extraction, dollar-stripping, double-unescaping, truncated drops, prose-gold drops. 1.3% of rows filtered for figure references.
 
 ### Curated 6.8k corpus (hard-problem supplement)
 
@@ -176,8 +249,12 @@ phys-reasoner/
 │   └── training/
 │       └── reward.py           # VeRL-compatible compute_score()
 ├── scripts/
-│   ├── stage0_probe.sbatch     # Stage 0 probe job
+│   ├── smoke_tir_qwen35.sh     # Validated Qwen3.5-4B smoke test (H200)
+│   ├── smoke_tir_qwen35.sbatch # sbatch wrapper for smoke test
 │   ├── grpo_train.sh           # GRPO training launcher
+│   ├── setup_overlay.sh        # Install packages into overlay (run after pull_docker)
+│   ├── dump_rollouts.py        # Offline rollout inspector (vLLM, no Ray)
+│   ├── stage0_probe.sbatch     # Stage 0 probe job
 │   ├── prepare_drsci.sh        # Dr. SCI end-to-end pipeline
 │   ├── prepare_data.sh         # 6.8k corpus pipeline
 │   └── drsci_clean.py          # Dr. SCI cleaning steps
@@ -194,5 +271,5 @@ phys-reasoner/
 
 ## Models
 
-- **Primary**: `Qwen/Qwen3.5-4B` (instruct, thinking OFF)
+- **Primary**: `Qwen/Qwen3.5-4B` (instruct, thinking ON for phase 1)
 - **Debug**: `Qwen/Qwen3.5-0.8B`

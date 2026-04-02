@@ -19,14 +19,16 @@ It does two things for both datasets:
 
      VeRL's RLHFDataset reads doc["prompt"] and passes it through
      tokenizer.apply_chat_template(..., **apply_chat_template_kwargs).
-     The grpo_train.sh already passes enable_thinking=False via
-     data.apply_chat_template_kwargs.enable_thinking=False.
+     The grpo_train.sh passes enable_thinking=True via
+     data.apply_chat_template_kwargs.enable_thinking=True.
 
-     ⚠️  KNOWN GAP: grpo_train.sh does NOT pass tools=[PYTHON_TOOL_SCHEMA] via
-         apply_chat_template_kwargs, so the Qwen tool XML schema is NOT injected
-         during training. Fix: add tools kwarg to grpo_train.sh (deferred until
-         VeRL smoke test completes). The probe (stage0_probe.py) already passes
-         tools= correctly.
+     NOTE on tool schema: grpo_train.sh does NOT pass tools=[PYTHON_TOOL_SCHEMA]
+     via apply_chat_template_kwargs, but this is NOT a gap. VeRL's ToolAgentLoop
+     calls apply_chat_template(messages, tools=self.tool_schemas) fresh during
+     each rollout (_handle_pending_state), so the Qwen tool XML schema IS injected
+     into the actual training tokens. The data-loading tokenization (which uses
+     apply_chat_template_kwargs) is only used for prompt length filtering and is
+     never used as training tokens.
 
 SOURCE OF TRUTH:
     If TIR_SYSTEM_PROMPT changes in prompts.py, re-run this script to regenerate

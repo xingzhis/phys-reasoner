@@ -2,20 +2,55 @@
 
 Import from here in both stage0_probe.py and any custom TIR code.
 
-CRITICAL — THINKING MODE:
-    Qwen3.5 uses <think>...</think> (angle brackets) for native chain-of-thought.
-    We MUST disable this everywhere via enable_thinking=False in apply_chat_template.
-    Failure to do so causes the model to enter native CoT mode and emit stray
-    </think> tokens mid-response.
+THINKING MODE — enable_thinking=True for phase 1, False for phase 2:
+    Confirmed 2026-04-02 by A/B smoke test (dump_rollouts.py, Qwen3.5-4B, ball-drop problem).
 
-    Required in every call site:
-      - stage0_probe.py: tokenizer.apply_chat_template(..., enable_thinking=False)
-      - grpo_train.sh: data.apply_chat_template_kwargs.enable_thinking=False
-                       actor_rollout_ref.model.enable_thinking=False
+    WHY thinking must be ON for phase 1 (the tool-call turn):
+      In Qwen3.5's tool-call format the assistant turn has no "plain content" slot —
+      the model is expected to emit a <tool_call> block directly. With thinking
+      suppressed (enable_thinking=False), there is nowhere for the model to reason,
+      so it moves all reasoning into Python code comments. With thinking enabled, it
+      reasons in a proper <think>...</think> block, then calls the tool with clean
+      minimal code. Observed: </think> closes cleanly before <tool_call> — no leakage.
 
-FORMAT:
-    Qwen3/Qwen3.5 may appear in two closely related tool-call formats:
-      XML-style native Qwen format:
+    WHY thinking must be OFF for phase 2 (the final-answer turn):
+      After the <tool_response> is injected, the model just needs to state the answer.
+      Thinking here adds tokens without value and risks re-deriving the answer rather
+      than trusting the tool output. The injection (_make_tool_injection) already
+      passes enable_thinking=False, so this is handled automatically.
+
+    TOKEN LENGTH CAVEAT — thinking traces on hard problems can be long.
+      Planned mitigations (not yet implemented):
+        - Token-budget checkpoint: inject "<!-- budget: N tokens remaining -->" into
+          the system prompt so the model self-regulates thinking length.
+        - Stop-thinking injection: if phase 1 hits a token threshold, inject </think>
+          to force the model to proceed to the tool call.
+        - Soft prompt / instruction: add a "think briefly" instruction to the system
+          prompt to discourage verbose reasoning.
+        - RL length penalty: add a token-count penalty term to the reward in late
+          GRPO ablations (λ > 0) to discourage unnecessarily long trajectories.
+
+    Required settings per call site:
+      - phase 1 prompts (stage0_probe.py, dump_rollouts.py):
+            tokenizer.apply_chat_template(..., enable_thinking=True)
+      - phase 2 injection (_make_tool_injection in dump_rollouts.py):
+            tokenizer.apply_chat_template(..., enable_thinking=False)   ← already correct
+      - training (grpo_train.sh):
+            +data.apply_chat_template_kwargs.enable_thinking=True
+      NOTE: actor_rollout_ref.model.enable_thinking is NOT a valid VeRL field in this
+            build and crashes worker init if added — do not use it.
+
+FORMAT — CRITICAL: Qwen3 vs Qwen3.5 use DIFFERENT tool-call formats
+    Confirmed 2026-04-01 by inspecting rendered prompts via dump_rollouts.py.
+
+    Qwen3 (0.6B, 1.7B, 4B, ...) → hermes/JSON format:
+        <tool_call>
+        {"name": "python", "arguments": {"code": "..."}}
+        </tool_call>
+        VeRL: multi_turn.format=hermes
+        dump_rollouts / stage0_probe: extract_tool_call_code json_match branch
+
+    Qwen3.5 (0.8B, 4B, ...) → Qwen XML/coder format:
         <tool_call>
         <function=python>
         <parameter=code>
@@ -23,18 +58,20 @@ FORMAT:
         </parameter>
         </function>
         </tool_call>
+        VeRL: multi_turn.format=qwen3_coder
+        dump_rollouts / stage0_probe: extract_tool_call_code xml_match branch
 
-      Hermes/JSON format:
-        <tool_call>
-        {"name": "python", "arguments": {"code": "..."}}
-        </tool_call>
+    Using the wrong VeRL format causes silent failures: ToolAgentLoop cannot
+    parse the tool call, no tool ever runs, and all rollouts get zero reward.
 
-      <tool_response>
-      result
-      </tool_response>
-      interpretation... \\boxed{answer}
+    The stop token </tool_call> is the same for both formats.
+    extract_tool_call_code() handles both via separate regex branches.
 
-    The stop token </tool_call> is a special token — no confusion with HTML.
+    <tool_response>
+    result
+    </tool_response>
+    interpretation... \\boxed{answer}
+
     VeRL's ToolAgentLoop handles injection and mask=0 automatically.
     stage0_probe.py does manual injection (vLLM, no VeRL).
 """
@@ -92,17 +129,22 @@ PYTHON_TOOL_SCHEMA: dict = {
 
 TIR_SYSTEM_PROMPT = (
     "You are an expert physics problem solver.\n"
-    "Use the Python tool exactly once to compute the answer. "
-    "After seeing the result, give your final answer as \\boxed{<value>}.\n"
+    # "You MUST call the python tool exactly once to compute the answer. "
+    # "Do NOT solve the problem analytically without using the tool. "
+    # "After seeing the tool result, give your final answer as \\boxed{<value>}.\n"
+    "You have access to a Python interpreter. Use it when it helps — "
+    "for numerical computation, symbolic algebra, or unit conversion. "
+    "You are not required to use it.\n"
     "\n"
     f"Allowed packages: {ALLOWED_PACKAGES_STR}\n"
-    "Your code must call print() to output the result. Define all variables inside the block.\n"
+    "If you write code, it must call print() to output the result. "
+    "Define all variables inside the code block.\n"
     "\n"
-    "Example:\n"
-    "A ball falls from rest for t=2s under g=9.8 m/s². Distance = 0.5·g·t².\n"
-    "[Calls python tool with: g=9.8; t=2.0; print(0.5*g*t**2)]\n"
-    "[Tool returns: 19.6]\n"
-    "The distance is 19.6 m. \\boxed{19.6 \\, \\mathrm{m}}\n"
+    "End with your final answer as \\boxed{<value>}.\n"
+    # No format example here — the tool schema injected by apply_chat_template(tools=[...])
+    # is sufficient to prime the model's tool-call format. An explicit example would need
+    # to be format-specific (hermes vs qwen3_coder) and TIR_SYSTEM_PROMPT is shared across
+    # both Qwen3 and Qwen3.5. Validated without example on Qwen3-0.6B (smoke_tir.sh).
 )
 
 # ---------------------------------------------------------------------------

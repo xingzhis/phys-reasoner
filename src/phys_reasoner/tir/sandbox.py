@@ -44,6 +44,8 @@ def execute_code(
     # --- Import whitelist check (no subprocess needed for fast rejection) ---
     violation = _check_imports(code)
     if violation is not None:
+        if violation == "<syntax error>":
+            return SandboxResult(stderr="SyntaxError: code could not be parsed", error=True)
         return SandboxResult(
             stderr=f"ImportError: package '{violation}' not in ALLOWED_PACKAGES",
             error=True,

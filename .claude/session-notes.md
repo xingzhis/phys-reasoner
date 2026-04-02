@@ -1,6 +1,6 @@
 # Session Notes — for next session context
 
-Last updated: 2026-04-01 (session 2)
+Last updated: 2026-04-02 (session 4)
 
 ---
 
@@ -48,7 +48,36 @@ Last updated: 2026-04-01 (session 2)
 
 ## IMMEDIATE NEXT STEPS (start here next session)
 
-### ⚠️ BLOCKER: Switch TIR format to Qwen native tool-calling
+### ✅ RESOLVED: Qwen3.5-4B GRPO smoke test PASSING (job 1457563, 2026-04-02)
+
+End-to-end pipeline confirmed: vLLM rollout → tool calls → FSDP training × 2 steps.
+See "Session 4 work completed" for full stats and environment details.
+
+**Next priority**: investigate Ray worker teardown crash (see "IMMEDIATE NEXT SESSION" above).
+
+---
+
+### ✅ RESOLVED: TIR format is now Qwen native tool-calling (hermes)
+
+The [code]...[/code] format was abandoned. VeRL smoke test with Qwen3-0.6B now passes
+end-to-end using hermes tool-call format. grpo_train.sh is patched and ready.
+See "VeRL TIR smoke test lessons" section below.
+
+### ⚠️ KEY FINDING: 4B zero-shot TIR rate ≈ 0% → SFT is needed
+
+Ran 4 rollouts of Qwen3.5-4B at max_tokens=8192. **0/4 made a tool call.** The model
+has physics knowledge (got skin depth correct analytically) but does not spontaneously
+use TIR format. This confirms Stage 0 gate: zero-shot TIR hit rate < 15% → SFT required.
+
+Rollout results (outputs/rollouts_20260401.225921/):
+- 000 expression: no tool, got partial answer (2/3), wrong
+- 001 true_false:  no tool, answered "Yes" directly (gold=No, wrong)
+- 002 numerical:   no tool, ran out before boxing answer
+- 003 expression:  no tool, derived skin depth correctly (√(2/ωμσ)) — but no tool call
+
+**Next action: proceed to SFT before GRPO.**
+
+### ⚠️ BLOCKER (OLD — now resolved): Switch TIR format to Qwen native tool-calling
 
 The custom `[code]...[/code]` format was smoke-tested on 2 samples (Qwen3.5-4B, `enable_thinking=False`) and revealed fundamental fragility. **Do not run the full 100-sample probe or begin training until this is fixed.**
 
@@ -142,6 +171,63 @@ that unambiguously reference an external figure: "as shown in the figure", "refe
 
 ---
 
+## Session 3 work completed (2026-04-01)
+
+### grpo_train.sh patched (2 fixes)
+- `ROLLOUT_LOAD_FORMAT` default: `dummy` → `safetensors`
+- Added `max_user_turns=1` to TIR_ARGS
+- Backup: `scripts/grpo_train.sh.bak.20260401`
+
+### TIR rollout inspection tooling (new)
+- `scripts/dump_rollouts.py` — offline 2-phase vLLM loop, saves per-rollout txt files
+- `scripts/dump_rollouts.sh` — interactive wrapper (defaults: 0.6B, n=4, 8192 tokens)
+- `scripts/dump_rollouts.sbatch` — sbatch version for H200; uses `SLURM_SUBMIT_DIR`
+- Injection replicates VeRL exactly via dummy-user workaround (verl/utils/chat_template.py lines 87-114)
+- Each txt shows: problem → phase1 → extracted code → sandbox stdout → injection (repr) → phase2 → verdict
+
+### Qwen3.5-4B template quirk (important for all future scripts)
+`apply_chat_template` on Qwen3.5-4B rejects any message list without a `role="user"` entry
+with "No user query found". VeRL's wrapper (`verl/utils/chat_template.py`) handles this by
+prepending a dummy empty user message and stripping it from the output. Our dump_rollouts.py
+now uses the same approach. This affects: any standalone `apply_chat_template` call that
+passes only system/tool messages.
+
+### ⚠️ CRITICAL: enable_thinking=True required for phase 1 (confirmed 2026-04-02)
+
+A/B smoke test (Qwen3.5-4B, ball-drop problem, dump_rollouts.py):
+- `enable_thinking=False`: model jumps straight to `<tool_call>`, ALL reasoning goes into Python code comments. Root cause: Qwen3.5's tool-call format has no plain-content slot in the assistant turn, so with thinking suppressed there is nowhere to reason except code comments.
+- `enable_thinking=True`: model reasons in `<think>...</think>` first, then calls the tool with clean minimal code. `</think>` closes before `<tool_call>` — no leakage.
+
+**Decision**: enable_thinking=True for phase 1 everywhere. Phase 2 injection keeps False.
+
+Token length caveat: thinking traces can be long on hard physics problems.
+Planned mitigations (not yet implemented):
+  - Token-budget checkpoint: inject remaining-token count into system prompt for self-regulation
+  - Stop-thinking injection: force `</think>` if phase 1 hits a token threshold
+  - Soft prompt: "think briefly" instruction in system prompt
+  - RL length penalty: token-count penalty term in GRPO reward (late ablation, λ>0)
+
+Files updated: prompts.py (THINKING MODE docstring), stage0_probe.py, grpo_train.sh, smoke_tir_qwen35.sh, dump_rollouts.py (default True), dump_rollouts.sbatch (default 1), CLAUDE.md
+
+### ⚠️ CRITICAL: Qwen3 vs Qwen3.5 use different tool-call formats (confirmed 2026-04-01)
+Discovered by adding prompt dump to dump_rollouts.py and inspecting the rendered phase 1 prompt.
+
+| Model family | Tool-call format | VeRL setting |
+|---|---|---|
+| Qwen3 (0.6B, 1.7B, 4B) | hermes/JSON: `{"name": "python", "arguments": {...}}` | `format=hermes` |
+| Qwen3.5 (0.8B, 4B) | Qwen XML: `<function=python><parameter=code>...</parameter></function>` | `format=qwen3_coder` |
+
+Both wrapped in `<tool_call>...</tool_call>` — stop token is the same.
+Wrong VeRL format → ToolAgentLoop fails to parse tool calls silently → zero reward on all rollouts.
+
+Fixed in:
+- `scripts/grpo_train.sh`: changed `format=hermes` → `format=qwen3_coder`
+- `src/phys_reasoner/tir/prompts.py`: TIR_SYSTEM_PROMPT example updated to XML format; FORMAT docstring explains both
+- `scripts/smoke_tir.sh`: header comment added (keeps `format=hermes`, validated for Qwen3-0.6B)
+- `scripts/smoke_tir_qwen35.sh`: NEW — copy of smoke_tir.sh with `format=qwen3_coder` for Qwen3.5-4B
+
+---
+
 ## VeRL TIR smoke test lessons (validated 2026-04-01)
 
 These were confirmed by getting `smoke_tir.sh` (Qwen3-0.6B, A40, 2 training steps) to pass end-to-end.
@@ -166,7 +252,40 @@ Fix: request `--mem=64G` or more in sbatch/interactive sessions depending on mod
 
 ---
 
+## ✅ RESOLVED: Ray worker teardown crash (investigated 2026-04-02)
+
+After both GRPO training steps complete successfully (job 1457563), the process exits with:
+
+```
+RuntimeError: DataLoader worker (pid 130357) is killed by signal: Killed. Exit code: 0
+```
+
+**This is harmless — IGNORE IT.**
+
+Confirmed:
+- Checkpoint at `global_step_2/actor/` is fully written (model + optim + extra_state + huggingface) BEFORE the crash fires
+- `.err` file has 0 errors — the traceback only appears in `.log` as a Ray actor sub-process message
+- "Exit code: 0" confirms the DataLoader worker died cleanly (normal exit, not OOM or SIGKILL from a real problem)
+
+Root cause: `verl/trainer/main_ppo.py` has no `ray.shutdown()` call after `trainer.fit()`. When Python exits, Ray kills all actor sub-processes with SIGKILL. Inside the `TaskRunner` actor, PyTorch's DataLoader SIGCHLD handler fires and raises `RuntimeError`. This is a VeRL upstream gap — not documented or fixed in the VeRL repo. Adding `ray.shutdown()` after line 100 of `main_ppo.py` would fix it, but it's not worth touching verl code for cosmetic teardown noise.
+
+---
+
 ## Other pending items (lower priority)
+
+### Pre-training parameter sweep (do before scaled run)
+
+Before the full training run, do two sequential studies:
+
+**Study 1 — Throughput sweep** (1–2 jobs, metric: step time + p1_truncated rate):
+- `TRAIN_BATCH` × `ROLLOUT_N` (total gens/step): try 4×8, 8×8, 16×8
+- `GPU_MEM_UTIL`: 0.7, 0.8, 0.85 (vLLM KV cache vs FSDP headroom)
+- `MAX_RESPONSE_LEN`: 2048 vs 4096 (thinking traces dominate; check if 4096 is needed)
+
+**Study 2 — Hyperparameter sweep** (3–5 jobs, run 200–500 steps each, metric: reward on numerical subset):
+- `LR`: 1e-6 (current), 3e-6 (noted in script), 1e-5
+- `ROLLOUT_TEMP`: 0.7 (current) vs 1.0 (more diversity = more learning signal)
+- `KL_LOSS_COEF`: 0.001 (current) vs 0.01
 
 ### gold-vs-gold FN rate on Dr. SCI (RQ2 baseline)
 `drsci_audit.py` already has `run_round_trip()`. Run on `drsci_physics_clean.parquet`.
@@ -210,7 +329,50 @@ See lookup table in `docs/training-decisions.md`.
 
 ## Environment reminder
 - SIF: `verl_vllm017.latest.sif`
-- Overlay: `phys-reasoner-overlay-017.img` (use for all sbatch jobs)
+- Overlay: `phys-reasoner-overlay-017b.img` (CURRENT — use for all sbatch jobs)
+  - Previous 017 overlay had hub 0.36.2 pinned; 017b has correct setup
 - Always: `export PYTHONNOUSERSITE=1` before apptainer calls
+- **PYTHONPATH=/opt/phys-extras/** must be set in all apptainer exec calls
+  - Contains: transformers==5.3.0, huggingface_hub==1.8.0, hf-xet==1.4.3, flash-linear-attention==0.4.2, fla-core==0.4.2
+  - This is the reliable way to upgrade packages above SIF baseline without OverlayFS whiteout issues
 - HF cache: `hf_cache/` — use HF model IDs directly (all nodes have internet); never hardcode snapshot paths
 - GPU partition: `gpu`, qos `qos_nmi`, gres `h200:1`
+
+## Session 4 work completed (2026-04-02)
+
+### ✅ Qwen3.5-4B GRPO smoke test with TIR: PASSING (job 1457563)
+
+End-to-end pipeline: vLLM rollout → tool call execution → FSDP training × 2 steps.
+
+Key stats (step 2):
+- `num_turns/mean: 2.75`, `tool_calls/max: 0.244s` — tool calls happening
+- `critic/score/mean: 0.125` — reward firing correctly  
+- `response_length/clip_ratio: 0.9375` — ⚠️ think traces hit 1536 limit (expected with thinking=True)
+- `perf/max_memory_allocated_gb: 51.56` — fits in H200
+
+### Environment changes (breaking old overlay, new 017b setup)
+
+**Problem chain**: 016.dev.qwen3_5 SIF has vllm `0.1.dev1` (incompatible with verl_repo requiring >= 0.7.0).
+
+**Solution**: vllm017.latest SIF (0.17.0 ≥ 0.7.0) + fresh overlay + `PYTHONPATH=/opt/phys-extras/`
+
+**PYTHONPATH approach** (instead of pip upgrade-in-place):
+- Root cause of repeated failures: OverlayFS whiteout for pip-uninstall of SIF packages does NOT work reliably on RHEL 8 compute nodes when overlay is mounted `:ro`
+- Compute nodes silently fall back to the SIF's old hub 0.36.2 even after pip "upgrade" into overlay
+- Fix: `pip install --no-deps --target /opt/phys-extras/` for the packages that need to be newer than the SIF; set `PYTHONPATH=/opt/phys-extras/` so Python finds them first
+- This is now the standard pattern — see `scripts/setup_overlay.sh` step 4
+
+**Flash attention crash** (Qwen3.5 FSDP actor):
+- Verl's Ulysses monkey patch patches `_flash_attention_forward` globally
+- Qwen3.5 hybrid attention (GDN layers + standard attention) + transformers 5.3.0 API change → CUDA illegal memory access
+- Fix: `'+actor_rollout_ref.model.override_config={attn_implementation:sdpa}'` in smoke script
+- With SDPA, verl correctly prints "Skipping monkey patch for Qwen3_5ForConditionalGeneration as use_fused_kernels is False"
+
+**OOM fix**: AdamW optimizer for 4.54B model needs ~36 GB GPU (2 moments × float32). With vLLM KV cache at 40 GB → 76 GB > H200's 80 GB headroom.
+- Fix: `actor_rollout_ref.actor.fsdp_config.optimizer_offload=True` (optimizer state on CPU)
+- `param_offload=False` stays (model weights on GPU for fast forward pass)
+
+### setup_overlay.sh now requires e2fsck after install
+- Added `e2fsck -fp $OVERLAY` at end of setup_overlay.sh
+- Without it, compute nodes may see "unchecked fs" and fail to mount overlay correctly
+- This was the root cause of the hub 0.36.2 mystery (compute node mounted stale overlay)

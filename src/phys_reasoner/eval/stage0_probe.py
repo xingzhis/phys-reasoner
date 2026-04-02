@@ -3,11 +3,17 @@
 Runs entirely on one GPU via vLLM.LLM (no Ray, no VeRL).
 Measures: format adherence, exec success, verifier hit rate.
 
-CRITICAL — THINKING MODE:
-    apply_chat_template is called with enable_thinking=False (see build_tir_prompt).
-    This MUST stay False. Qwen3.5 defaults to thinking=ON which causes the model to
-    emit native <think>...</think> tokens, break the TIR format, and leak </think>
-    mid-response. See prompts.py for full explanation.
+THINKING MODE:
+    Phase 1 (tool-call turn): enable_thinking=True — model reasons in <think> before
+    calling the tool. With thinking suppressed, the tool-call format has no plain-content
+    slot so reasoning leaks into Python code comments instead. See prompts.py for full
+    rationale and token-length mitigation ideas.
+    Phase 2 (final-answer turn): the injection already uses enable_thinking=False.
+
+FORMAT:
+    Uses Qwen native tool-call format. Phase 1 generates until </tool_call>, we
+    inject <tool_response>...</tool_response>, phase 2 continues to EOS. This
+    mirrors what VeRL's ToolAgentLoop does during training.
 
 Decision gate: if verifier_hit_rate >= 0.15 on numerical problems → skip SFT.
 
@@ -29,10 +35,10 @@ import time
 
 import pandas as pd
 
-from phys_reasoner.tir.prompts import CODE_STOP, TIR_SYSTEM_PROMPT, extract_code
+from phys_reasoner.tir.prompts import PYTHON_TOOL_SCHEMA, TOOL_CALL_STOP, TIR_SYSTEM_PROMPT, extract_tool_call_code
 
-OUTPUT_PREFIX = "[output] "
-OUTPUT_SUFFIX = "\n"
+OUTPUT_PREFIX = "<tool_response>\n"
+OUTPUT_SUFFIX = "\n</tool_response>\n"
 
 
 def build_tir_prompt(problem: str) -> list[dict]:
@@ -100,20 +106,26 @@ def run_probe(
             raise ValueError(f"No problem/question column found in row: {row.index}")
 
     messages_list = [build_tir_prompt(get_problem_text(row)) for _, row in df.iterrows()]
-    # enable_thinking=False injects <think>\n\n</think>\n\n into the generation prompt,
-    # which suppresses Qwen3.5's native chain-of-thought thinking tokens and lets the
-    # model respond directly in our TIR format.
+    # enable_thinking=True: model reasons in <think>...</think> before the tool call.
+    # Without this, the tool-call format has no plain-content slot and the model
+    # squeezes reasoning into Python code comments instead. See prompts.py for details.
+    # tools=[PYTHON_TOOL_SCHEMA] injects the tool schema so the model emits a native
+    # tool call inside <tool_call>...</tool_call>.
     phase1_prompts = [
         tokenizer.apply_chat_template(
-            msgs, tokenize=False, add_generation_prompt=True, enable_thinking=False
+            msgs,
+            tools=[PYTHON_TOOL_SCHEMA],
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=True,
         )
         for msgs in messages_list
     ]
 
-    # --- Phase 1: generate until [/code] ---
+    # --- Phase 1: generate until </tool_call> ---
     phase1_params = SamplingParams(
         max_tokens=max_new_tokens,
-        stop=[CODE_STOP],
+        stop=[TOOL_CALL_STOP],
         include_stop_str_in_output=True,
         temperature=0.7,
         top_p=0.8,
@@ -139,7 +151,7 @@ def run_probe(
         p1_stop_reasons.append(p1_stop)
         tokens_used_p1.append(len(p1_out.token_ids))
 
-        code_str = extract_code(p1_text)
+        code_str = extract_tool_call_code(p1_text)
         code_extracted_flags.append(code_str is not None)
 
         if code_str and p1_stop == "stop":
@@ -153,7 +165,7 @@ def run_probe(
             exec_stdouts.append("")
             output_injection = f"{OUTPUT_PREFIX}(no code block){OUTPUT_SUFFIX}"
 
-        # If the model already wrote a \boxed{} answer in phase 1 without a code block
+        # If the model already wrote a \boxed{} answer in phase 1 without a tool call
         # (skipped straight to answer), don't inject output — that would corrupt the
         # already-valid answer. Use a dummy prompt with max_tokens=1 to skip phase 2.
         already_answered = (code_str is None) and (p1_stop == "stop") and (_extract_boxed(p1_text) is not None)
@@ -185,14 +197,13 @@ def run_probe(
         p2_stop = p2_out.finish_reason or "unknown"
 
         if already_answered_flags[i]:
-            # Model answered in phase 1 without code — use p1 text directly.
+            # Model answered in phase 1 without tool call — use p1 text directly.
             p2_text = ""
             p2_stop = "skip"
             boxed = _extract_boxed(phase1_texts[i])
-            format_ok = False  # no code block, so format is not fully compliant
+            format_ok = False  # no tool call, so format is not fully compliant
         else:
             p2_text = p2_out.text
-            # Extract \boxed{} from phase 2 text.
             boxed = _extract_boxed(p2_text)
             format_ok = code_extracted_flags[i] and (boxed is not None)
 
@@ -251,8 +262,8 @@ def _print_summary(df: pd.DataFrame) -> None:
     p1_trunc = df["p1_truncated"].mean()
     p2_trunc = df["p2_truncated"].mean()
     print(f"\n=== Stage 0 Probe Summary (n={n_total}) ===")
-    print(f"  Phase 1 truncated (no [/code]): {p1_trunc:.1%}")
-    print(f"  Phase 2 truncated (no [/answer]): {p2_trunc:.1%}")
+    print(f"  Phase 1 truncated (no </tool_call>): {p1_trunc:.1%}")
+    print(f"  Phase 2 truncated (no EOS):          {p2_trunc:.1%}")
 
     for atype, grp in df.groupby("answer_type"):
         n = len(grp)

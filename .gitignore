@@ -36,6 +36,7 @@ overlay*/
 *.img.bak
 *.img.bak2
 *.img.backup
+tmp_apptainer_cache/
 
 # Logs & wandb
 wandb/

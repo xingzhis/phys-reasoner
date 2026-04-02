@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# smoke_tir.sh — Step 4: TIR smoke test with VeRL's native ToolAgentLoop.
+# smoke_tir_qwen35.sh — TIR smoke test for Qwen3.5-4B on H200.
 #
-# *** VALIDATED for Qwen3-0.6B with format=hermes ***
-# For Qwen3.5-4B use smoke_tir_qwen35.sh (format=qwen3_coder) instead.
+# *** VALIDATED configuration for Qwen3.5-4B with format=qwen3_coder ***
+# For Qwen3-0.6B use smoke_tir.sh (format=hermes) instead.
 #
-# TOOL-CALL FORMAT NOTE (easy to get wrong):
+# TOOL-CALL FORMAT NOTE — why this file exists separately from smoke_tir.sh:
 #   Qwen3   (0.6B, 1.7B, 4B, ...) → tokenizer emits hermes/JSON format:
 #       <tool_call>
 #       {"name": "python", "arguments": {"code": "..."}}
@@ -19,13 +19,12 @@
 #       </tool_call>
 #       VeRL setting: multi_turn.format=qwen3_coder
 #
-#   Setting the wrong format causes the ToolAgentLoop to fail to parse tool
-#   calls silently — the model generates correct output but no tool ever runs.
-#   Confirmed 2026-04-01 by inspecting rendered prompts via dump_rollouts.py.
-#
-# Validates the full TIR pipeline:
-#   real physics data → tool_agent loop → hermes tool-call format
-#   → PythonSandboxTool execution → phys_reasoner reward → 2 training steps
+#   This was confirmed 2026-04-01 by inspecting the rendered phase 1 prompts
+#   via dump_rollouts.py. The Qwen3.5-4B tokenizer's apply_chat_template injects
+#   XML-format tool-call instructions into the system message; the hermes parser
+#   in VeRL cannot parse this format and silently drops all tool calls.
+#   VeRL's qwen3_coder parser (verl/experimental/agent_loop/tool_parser.py:173)
+#   explicitly handles this format.
 #
 # Architecture:
 #   - VeRL ToolAgentLoop (tool_agent) handles the 2-phase TIR cycle:
@@ -36,18 +35,24 @@
 #   - Tool schema is injected by apply_chat_template(tools=...) inside the agent loop;
 #     the parquet prompts don't need to pre-inject it.
 #
+# GPU: H200 (80 GB). VLLM_GPU_MEM_UTIL=0.5 is safe for 4B + training overhead.
+# For A100/A40, lower VLLM_GPU_MEM_UTIL and increase param_offload as needed.
+#
 # Usage:
-#   bash scripts/smoke_tir.sh
-#   REAL_PARQUET=data/processed/drsci_train.parquet bash scripts/smoke_tir.sh
-#   SMOKE_N=4 bash scripts/smoke_tir.sh
-#   MODEL=Qwen/Qwen3-1.7B bash scripts/smoke_tir.sh
+#   bash scripts/smoke_tir_qwen35.sh
+#   REAL_PARQUET=data/processed/drsci_train.parquet bash scripts/smoke_tir_qwen35.sh
+#   SMOKE_N=4 bash scripts/smoke_tir_qwen35.sh
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# Unset SIF/OVERLAY from SLURM-inherited env so env.sh/.env always wins
+unset SIF OVERLAY
 source "$ROOT/env.sh"
+echo "  SIF:     $SIF"
+echo "  OVERLAY: $OVERLAY"
 
-MODEL="${MODEL:-Qwen/Qwen3-0.6B}"
+MODEL="${MODEL:-Qwen/Qwen3.5-4B}"
 # Default to corpus_train (smaller, cleaner). Override via env.
 REAL_PARQUET="${REAL_PARQUET:-data/processed/corpus_train.parquet}"
 SMOKE_N="${SMOKE_N:-2}"
@@ -55,7 +60,7 @@ SMOKE_N="${SMOKE_N:-2}"
 # Resolve relative path against ROOT
 [[ "$REAL_PARQUET" != /* ]] && REAL_PARQUET="$ROOT/$REAL_PARQUET"
 
-# ---------- crystal-matching settings for A40 (48 GB) ----------
+# ---------- H200 (80 GB) settings ----------
 N_GPUS=1
 TRAIN_BATCH=2
 ROLLOUT_N=8
@@ -63,7 +68,8 @@ PPO_MINI_BATCH=2
 REF_MICRO_BATCH=$PPO_MINI_BATCH
 TOTAL_GENS=$((TRAIN_BATCH * ROLLOUT_N))
 ROLLOUT_MAX_NUM_SEQS=$TOTAL_GENS
-VLLM_GPU_MEM_UTIL=0.38
+# 4B on H200: 0.5 leaves ample room for FSDP + Ray overhead alongside vLLM.
+VLLM_GPU_MEM_UTIL=0.5
 
 # TIR responses need two phases: reasoning+tool_call → injection → final answer.
 # 1024 prompt + 1536 response covers most physics problems with room to spare.
@@ -71,21 +77,29 @@ MAX_PROMPT_LEN="${MAX_PROMPT_LEN:-1024}"
 MAX_RESPONSE_LEN="${MAX_RESPONSE_LEN:-1536}"
 
 TIMESTAMP=$(date +%Y%m%d.%H%M%S)
-TRAIN_DIR="$ROOT/outputs/smoke_tir_$TIMESTAMP"
+TRAIN_DIR="$ROOT/outputs/smoke_tir_qwen35_$TIMESTAMP"
 mkdir -p "$TRAIN_DIR"
 
-echo "=== smoke_tir Step 4: TIR with ToolAgentLoop + qwen3_coder format ==="
+echo "=== smoke_tir_qwen35: TIR with ToolAgentLoop + qwen3_coder format ==="
 echo "  model     : $MODEL"
 echo "  data      : $REAL_PARQUET (n=$SMOKE_N)"
 echo "  batch     : $TRAIN_BATCH prompts x $ROLLOUT_N rollouts = $TOTAL_GENS gens/step"
 echo "  seq lens  : prompt=$MAX_PROMPT_LEN  response=$MAX_RESPONSE_LEN"
-echo "  vLLM mem  : $VLLM_GPU_MEM_UTIL"
+echo "  vLLM mem  : $VLLM_GPU_MEM_UTIL  (H200)"
 echo "  output    : $TRAIN_DIR"
 
 # Guard: expandable_segments is incompatible with vLLM CuMemAllocator.
 if [[ "${PYTORCH_CUDA_ALLOC_CONF:-}" == *"expandable_segments:True"* ]]; then
     echo "WARNING: unsetting PYTORCH_CUDA_ALLOC_CONF (expandable_segments:True conflicts with vLLM)"
     unset PYTORCH_CUDA_ALLOC_CONF
+fi
+
+# Guard: SLURM on some clusters sets ROCR_VISIBLE_DEVICES (AMD ROCm variable).
+# VeRL's worker init raises ValueError if both ROCR_VISIBLE_DEVICES and
+# CUDA_VISIBLE_DEVICES are set simultaneously on an NVIDIA node.
+if [[ -n "${ROCR_VISIBLE_DEVICES:-}" ]]; then
+    echo "WARNING: unsetting ROCR_VISIBLE_DEVICES (conflicts with CUDA_VISIBLE_DEVICES in VeRL)"
+    unset ROCR_VISIBLE_DEVICES
 fi
 
 # ---------- sample smoke parquet (inside container for correct pandas/pyarrow) ----------
@@ -96,6 +110,7 @@ PYTHONNOUSERSITE=1 apptainer exec \
   --overlay "$OVERLAY:ro" --no-home \
   --bind /etc/pki:/etc/pki \
   --env "PYTHONNOUSERSITE=1" \
+  --env "PYTHONPATH=/opt/phys-extras/" \
   "$SIF" \
   python3 - <<'PY' "$REAL_PARQUET" "$SMOKE_DATA" "$SMOKE_N"
 import sys
@@ -124,8 +139,10 @@ PYTHONNOUSERSITE=1 apptainer exec --nv \
   --env "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
   --env "PYTHONNOUSERSITE=1" \
   --env "PYTHONUNBUFFERED=1" \
+  --env "PYTHONPATH=/opt/phys-extras/" \
   --env "HF_HOME=$HF_HOME" \
   --env "HF_DATASETS_OFFLINE=1" \
+  --env "VERL_DUMP_DIR=${VERL_DUMP_DIR:-}" \
   "$SIF" \
   python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=grpo \
@@ -138,10 +155,11 @@ PYTHONNOUSERSITE=1 apptainer exec --nv \
     data.filter_overlong_prompts=False \
     data.truncation=right \
     data.dataloader_num_workers=1 \
-    +data.apply_chat_template_kwargs.enable_thinking=false \
+    +data.apply_chat_template_kwargs.enable_thinking=true \
     actor_rollout_ref.model.path="$MODEL" \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
+    '+actor_rollout_ref.model.override_config={attn_implementation:sdpa}' \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.actor.ppo_mini_batch_size=$PPO_MINI_BATCH \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=$PPO_MINI_BATCH \
@@ -151,15 +169,18 @@ PYTHONNOUSERSITE=1 apptainer exec --nv \
     actor_rollout_ref.actor.kl_loss_type=low_var_kl \
     actor_rollout_ref.actor.entropy_coeff=0 \
     actor_rollout_ref.actor.fsdp_config.param_offload=False \
-    actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
+    actor_rollout_ref.actor.fsdp_config.optimizer_offload=True \
     actor_rollout_ref.actor.fsdp_config.model_dtype=bfloat16 \
+    '+actor_rollout_ref.actor.fsdp_config.wrap_policy.transformer_layer_cls_to_wrap=[Qwen3_5DecoderLayer]' \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     actor_rollout_ref.ref.fsdp_config.model_dtype=bfloat16 \
+    '+actor_rollout_ref.ref.fsdp_config.wrap_policy.transformer_layer_cls_to_wrap=[Qwen3_5DecoderLayer]' \
     actor_rollout_ref.rollout.name=vllm \
     actor_rollout_ref.rollout.n=$ROLLOUT_N \
     actor_rollout_ref.rollout.temperature=1.0 \
     actor_rollout_ref.rollout.top_p=0.9 \
     actor_rollout_ref.rollout.gpu_memory_utilization=$VLLM_GPU_MEM_UTIL \
+    actor_rollout_ref.rollout.max_model_len=$((MAX_PROMPT_LEN + MAX_RESPONSE_LEN * 2)) \
     actor_rollout_ref.rollout.max_num_seqs=$ROLLOUT_MAX_NUM_SEQS \
     actor_rollout_ref.rollout.load_format=safetensors \
     actor_rollout_ref.rollout.tensor_model_parallel_size=$N_GPUS \
@@ -167,7 +188,7 @@ PYTHONNOUSERSITE=1 apptainer exec --nv \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=$REF_MICRO_BATCH \
     actor_rollout_ref.rollout.agent.default_agent_loop=tool_agent \
     actor_rollout_ref.rollout.multi_turn.enable=true \
-    actor_rollout_ref.rollout.multi_turn.format=hermes \
+    actor_rollout_ref.rollout.multi_turn.format=qwen3_coder \
     actor_rollout_ref.rollout.multi_turn.tool_config_path="$ROOT/scripts/physcode_tools.yaml" \
     actor_rollout_ref.rollout.multi_turn.max_assistant_turns=2 \
     actor_rollout_ref.rollout.multi_turn.max_user_turns=1 \
@@ -184,7 +205,7 @@ PYTHONNOUSERSITE=1 apptainer exec --nv \
     trainer.test_freq=-1 \
     trainer.val_before_train=false \
     trainer.project_name=physcode_smoke \
-    trainer.experiment_name="smoke_tir_$TIMESTAMP" \
+    trainer.experiment_name="smoke_tir_qwen35_$TIMESTAMP" \
     trainer.default_local_dir="$TRAIN_DIR" \
     trainer.default_hdfs_dir=null \
     'trainer.logger=["console"]' \

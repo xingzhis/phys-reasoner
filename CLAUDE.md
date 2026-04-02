@@ -24,8 +24,8 @@ Three main components:
    ```
    reasoning... [code] import sympy... print(...) [/code] [output] result interpretation... [answer] \boxed{X}
    ```
-   - **No `[think]`/`[/think]` tags** — Qwen3.5 uses `<think>...</think>` (angle brackets) for native chain-of-thought; our square-bracket `[think]` conflicted with that and caused `</think>` leakage. Format uses plain reasoning text instead.
-   - **`enable_thinking=False` everywhere** — must be set in `apply_chat_template` (probe) and `data.apply_chat_template_kwargs.enable_thinking=False` (training). This injects `<think>\n\n</think>\n\n` to suppress native CoT.
+   - **`enable_thinking=True` for phase 1, `False` for phase 2** — In Qwen3.5's tool-call format the assistant turn has no plain-content slot; with thinking suppressed, reasoning leaks into Python code comments. With thinking ON, the model reasons in `<think>...</think>` then calls the tool with clean code. `</think>` closes before `<tool_call>` cleanly (confirmed 2026-04-02). Phase 2 injection uses `enable_thinking=False` (final answer needs no thinking).
+   - **Token length caveat**: thinking traces can be long on hard problems. Planned mitigations: token-budget checkpoint, stop-thinking injection, RL length penalty. See `prompts.py` THINKING MODE section.
    - Model generates until `[/code]` stop token
    - Sandbox executes code (30s timeout, subprocess isolation)
    - `[output] {result}\n` injected as fixed continuation
@@ -54,30 +54,39 @@ Two files are relevant:
 
 | File | Purpose |
 |---|---|
-| `verl_vllm017.latest.sif` | Base Apptainer SIF (read-only; never modify) |
-| `phys-reasoner-overlay-017.img` | **Primary overlay** — use for all sbatch jobs and interactive work |
+| `verl_vllm017.latest.sif` | Base Apptainer SIF — vllm 0.17.0, transformers 4.57.6 (read-only; never modify) |
+| `phys-reasoner-overlay-017b.img` | **Active overlay** — use for all sbatch jobs and interactive work |
 
-The overlay holds all pip-installed packages (phys-reasoner, scipy, huggingface-hub, transformers, etc.) layered on top of the base SIF. **Do NOT upgrade huggingface-hub or transformers.**
+The overlay holds project packages plus `/opt/phys-extras/` which contains upgraded versions of transformers, hub, and flash-linear-attention layered above the SIF base.
 
 ### Running commands
 
 ```bash
 ROOT=/gpfs/radev/scratch/krishnaswamy_smita/xs272/phys-reasoner
 SIF=$ROOT/verl_vllm017.latest.sif
-OVERLAY=$ROOT/phys-reasoner-overlay-017.img
+OVERLAY=$ROOT/phys-reasoner-overlay-017b.img
 
-# CPU command
-PYTHONNOUSERSITE=1 apptainer exec --overlay "$OVERLAY" --bind /etc/pki:/etc/pki "$SIF" <command>
+# CPU command — PYTHONPATH is required for /opt/phys-extras/ packages
+PYTHONNOUSERSITE=1 apptainer exec \
+  --overlay "$OVERLAY" --bind /etc/pki:/etc/pki \
+  --env "PYTHONPATH=/opt/phys-extras/" "$SIF" <command>
 
 # GPU command (--nv passes through host NVIDIA driver)
-PYTHONNOUSERSITE=1 apptainer exec --nv --overlay "$OVERLAY" --bind /etc/pki:/etc/pki "$SIF" <command>
+PYTHONNOUSERSITE=1 apptainer exec --nv \
+  --overlay "$OVERLAY" --bind /etc/pki:/etc/pki \
+  --env "PYTHONPATH=/opt/phys-extras/" "$SIF" <command>
 ```
 
 **Always set `PYTHONNOUSERSITE=1`**: prevents `~/.local/lib/python3.12/site-packages` from leaking into the container and shadowing overlay packages.
 
-Run tests (interactive — use `-017` overlay):
+**Always set `PYTHONPATH=/opt/phys-extras/`**: the SIF ships transformers 4.57.6 (no qwen3_5 support). The upgraded packages (transformers 5.3.0, hub 1.8.0, flash-linear-attention) live in `/opt/phys-extras/` inside the overlay and must be prepended to sys.path. See "Known overlay pitfalls" for why we use `--target` instead of pip upgrade.
+
+Run tests:
 ```bash
-PYTHONNOUSERSITE=1 apptainer exec --overlay "$OVERLAY" --bind /etc/pki:/etc/pki "$SIF" python3 -m pytest tests/ -v
+PYTHONNOUSERSITE=1 apptainer exec \
+  --overlay "$OVERLAY" --bind /etc/pki:/etc/pki \
+  --env "PYTHONPATH=/opt/phys-extras/" "$SIF" \
+  python3 -m pytest tests/ -v
 ```
 
 HF model cache: `HF_HOME=$ROOT/hf_cache` — xVerify models are pre-cached; always use `local_files_only=True` when loading them to avoid network calls to the HF API.
@@ -87,25 +96,32 @@ HF model cache: `HF_HOME=$ROOT/hf_cache` — xVerify models are pre-cached; alwa
 When `pyproject.toml` dependencies change, reinstall into the overlay:
 
 ```bash
-PYTHONNOUSERSITE=1 apptainer exec --overlay "$OVERLAY" --bind /etc/pki:/etc/pki "$SIF" \
-    pip install -e "/gpfs/radev/scratch/krishnaswamy_smita/xs272/phys-reasoner[dev]"
+PYTHONNOUSERSITE=1 apptainer exec \
+  --overlay "$OVERLAY" --no-home --bind /etc/pki:/etc/pki \
+  --env "PYTHONNOUSERSITE=1" --env "PYTHONPATH=/opt/phys-extras/" "$SIF" \
+  pip install -e "/gpfs/radev/scratch/krishnaswamy_smita/xs272/phys-reasoner[dev]"
 ```
 
-To upgrade a specific package (e.g. after a base-SIF version conflict):
+To add NEW packages needed above the SIF baseline (e.g. for a newer transformers feature):
 ```bash
-PYTHONNOUSERSITE=1 apptainer exec --overlay "$OVERLAY" --bind /etc/pki:/etc/pki "$SIF" \
-    pip install "<package>==<version>"
+# Install to /opt/phys-extras/ — does NOT require whiteout, works on all nodes
+PYTHONNOUSERSITE=1 apptainer exec \
+  --overlay "$OVERLAY" --no-home --bind /etc/pki:/etc/pki \
+  --env "PYTHONNOUSERSITE=1" "$SIF" \
+  pip install --no-deps --target /opt/phys-extras/ "<package>==<version>"
+# Then run e2fsck -fp $OVERLAY to mark filesystem clean
 ```
 
-**⚠️ DO NOT upgrade `huggingface-hub` and `transformers`** — the overlay defaults are stable. See "Known overlay pitfalls" for details.
+**Do NOT use plain `pip install <package>` to replace SIF packages** — upgrading SIF-installed packages via pip in an overlay creates OverlayFS whiteout entries that are silently ignored on RHEL 8 compute nodes when the overlay is mounted `:ro`. The compute node falls back to the SIF's old version. Use `--target /opt/phys-extras/` instead.
 
 ### sbatch jobs
 
-See `scripts/rescore_xverify.sbatch` for the template. Key points:
-- Uses `phys-reasoner-overlay-017.img` (`:ro` mount — safe for concurrent jobs)
-- Exports `PYTHONNOUSERSITE=1` in the shell **before** calling apptainer (not just via `--env`)
+Key points for all sbatch scripts:
+- Uses `phys-reasoner-overlay-017b.img` (`:ro` mount — safe for concurrent jobs)
+- Exports `PYTHONNOUSERSITE=1` **and** `PYTHONPATH=/opt/phys-extras/` via `--env`
 - Uses `--no-home` to prevent `$HOME` from being mounted, further isolating from `~/.local`
-- GPU partition: `gpu`, gres `a100:1`, qos `qos_nmi`
+- Unsets `SIF` and `OVERLAY` before sourcing `env.sh` to prevent SLURM-inherited stale values
+- GPU partition: `gpu`, gres `h200:1`, qos `qos_nmi`
 
 Submit pattern:
 ```bash
@@ -115,16 +131,47 @@ sbatch --export=ALL,XV_MODEL=IAAR-Shanghai/xVerify-7B-I,XV_OUTPUT=data/results/r
 
 ### Known overlay pitfalls
 
-- **FUSE2FS "unchecked fs" warning**: if the overlay was not cleanly unmounted (e.g. node crash during a writable session), other nodes may fail to mount it. Symptom: packages installed in the overlay are invisible and the base SIF's old versions are used instead. Fix: run `e2fsck -fp <overlay.img>` while the overlay is not mounted.
-- **`~/.local` shadowing**: always use `PYTHONNOUSERSITE=1`. The base SIF has `huggingface-hub==0.36.2`; `~/.local` may also have stale packages. The overlay has the correct versions.
+- **OverlayFS whiteout ignored on RHEL 8 compute nodes** (critical): when `pip install` upgrades a package that already exists in the SIF, it uninstalls the old version by creating OverlayFS whiteout entries. On RHEL 8 compute nodes with the overlay mounted `:ro`, these whiteouts are silently ignored and the SIF's old package becomes visible again. Symptom: compute node shows old package version despite successful login-node install. Fix: use `pip install --no-deps --target /opt/phys-extras/` for packages that need to be newer than the SIF baseline, then set `PYTHONPATH=/opt/phys-extras/` so Python finds them first. This is why our overlay uses `/opt/phys-extras/` for hub/transformers/flash-linear-attention.
+- **FUSE2FS "unchecked fs" warning**: if the overlay was not cleanly unmounted (e.g. session crash during a writable install), compute nodes may refuse to mount it. Symptom: overlay-installed packages are invisible, base SIF versions used instead. Fix: run `e2fsck -fp <overlay.img>` while the overlay is NOT mounted. `setup_overlay.sh` runs this automatically at the end.
+- **SLURM environment inheritance**: SLURM passes all shell environment variables to batch jobs by default (`--export=ALL`). If `OVERLAY` or `SIF` are set in your shell from a previous session, they override `env.sh`. Fix: `unset SIF OVERLAY` before sourcing `env.sh` in batch scripts (already done in `smoke_tir_qwen35.sh`).
+- **`~/.local` shadowing**: always use `PYTHONNOUSERSITE=1`. Without it, packages in `~/.local/lib/python3.12/site-packages/` (from outside the container) leak in and can shadow overlay packages.
 - **HF API calls in sbatch**: compute nodes may not have outbound HTTPS. Use `local_files_only=True` in any `from_pretrained` call when the model is already in `hf_cache`.
-- **DO NOT upgrade `huggingface-hub` and `transformers`**: The overlay defaults (`huggingface-hub==0.36.2`, `transformers==4.57.6`) are stable and fully tested. Upgrading breaks environment compatibility. If you see an error mentioning HF packages, diagnose the root cause first rather than blindly upgrading.
 
-## Key Dependencies (Planned)
+## Key Dependencies
 
 - `pint` — unit handling for physics answers
 - `sympy` — symbolic math equivalence checking
-- `scipy>=1.11` — required by transformers (qwen2 object detection loss module loads it at model-load time)
-- `huggingface-hub==0.36.2` — stable; do not upgrade
-- `verl` — GRPO/RLVR training framework
+- `scipy>=1.11` — required by transformers at model-load time
+- `transformers==5.3.0` — installed in `/opt/phys-extras/`; required for Qwen3.5 (qwen3_5 model type added in 5.2.0)
+- `huggingface-hub==1.8.0` — installed in `/opt/phys-extras/`; required by transformers 5.3.0
+- `flash-linear-attention==0.4.2` + `fla-core==0.4.2` — installed in `/opt/phys-extras/`; required by Qwen3.5's GDN linear attention layers
+- `verl` — GRPO/RLVR training framework (installed from `verl_repo/` with `--no-deps`)
 - Qwen3.5 model family via HuggingFace
+
+## Required VeRL Overrides for Qwen3.5-4B (GRPO)
+
+These Hydra overrides must be set in every GRPO / smoke-test run:
+
+```bash
+# SDPA attention — VeRL's Ulysses flash-attention monkey-patch is incompatible with
+# Qwen3.5 hybrid attention (GDN layers) in transformers 5.3.0; causes CUDA illegal
+# memory access. SDPA bypasses the monkey-patch entirely.
+'+actor_rollout_ref.model.override_config={attn_implementation:sdpa}'
+
+# Offload AdamW optimizer to CPU — 4.54B params × float32 × 2 moments ≈ 36 GB.
+# Combined with vLLM KV cache this exceeds H200 (80 GB) without offloading.
+actor_rollout_ref.actor.fsdp_config.optimizer_offload=True
+
+# Explicit FSDP wrap — Qwen3_5ForCausalLM._no_split_modules incorrectly lists
+# Qwen3_5VisionBlock (a vision class absent from the text-only model).
+# Without this override VeRL crashes with "Could not find transformer layer class".
+'+actor_rollout_ref.actor.fsdp_config.wrap_policy.transformer_layer_cls_to_wrap=[Qwen3_5DecoderLayer]'
+'+actor_rollout_ref.ref.fsdp_config.wrap_policy.transformer_layer_cls_to_wrap=[Qwen3_5DecoderLayer]'
+
+# Multi-turn TIR with qwen3_coder tool-call format
+actor_rollout_ref.rollout.multi_turn.format=qwen3_coder
+actor_rollout_ref.rollout.multi_turn.enable=true
+actor_rollout_ref.rollout.agent.default_agent_loop=tool_agent
+```
+
+Reference: `scripts/smoke_tir_qwen35.sh` (validated configuration, 2026-04-02).

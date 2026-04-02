@@ -35,7 +35,6 @@ echo "Model: $MODEL_PATH  (HF_HOME=$HF_HOME)"
 # ---------------------------------------------------------------------------
 # Configurable params (override via env vars)
 # ---------------------------------------------------------------------------
-# [TODO] It might be a bad idea to have so many defaults. Revisit and think.
 N_GPUS="${N_GPUS:-1}"
 TRAIN_BATCH="${TRAIN_BATCH:-4}"          # 4 = smoke test; 128 = production
 MAX_PROMPT_LEN="${MAX_PROMPT_LEN:-1024}"
@@ -213,7 +212,7 @@ if [ "$ENABLE_TIR" = "1" ]; then
     TIR_ARGS="
     actor_rollout_ref.rollout.agent.default_agent_loop=tool_agent \
     actor_rollout_ref.rollout.multi_turn.enable=true \
-    actor_rollout_ref.rollout.multi_turn.format=hermes \
+    actor_rollout_ref.rollout.multi_turn.format=qwen3_coder \
     actor_rollout_ref.rollout.multi_turn.tool_config_path=$ROOT/scripts/physcode_tools.yaml \
     actor_rollout_ref.rollout.multi_turn.max_assistant_turns=2 \
     actor_rollout_ref.rollout.multi_turn.max_user_turns=1 \
@@ -246,8 +245,11 @@ fi
 # Tool config: scripts/physcode_tools.yaml
 #
 # multi_turn parameter notes:
-#   format=qwen3_coder   — matches the native Qwen XML-style tool-call template
-#                          emitted by the tokenizer in this environment.
+#   format=qwen3_coder   — Qwen3.5 tokenizer emits XML/coder tool-call format.
+#                          DO NOT use format=hermes here; that is for Qwen3 (0.6B/1.7B/4B)
+#                          which emits JSON format. Wrong format → silent parse failure,
+#                          tool never runs, all rollouts score zero reward.
+#                          Confirmed 2026-04-01. See prompts.py FORMAT docstring.
 #   max_assistant_turns=2 — LLM generates exactly twice per trajectory:
 #                            turn 1: reasoning + <tool_call>...</tool_call>
 #                            turn 2: final answer with \boxed{} after tool response is injected.
@@ -260,12 +262,19 @@ fi
 #                                   Physics outputs are short (a few numbers); 512 is generous.
 #   tool_response_truncate_side=right — Keep the start of stdout (the answer) if truncation needed.
 #
-# CRITICAL — THINKING MODE: keep the chat-template flag below False.
-# In this VeRL build, the supported knob is
-#   data.apply_chat_template_kwargs.enable_thinking=False
-# The older/assumed actor_rollout_ref.model.enable_thinking field is not present
-# in HFModelConfig here and crashes worker init if added.
-# See src/phys_reasoner/tir/prompts.py for the reasoning and local notes.
+# THINKING MODE: enable_thinking=True for phase 1 (tool-call turn).
+# With thinking suppressed the tool-call format has no plain-content slot, so the
+# model moves all reasoning into Python code comments. With thinking ON, it reasons
+# in <think>...</think> then calls the tool with clean code. </think> closes before
+# <tool_call> cleanly — no leakage observed (confirmed 2026-04-02, Qwen3.5-4B).
+#
+# TOKEN LENGTH NOTE: thinking traces on hard physics problems can be long. Planned
+# mitigations: token-budget checkpoint in system prompt, stop-thinking injection at
+# threshold, RL length penalty (λ>0) in late GRPO ablations. See prompts.py.
+#
+# VeRL knob: data.apply_chat_template_kwargs.enable_thinking=True (below).
+# DO NOT add actor_rollout_ref.model.enable_thinking — not a valid field in this
+# VeRL build, crashes worker init.
 # ---------------------------------------------------------------------------
 # Guard: vLLM CuMemAllocator is incompatible with expandable_segments:True.
 # Unset the variable on the host before passing env to apptainer so that
@@ -273,6 +282,14 @@ fi
 if [[ "${PYTORCH_CUDA_ALLOC_CONF:-}" == *"expandable_segments:True"* ]]; then
     echo "WARNING: Unsetting PYTORCH_CUDA_ALLOC_CONF (expandable_segments:True conflicts with vLLM CuMemAllocator)"
     unset PYTORCH_CUDA_ALLOC_CONF
+fi
+
+# Guard: SLURM on some clusters sets ROCR_VISIBLE_DEVICES (AMD ROCm variable).
+# VeRL's worker init raises ValueError if both ROCR_VISIBLE_DEVICES and
+# CUDA_VISIBLE_DEVICES are set simultaneously on an NVIDIA node.
+if [[ -n "${ROCR_VISIBLE_DEVICES:-}" ]]; then
+    echo "WARNING: unsetting ROCR_VISIBLE_DEVICES (conflicts with CUDA_VISIBLE_DEVICES in VeRL)"
+    unset ROCR_VISIBLE_DEVICES
 fi
 
 apptainer exec --nv \
@@ -300,12 +317,13 @@ apptainer exec --nv \
     data.dataloader_num_workers=$DATA_NUM_WORKERS \
     data.filter_overlong_prompts=True \
     data.truncation=error \
-    +data.apply_chat_template_kwargs.enable_thinking=False \
+    +data.apply_chat_template_kwargs.enable_thinking=True \
     data.trust_remote_code=True \
     actor_rollout_ref.model.path="$MODEL_PATH" \
     actor_rollout_ref.model.trust_remote_code=True \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
+    '+actor_rollout_ref.model.override_config={attn_implementation:sdpa}' \
     actor_rollout_ref.actor.optim.lr=$LR \
     actor_rollout_ref.actor.ppo_mini_batch_size=$TRAIN_BATCH \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=$TRAIN_BATCH \
@@ -315,9 +333,12 @@ apptainer exec --nv \
     actor_rollout_ref.actor.kl_loss_coef=0.001 \
     actor_rollout_ref.actor.kl_loss_type=low_var_kl \
     actor_rollout_ref.actor.entropy_coeff=0 \
+    actor_rollout_ref.actor.ppo_epochs=1 \
     actor_rollout_ref.actor.fsdp_config.param_offload=$ACTOR_PARAM_OFFLOAD \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=$ACTOR_OPTIMIZER_OFFLOAD \
+    '+actor_rollout_ref.actor.fsdp_config.wrap_policy.transformer_layer_cls_to_wrap=[Qwen3_5DecoderLayer]' \
     actor_rollout_ref.ref.fsdp_config.param_offload=$REF_PARAM_OFFLOAD \
+    '+actor_rollout_ref.ref.fsdp_config.wrap_policy.transformer_layer_cls_to_wrap=[Qwen3_5DecoderLayer]' \
     actor_rollout_ref.rollout.name=vllm \
     actor_rollout_ref.rollout.tensor_model_parallel_size=$ROLLOUT_TP_SIZE \
     actor_rollout_ref.rollout.temperature=$ROLLOUT_TEMP \
