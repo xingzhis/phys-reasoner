@@ -31,7 +31,8 @@
 #       Turn 1: model generates reasoning + <tool_call>...</tool_call>
 #       [ToolAgentLoop extracts code, calls PythonSandboxTool, injects <tool_response>]
 #       Turn 2: model sees tool output, generates final answer with \boxed{}
-#   - max_assistant_turns=2 enforces exactly one tool call per trajectory
+#   - MAX_TOOL_TURNS=1 (default): single-shot TIR, one tool call per trajectory
+#     MAX_TOOL_TURNS=2: iterative TIR, model can recover from errors with a second call
 #   - Tool schema is injected by apply_chat_template(tools=...) inside the agent loop;
 #     the parquet prompts don't need to pre-inject it.
 #
@@ -56,6 +57,10 @@ MODEL="${MODEL:-Qwen/Qwen3.5-4B}"
 # Default to corpus_train (smaller, cleaner). Override via env.
 REAL_PARQUET="${REAL_PARQUET:-data/processed/corpus_train.parquet}"
 SMOKE_N="${SMOKE_N:-2}"
+# MAX_TOOL_TURNS: number of tool call rounds allowed per trajectory.
+# 1 = single-shot TIR (original design, cleaner reward signal).
+# 2+ = iterative TIR (model can recover from errors; higher compute per rollout).
+MAX_TOOL_TURNS="${MAX_TOOL_TURNS:-1}"
 
 # Resolve relative path against ROOT
 [[ "$REAL_PARQUET" != /* ]] && REAL_PARQUET="$ROOT/$REAL_PARQUET"
@@ -71,10 +76,13 @@ ROLLOUT_MAX_NUM_SEQS=$TOTAL_GENS
 # 4B on H200: 0.5 leaves ample room for FSDP + Ray overhead alongside vLLM.
 VLLM_GPU_MEM_UTIL=0.5
 
-# TIR responses need two phases: reasoning+tool_call → injection → final answer.
-# 1024 prompt + 1536 response covers most physics problems with room to spare.
+# TIR response budget:
+#   Single-turn (MAX_TOOL_TURNS=1): think1 + code1 + response1 + answer ≈ 1536 typical, 3072 hard
+#   Two-turn   (MAX_TOOL_TURNS=2): add think2 + code2 + response2      ≈ 3072 typical, 6144 hard
+# Default to 4096 — safe floor for 2-turn on hard problems; raise to 6144 for full training.
+# max_model_len is set to MAX_PROMPT_LEN + MAX_RESPONSE_LEN*2 to give vLLM headroom.
 MAX_PROMPT_LEN="${MAX_PROMPT_LEN:-1024}"
-MAX_RESPONSE_LEN="${MAX_RESPONSE_LEN:-1536}"
+MAX_RESPONSE_LEN="${MAX_RESPONSE_LEN:-4096}"
 
 TIMESTAMP=$(date +%Y%m%d.%H%M%S)
 TRAIN_DIR="$ROOT/outputs/smoke_tir_qwen35_$TIMESTAMP"
@@ -190,8 +198,8 @@ PYTHONNOUSERSITE=1 apptainer exec --nv \
     actor_rollout_ref.rollout.multi_turn.enable=true \
     actor_rollout_ref.rollout.multi_turn.format=qwen3_coder \
     actor_rollout_ref.rollout.multi_turn.tool_config_path="$ROOT/scripts/physcode_tools.yaml" \
-    actor_rollout_ref.rollout.multi_turn.max_assistant_turns=2 \
-    actor_rollout_ref.rollout.multi_turn.max_user_turns=1 \
+    actor_rollout_ref.rollout.multi_turn.max_assistant_turns=$((MAX_TOOL_TURNS * 2)) \
+    actor_rollout_ref.rollout.multi_turn.max_user_turns=$MAX_TOOL_TURNS \
     actor_rollout_ref.rollout.multi_turn.max_parallel_calls=1 \
     actor_rollout_ref.rollout.multi_turn.max_tool_response_length=512 \
     actor_rollout_ref.rollout.multi_turn.tool_response_truncate_side=right \
