@@ -127,28 +127,50 @@ PYTHON_TOOL_SCHEMA: dict = {
 # System prompt
 # ---------------------------------------------------------------------------
 
-TIR_SYSTEM_PROMPT = (
-    "You are an expert physics problem solver.\n"
-    # "You MUST call the python tool exactly once to compute the answer. "
-    # "Do NOT solve the problem analytically without using the tool. "
-    # "After seeing the tool result, give your final answer as \\boxed{<value>}.\n"
-    "You have access to a Python interpreter. Use it when it helps — "
-    "for numerical computation, symbolic algebra, or unit conversion. "
-    "You are not required to use it.\n"
-    "Only call the tool if the code performs actual computation — "
-    "numerical evaluation, symbolic solving, or unit conversion. "
-    "Do not use it to print a formula or expression you derived in text.\n"
-    "\n"
-    f"Allowed packages: {ALLOWED_PACKAGES_STR}\n"
-    "If you write code, it must call print() to output the result. "
-    "Define all variables inside the code block.\n"
-    "\n"
-    "End with your final answer as \\boxed{<value>}.\n"
-    # No format example here — the tool schema injected by apply_chat_template(tools=[...])
-    # is sufficient to prime the model's tool-call format. An explicit example would need
-    # to be format-specific (hermes vs qwen3_coder) and TIR_SYSTEM_PROMPT is shared across
-    # both Qwen3 and Qwen3.5. Validated without example on Qwen3-0.6B (smoke_tir.sh).
-)
+def make_system_prompt(max_tool_calls: int = 1) -> str:
+    """Return the TIR system prompt with the given tool-call budget.
+
+    Use this anywhere MAX_TOOL_TURNS != 1.  All existing call sites that
+    import TIR_SYSTEM_PROMPT directly get the default (max_tool_calls=1).
+    """
+    if max_tool_calls == 1:
+        budget_line = "You may execute code at most once. Once you have the result, give your final answer directly.\n"
+    else:
+        budget_line = (
+            f"You may execute code at most {max_tool_calls} times. "
+            "Use a second call only to fix a runtime error in the first — "
+            "not to refine a working result. "
+            "Once you have a successful result, give your final answer directly.\n"
+        )
+    return (
+        "You are an expert physics problem solver.\n"
+        # "You MUST call the python tool exactly once to compute the answer. "
+        # "Do NOT solve the problem analytically without using the tool. "
+        # "After seeing the tool result, give your final answer as \\boxed{<value>}.\n"
+        "You have access to a Python interpreter. Use it when it helps — "
+        "for numerical computation, symbolic algebra, or unit conversion. "
+        "You are not required to use it.\n"
+        "Only call the tool if the code performs actual computation — "
+        "numerical evaluation, symbolic solving, or unit conversion. "
+        "Do not use it to print a formula or expression you derived in text.\n"
+        "\n"
+        f"Allowed packages: {ALLOWED_PACKAGES_STR}\n"
+        "If you write code, it must call print() to output the result. "
+        "Define all variables inside the code block.\n"
+        "\n"
+        + budget_line +
+        "\n"
+        "End with your final answer as \\boxed{<value>}.\n"
+        # No format example here — the tool schema injected by apply_chat_template(tools=[...])
+        # is sufficient to prime the model's tool-call format. An explicit example would need
+        # to be format-specific (hermes vs qwen3_coder) and TIR_SYSTEM_PROMPT is shared across
+        # both Qwen3 and Qwen3.5. Validated without example on Qwen3-0.6B (smoke_tir.sh).
+    )
+
+
+# Default prompt (max_tool_calls=1). All existing call sites use this directly.
+# If MAX_TOOL_TURNS=2 is used in training/smoke, call make_system_prompt(2) instead.
+TIR_SYSTEM_PROMPT = make_system_prompt(max_tool_calls=1)
 
 # ---------------------------------------------------------------------------
 # TIR format parsing helpers (used by stage0_probe for manual 2-phase vLLM loop)
