@@ -1,0 +1,37 @@
+diff --git a/verl/experimental/agent_loop/tool_agent_loop.py b/verl/experimental/agent_loop/tool_agent_loop.py
+index 308ef49..ce38b14 100644
+--- a/verl/experimental/agent_loop/tool_agent_loop.py
++++ b/verl/experimental/agent_loop/tool_agent_loop.py
+@@ -198,6 +198,20 @@ class ToolAgentLoop(AgentLoopBase):
+             extra_fields=agent_data.extra_fields,
+         )
+         output.extra_fields.update({"turn_scores": agent_data.turn_scores, "tool_rewards": agent_data.tool_rewards})
++
++        # TEMPORARY DUMP PATCH — remove after inspection.
++        # Set VERL_DUMP_DIR=<path> to write one txt file per rollout.
++        _dump_dir = os.environ.get("VERL_DUMP_DIR", "")
++        if _dump_dir:
++            try:
++                os.makedirs(_dump_dir, exist_ok=True)
++                _text = self.tokenizer.decode(agent_data.prompt_ids, skip_special_tokens=False)
++                _fname = os.path.join(_dump_dir, f"rollout_{agent_data.request_id}.txt")
++                with open(_fname, "w") as _f:
++                    _f.write(_text)
++            except Exception as _e:
++                logger.warning(f"VERL_DUMP_DIR write failed: {_e}")
++
+         return output
+ 
+     async def _handle_pending_state(self, agent_data: AgentData, sampling_params: dict[str, Any]) -> AgentState:
+diff --git a/verl/trainer/constants_ppo.py b/verl/trainer/constants_ppo.py
+index cc58771..80f6910 100644
+--- a/verl/trainer/constants_ppo.py
++++ b/verl/trainer/constants_ppo.py
+@@ -51,4 +51,7 @@ def get_ppo_ray_runtime_env():
+     for key in list(runtime_env["env_vars"].keys()):
+         if os.environ.get(key) is not None:
+             runtime_env["env_vars"].pop(key, None)
++    # TEMPORARY DUMP PATCH — propagate VERL_DUMP_DIR to Ray workers if set.
++    if os.environ.get("VERL_DUMP_DIR"):
++        runtime_env["env_vars"]["VERL_DUMP_DIR"] = os.environ["VERL_DUMP_DIR"]
+     return runtime_env

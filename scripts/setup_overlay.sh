@@ -48,7 +48,7 @@ import vllm, huggingface_hub, transformers
 print('  vllm:         ', vllm.__version__)
 print('  hub:          ', huggingface_hub.__version__)
 print('  transformers: ', transformers.__version__, '(will be upgraded to 5.3.0)')
-# vllm must be >= 0.7.0 for verl_repo compatibility
+# vllm must be >= 0.7.0 for verl compatibility
 from packaging.version import Version
 v = Version(vllm.__version__)
 if v < Version('0.7.0'):
@@ -66,13 +66,13 @@ APT pip install --no-cache-dir -e "$ROOT[dev]"
 # --- 3. verl from local repo, --no-deps (SIF already has all verl deps) ---
 echo ""
 echo "=== 3/5  Install verl --no-deps ==="
-VERL_REPO="$ROOT/verl_repo"
+VERL_REPO="$ROOT/verl"
 if [[ -d "$VERL_REPO" ]]; then
-    echo "  Using local verl_repo: $VERL_REPO"
+    echo "  Using local verl submodule: $VERL_REPO"
     APT pip install --no-deps -e "$VERL_REPO"
 else
-    echo "  verl_repo not found — installing latest from PyPI"
-    APT pip install --no-deps verl
+    echo "  verl submodule not found — run: git submodule update --init"
+    exit 1
 fi
 
 # --- 4. Install transformers 5.3.0 + hub 1.8.0 + flash-linear-attention into /opt/phys-extras/ ---

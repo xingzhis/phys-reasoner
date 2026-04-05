@@ -22,7 +22,7 @@ ROOT="${ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 
 # Container images — derive from ROOT unless already overridden in .env
 # 017b = fresh overlay on vllm017.latest + transformers==5.3.0 installed on top
-# (016.dev.qwen3_5 has vllm 0.1.dev1 which is incompatible with verl_repo >= 0.7.0 requirement)
+# (016.dev.qwen3_5 has vllm 0.1.dev1 which is incompatible with verl >= 0.7.0 requirement)
 SIF="${SIF:-$ROOT/verl_vllm017.latest.sif}"
 OVERLAY="${OVERLAY:-$ROOT/phys-reasoner-overlay-017b.img}"
 

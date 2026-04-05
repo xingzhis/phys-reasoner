@@ -56,4 +56,4 @@ hf_cache/
 # Machine-local environment overrides (copy .env.example → .env)
 .env
 
-old/
+old/verl_repo.bak/

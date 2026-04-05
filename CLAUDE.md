@@ -145,7 +145,7 @@ sbatch --export=ALL,XV_MODEL=IAAR-Shanghai/xVerify-7B-I,XV_OUTPUT=data/results/r
 - `transformers==5.3.0` — installed in `/opt/phys-extras/`; required for Qwen3.5 (qwen3_5 model type added in 5.2.0)
 - `huggingface-hub==1.8.0` — installed in `/opt/phys-extras/`; required by transformers 5.3.0
 - `flash-linear-attention==0.4.2` + `fla-core==0.4.2` — installed in `/opt/phys-extras/`; required by Qwen3.5's GDN linear attention layers
-- `verl` — GRPO/RLVR training framework (installed from `verl_repo/` with `--no-deps`)
+- `verl` — GRPO/RLVR training framework (installed from `verl/` submodule with `--no-deps`)
 - Qwen3.5 model family via HuggingFace
 
 ## Required VeRL Overrides for Qwen3.5-4B (GRPO)
