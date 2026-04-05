@@ -251,3 +251,99 @@ def test_infer_answer_type(gold: str, expected_type: str) -> None:
     assert result == expected_type, (
         f"infer_answer_type({gold!r}) = {result!r}, expected {expected_type!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Gold normalization helpers from filter_data_quality.py
+# ---------------------------------------------------------------------------
+
+sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
+from filter_data_quality import (  # noqa: E402
+    normalize_mcq_gold,
+    normalize_tf_gold,
+    _has_non_latin_script,
+)
+
+
+@pytest.mark.parametrize("raw,expected", [
+    # Already a bare letter
+    ("A",               "A"),
+    ("d",               "D"),
+    # Boxed letter
+    (r"\boxed{B}",      "B"),
+    (r"\boxed{c}",      "C"),
+    # Parenthesized
+    ("(A)",             "A"),
+    ("(D)",             "D"),
+    # Dot / closing paren separator
+    ("A.",              "A"),
+    ("A)",              "A"),
+    ("C:",              "C"),
+    # Letter + trailing content
+    ("A ***",           "A"),
+    ("(D) \\ 0",        "D"),
+    ("A - some text",   "A"),
+    ("(B) \\lambda/(4n)", "B"),
+    # \text{} and \mathrm{} wrappers
+    (r"\text{B}",       "B"),
+    (r"\mathrm{C}",     "C"),
+    (r"(\mathrm{c})",   "C"),
+    # Multi-select preserved
+    ("ABD",             "ABD"),
+    (r"\boxed{ABD}",    "ABD"),
+    # Unrecoverable
+    (r"\boxed{1, 2}",   None),
+    (r"\boxed{10^{-2}}", None),
+    (r"\boxed{1^-, E1}", None),
+])
+def test_normalize_mcq_gold(raw, expected):
+    result = normalize_mcq_gold(raw)
+    assert result == expected, f"normalize_mcq_gold({raw!r}) = {result!r}, expected {expected!r}"
+
+
+@pytest.mark.parametrize("raw,expected", [
+    # Already canonical
+    ("True",                        "True"),
+    ("False",                       "False"),
+    # Boxed yes/no
+    (r"\boxed{Yes}",                "True"),
+    (r"\boxed{No}",                 "False"),
+    (r"\boxed{yes}",                "True"),
+    (r"\boxed{no}",                 "False"),
+    # Cross-style: true/false
+    (r"\boxed{true}",               "True"),
+    (r"\boxed{false}",              "False"),
+    # Single initials
+    ("T",                           "True"),
+    ("F",                           "False"),
+    ("Y",                           "True"),
+    ("N",                           "False"),
+    # Compound: extract leading token
+    (r"\boxed{Yes, V = -\frac{1}{2}ar^2}", "True"),
+    (r"\boxed{No, c}",              "False"),
+    # Unrecoverable
+    (r"\boxed{Z_{\text{eff}} < Z}", None),
+    ('["g=...", "b=..."]',          None),
+])
+def test_normalize_tf_gold(raw, expected):
+    result = normalize_tf_gold(raw)
+    assert result == expected, f"normalize_tf_gold({raw!r}) = {result!r}, expected {expected!r}"
+
+
+@pytest.mark.parametrize("text,expected", [
+    # Chinese characters → True
+    ("\\boxed{不可能}",              True),
+    ("\\boxed{RT = \\text{常数}}",   True),
+    ("\\boxed{天}",                  True),
+    # Valid Unicode math / chemistry — NOT flagged
+    ("Fe²⁺ + Cd → Fe + Cd²⁺",       False),
+    ("SF₆",                          False),
+    ("0 ≤ Δm²c⁴ ≤ 3.8 × 10⁻³",     False),
+    ("9.5 × 10^{18} min⁻¹",         False),
+    ("\\frac{1}{2}",                 False),
+    ("E = mc^2",                     False),
+])
+def test_has_non_latin_script(text, expected):
+    assert _has_non_latin_script(text) == expected, (
+        f"_has_non_latin_script({text!r}) = {_has_non_latin_script(text)}, expected {expected}"
+    )

@@ -1,6 +1,6 @@
 """Data quality filter for the candidates parquet.
 
-Applies three cleaning passes:
+Applies cleaning passes:
 
   1. REMOVE — Explanation-primary questions: problem starts with Explain/Describe/Discuss.
      These are fundamentally open-ended; the verifier cannot reliably check them even
@@ -11,6 +11,20 @@ Applies three cleaning passes:
   3. STRIP  — Garbled unit fields (non-ASCII, non-Angstrom): the unit string was corrupted
      during Chinese→LaTeX conversion.  Rather than remove the question, we zero-out the
      unit so xVerify handles comparison without a broken unit hint.
+
+  4. NORMALIZE + REMOVE — MCQ gold answers: strip \\boxed{}, \\text{}, parens, trailing junk
+     to produce a clean single letter (e.g. \\boxed{B} → B, (A) → A, A. → A, A *** → A,
+     \\text{(B) \\lambda/(4n)} → B).  Rows that cannot be reduced to 1–3 letters are removed.
+
+  5. NORMALIZE + REMOVE — True/False gold answers: strip \\boxed{}, map yes/no/Y/N/T/F to
+     True/False (e.g. \\boxed{Yes} → True, \\boxed{No, formula} → False, F → False).
+     Rows with no recognizable T/F token are removed.
+
+  6. REMOVE — Non-Latin-script gold answers: gold contains Chinese, Japanese, Korean, or
+     Arabic characters.  These are untranslatable by the verifier.
+     NOTE: valid Unicode math (×, ≤, ², Fe²⁺, Å) is intentionally kept.
+
+  7. REMOVE — Non-English corpus rows (language column != 'en', when present).
 
 Usage:
     python scripts/filter_data_quality.py \\
@@ -57,27 +71,193 @@ def _is_garbled_unit(unit: str) -> bool:
     return any(ord(c) > 127 for c in cleaned)
 
 
-def apply_filters(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Return (cleaned_df, removed_df) with a 'filter_reason' column on removed_df."""
+# ---------------------------------------------------------------------------
+# Rule 6: Non-Latin script detection
+# Matches CJK, Arabic, Devanagari, Hangul. Does NOT match Unicode math/science
+# notation (×, ≤, ², Fe²⁺, Å, Greek letters) which are valid physics answers.
+# ---------------------------------------------------------------------------
+
+_NON_LATIN_SCRIPT_RE = re.compile(
+    r"[\u4e00-\u9fff"   # CJK Unified Ideographs
+    r"\u3040-\u30ff"    # Hiragana + Katakana
+    r"\u3400-\u4dbf"    # CJK Extension A
+    r"\u0600-\u06ff"    # Arabic
+    r"\u0900-\u097f"    # Devanagari
+    r"\uac00-\ud7af"    # Hangul Syllables
+    r"]"
+)
+
+
+def _has_non_latin_script(s: str) -> bool:
+    return bool(_NON_LATIN_SCRIPT_RE.search(s))
+
+
+# ---------------------------------------------------------------------------
+# Rules 4 & 5: MCQ and True/False gold normalization
+# ---------------------------------------------------------------------------
+
+def _unbox_gold(s: str) -> str:
+    """Strip outermost \\boxed{...} with depth-aware brace tracking."""
+    idx = s.find(r"\boxed{")
+    if idx == -1:
+        return s
+    start = idx + len(r"\boxed{")
+    depth = 1
+    i = start
+    while i < len(s) and depth > 0:
+        if s[i] == "{":
+            depth += 1
+        elif s[i] == "}":
+            depth -= 1
+        i += 1
+    if depth == 0:
+        return s[start : i - 1].strip()
+    return s
+
+
+def normalize_mcq_gold(s: str) -> str | None:
+    """Normalize MCQ gold to 1–3 uppercase letters, or None if unrecoverable.
+
+    Handles all observed patterns:
+      \\boxed{B}              → B
+      (A)                    → A
+      A.  / A)  / A:         → A
+      A ***  / A - text      → A
+      (A) some text          → A
+      \\text{B}              → B
+      (\\mathrm{c})          → C
+      \\text{(B) \\lambda/…} → B
+      ABD  (multi-select)    → ABD
+    """
+    raw = s.strip()
+
+    # Unbox \boxed{...}
+    unboxed = _unbox_gold(raw)
+
+    # Strip \text{...} or \mathrm{...} wrappers
+    m = re.match(r"^\\(?:text|mathrm|mathbf)\{(.*)\}$", unboxed.strip(), re.DOTALL)
+    if m:
+        unboxed = m.group(1).strip()
+
+    # Strip outer parens wrapping a \mathrm or \text: (\mathrm{c}) → c
+    m = re.match(r"^\(\\?(?:mathrm|text|mathbf)\{([A-Za-z]{1,3})\}\)$", unboxed)
+    if m:
+        return m.group(1).upper()
+
+    # Plain (ABC)
+    m = re.match(r"^\(([A-Za-z]{1,3})\)$", unboxed.strip())
+    if m:
+        return m.group(1).upper()
+
+    # Extract leading letter(s), optionally wrapped in parens, followed by separator or end
+    # Handles: A, A., A), A:, A ***, (A), (A) text, A - text, ABD
+    m = re.match(
+        r"^\(?([A-Za-z]{1,3})\)?(?:[.):\s*\-]|$)",
+        unboxed.strip(),
+    )
+    if m:
+        letter = m.group(1).upper()
+        if re.match(r"^[A-Z]{1,3}$", letter):
+            return letter
+
+    return None  # unrecoverable
+
+
+_TF_MAP: dict[str, str] = {
+    "yes": "True", "y": "True", "t": "True", "true": "True",
+    "no": "False", "n": "False", "f": "False", "false": "False",
+}
+
+
+def normalize_tf_gold(s: str) -> str | None:
+    """Normalize TF gold to 'True' or 'False', or None if unrecoverable.
+
+    Handles: \\boxed{Yes} → True, \\boxed{No, formula} → False,
+             T/F/Y/N → True/False, yes/no → True/False.
+    """
+    original = s.strip()
+
+    if original in ("True", "False"):
+        return original
+
+    # Unbox
+    unboxed = _unbox_gold(original)
+
+    # Extract first word token (handles "Yes, formula" → "Yes")
+    first_token = re.split(r"[\s,;({\[]", unboxed)[0].strip().rstrip(".,")
+    canonical = _TF_MAP.get(first_token.lower())
+    if canonical:
+        return canonical
+
+    # Search anywhere for a T/F word (for compound strings like "E_1=3, ..., No")
+    m = re.search(r"\b(yes|no|true|false)\b", unboxed, re.IGNORECASE)
+    if m:
+        return _TF_MAP[m.group(1).lower()]
+
+    return None  # unrecoverable
+
+
+def apply_filters(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, int]:
+    """Return (cleaned_df, removed_df, n_units_stripped).
+
+    cleaned_df has MCQ/TF gold answers normalized in-place.
+    removed_df has a 'filter_reason' column.
+    """
     # Answer column may be 'answer' (candidates) or 'gold_answer' (rescore output)
     answer_col = "answer" if "answer" in df.columns else "gold_answer"
 
     reasons: list[str | None] = []
     strip_unit_mask = pd.Series(False, index=df.index)
+    normalized_answers: dict[int, str] = {}  # index → new gold value
 
-    for _, row in df.iterrows():
+    for idx, row in df.iterrows():
         problem = str(row.get("problem", "")).strip()
         gold = str(row.get(answer_col, "")).strip()
         unit = str(row.get("unit", "") or "")
+        atype = str(row.get("answer_type", "") or "").strip().lower()
+        lang = str(row.get("language", "en") or "en").strip().lower()
 
+        # Rule 7: non-English corpus rows
+        if lang not in ("en", "", "nan"):
+            reasons.append("non_english_language")
+            continue
+
+        # Rule 1: explanation-primary
         if _EXPLAIN_RE.match(problem):
             reasons.append("explanation_primary")
-        elif _PLACEHOLDER_GOLD_RE.match(gold):
+            continue
+
+        # Rule 2: placeholder gold
+        if _PLACEHOLDER_GOLD_RE.match(gold):
             reasons.append("placeholder_gold")
-        else:
-            reasons.append(None)
-            if _is_garbled_unit(unit):
-                strip_unit_mask.at[_] = True
+            continue
+
+        # Rule 6: non-Latin script in gold answer
+        if _has_non_latin_script(gold):
+            reasons.append("non_latin_script_gold")
+            continue
+
+        # Rule 4: MCQ normalization
+        if atype == "mcq":
+            norm = normalize_mcq_gold(gold)
+            if norm is None:
+                reasons.append("mcq_unrecoverable")
+                continue
+            if norm != gold:
+                normalized_answers[idx] = norm
+
+        # Rule 5: True/False normalization
+        elif atype == "true_false":
+            norm = normalize_tf_gold(gold)
+            if norm is None:
+                reasons.append("tf_unrecoverable")
+                continue
+            if norm != gold:
+                normalized_answers[idx] = norm
+
+        reasons.append(None)
+        if _is_garbled_unit(unit):
+            strip_unit_mask.at[idx] = True
 
     reason_series = pd.Series(reasons, index=df.index)
     remove_mask = reason_series.notna()
@@ -86,39 +266,65 @@ def apply_filters(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     removed["filter_reason"] = reason_series[remove_mask]
 
     kept = df[~remove_mask].copy()
-    # Strip garbled unit fields in kept rows
-    n_stripped = strip_unit_mask[~remove_mask].sum()
+
+    # Apply MCQ/TF normalizations in kept rows
+    for idx, new_val in normalized_answers.items():
+        if idx in kept.index:
+            kept.at[idx, answer_col] = new_val
+
+    # Strip garbled unit fields
+    n_stripped = int(strip_unit_mask[~remove_mask].sum())
     kept.loc[strip_unit_mask[~remove_mask], "unit"] = ""
 
-    return kept, removed, int(n_stripped)
+    return kept, removed, n_stripped
 
 
 def print_report(df_orig: pd.DataFrame, kept: pd.DataFrame,
                  removed: pd.DataFrame, n_stripped: int) -> None:
     answer_col = "answer" if "answer" in df_orig.columns else "gold_answer"
 
+    # Count normalizations (rows where answer changed vs original)
+    n_normalized = 0
+    if answer_col in df_orig.columns and answer_col in kept.columns:
+        shared_idx = kept.index.intersection(df_orig.index)
+        n_normalized = int((kept.loc[shared_idx, answer_col] != df_orig.loc[shared_idx, answer_col]).sum())
+
     print(f"\n{'='*60}")
     print(f"  Data Quality Filter Report")
     print(f"{'='*60}")
     print(f"  Input rows  : {len(df_orig):>6}")
-    print(f"  Removed     : {len(removed):>6}")
+    print(f"  Removed     : {len(removed):>6}  ({len(removed)/len(df_orig):.1%})")
+    print(f"  Normalized  : {n_normalized:>6}  (MCQ/TF gold fixed in-place)")
     print(f"  Unit stripped:{n_stripped:>6}  (kept, unit zeroed)")
     print(f"  Output rows : {len(kept):>6}")
     print()
 
     for reason, group in removed.groupby("filter_reason"):
-        print(f"  [{reason}]  ({len(group)} rows)")
-        by_src = group["source"].value_counts()
-        for src, n in by_src.items():
-            print(f"    {src:<30} {n}")
+        print(f"  [{reason}]  ({len(group)} rows, {len(group)/len(df_orig):.1%})")
+        if "source" in group.columns:
+            by_src = group["source"].value_counts()
+            for src, n in by_src.items():
+                print(f"    {src:<30} {n}")
         if len(group) <= 30:
             for _, row in group.iterrows():
-                pid = row["problem_id"]
+                pid = row.get("problem_id", "?")
                 gold = str(row.get(answer_col, ""))[:60]
                 prob = str(row.get("problem", ""))[:80]
                 print(f"    • {pid}")
                 print(f"      Q:    {prob}")
                 print(f"      Gold: {gold}")
+        print()
+
+    # Spot-check normalizations
+    if n_normalized and answer_col in df_orig.columns:
+        shared_idx = kept.index.intersection(df_orig.index)
+        changed = kept.loc[shared_idx][kept.loc[shared_idx, answer_col] != df_orig.loc[shared_idx, answer_col]]
+        print(f"  Normalization spot-check (first 20):")
+        for idx, row in changed.head(20).iterrows():
+            orig = str(df_orig.at[idx, answer_col])[:50]
+            new  = str(row[answer_col])
+            atype = str(row.get("answer_type", ""))
+            print(f"    [{atype:12s}] {repr(orig):<55} → {repr(new)}")
         print()
 
     print(f"  Accuracy impact on rescore (if available):")

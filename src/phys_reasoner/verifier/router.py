@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import itertools
+import re
 
 from phys_reasoner.data.normalize import normalize_answer_type
 from phys_reasoner.verifier.extract import _extract_boxed, expand_pm, extract_answer, split_by_comma
@@ -41,7 +42,8 @@ def verify_answer(
         pred_str = pred_parts[0] if pred_parts else pred_text.strip()
         gold_str = gold_answer[0] if isinstance(gold_answer, list) else gold_answer
         gold_str = _unbox(str(gold_str))
-        return 1.0 if _exact_match(_normalize_choice(pred_str), _normalize_choice(gold_str)) else 0.0
+        mode = primary_type  # pass "mcq" or "true_false" so normalizer applies correct rules
+        return 1.0 if _exact_match(_normalize_choice(pred_str, mode), _normalize_choice(gold_str, mode)) else 0.0
 
     # --- Build gold_parts: unbox + re-split (UGPhysics packs multi-part into \boxed{a, b}) ---
     gold_parts = _build_gold_parts(gold_answer)
@@ -106,14 +108,68 @@ def _extract_pred_parts(pred_text: str) -> list[str]:
     return [p for p in parts if p.strip()]
 
 
-def _normalize_choice(s: str) -> str:
-    """Normalize MCQ/true-false answer: strip whitespace and surrounding parentheses.
+# Matches leading letter choice (1–3 letters) with optional paren wrapping,
+# followed by a separator character or end-of-string.
+# Handles: A, (A), A., A), A:, A ***, (A) some text, (A) \lambda/...
+_MCQ_LEADING_RE = re.compile(r"^\(?([A-Za-z]{1,3})\)?(?:[.):\s*\-\\]|$)")
 
-    Handles model outputs like '(A)', '(B)' matching gold 'A', 'B'.
+# True/False synonyms → canonical form (lowercased; _exact_match applies .lower())
+_TF_MAP: dict[str, str] = {
+    "yes": "true", "y": "true", "t": "true",
+    "no": "false", "n": "false", "f": "false",
+}
+
+# Strips \text{...} or \mathrm{...} wrappers (with optional outer parens)
+_LATEX_TEXT_RE = re.compile(r"^\(?\\(?:text|mathrm|mathbf)\{([^}]*)\}\)?$")
+
+
+def _normalize_choice(s: str, mode: str = "mcq") -> str:
+    """Normalize an MCQ or true/false answer string for comparison.
+
+    mode='mcq':
+      Extracts leading letter choice even when followed by trailing content.
+        \\text{B}      → B
+        (A)            → A
+        A. / A) / A:   → A
+        (D) \\ 0       → D
+        A ***          → A
+        ABD            → ABD  (multi-select preserved)
+
+    mode='true_false':
+      Normalizes synonyms so all T/F representations compare equal.
+        yes / y / Y / T / True  → true
+        no  / n / N / F / False → false
+        \\boxed{Yes, formula}   → true  (first token extracted by caller via _unbox)
     """
     s = s.strip()
+
+    # Strip \text{B}, \mathrm{C}, (\mathrm{c}) → bare letter/content
+    m = _LATEX_TEXT_RE.match(s)
+    if m:
+        s = m.group(1).strip()
+
+    if mode == "true_false":
+        # TF synonym normalization (first word only; handles "Yes, formula" after _unbox)
+        first_word = re.split(r"[\s,;({]", s)[0].lower().rstrip(".,")
+        mapped = _TF_MAP.get(first_word)
+        if mapped:
+            return mapped
+        # Fall through: return as-is (e.g. already "true"/"false" after upstream unbox)
+        return s
+
+    # MCQ mode: extract leading letter choice
+    m = _MCQ_LEADING_RE.match(s)
+    if m:
+        candidate = m.group(1).upper()
+        if candidate.isalpha():
+            return candidate
+
+    # Strip outer parens for bare (ABC) forms not caught above
     if len(s) >= 3 and s[0] == '(' and s[-1] == ')':
-        s = s[1:-1].strip()
+        inner = s[1:-1].strip()
+        if inner.isalpha():
+            return inner.upper()
+
     return s
 
 

@@ -71,11 +71,143 @@ Implement and smoke-test the mid-sequence injection in VeRL rollout:
 
 **Goal:** SFT if needed; GRPO eval loop instrumented; training data ready.
 
-### SFT (conditional on Stage 0 result)
-- If Stage 0 hit rate < 15%: generate 2–5k TIR demonstrations via GPT-4o/Claude
-  - Auto-exec filter: keep only demos where code executes and verifier hits
-  - Fine-tune Qwen3.5-4B on these to stabilize format
-- If Stage 0 hit rate ≥ 15%: skip SFT entirely
+### Think-interrupt patch for VeRL (MUST DO before first GRPO run)
+
+Implements ScaleRL-style forced thinking truncation. If the model is still inside
+`<think>…` at the thinking budget, inject an interrupt phrase (mask=0, not trained on)
+and continue generating the tool call. Trains the model to work within token budgets.
+
+**Budgets:** thinking phase = 12,288 tokens; final answer phase = 4,096 tokens.
+
+#### File to patch: `verl/verl/experimental/agent_loop/tool_agent_loop.py`
+This is our submodule (`git@github.com:xingzhis/verl.git`, branch `physcode`).
+Commit the change directly to the physcode branch — this is a permanent project feature.
+
+#### Changes needed
+
+**`__init__`** — read one new config field (with safe default = None = feature disabled):
+```python
+self.thinking_budget = getattr(self.rollout_config.multi_turn, "thinking_budget", None)
+```
+
+**`_handle_generating_state`** — add after the existing generate block, immediately before
+the `assistant_turns += 1` line (~line 257). Detection uses token ID, no decode needed:
+
+```python
+INTERRUPT_PHRASE = "\nOkay, time is up. Let me stop thinking and formulate a final answer\n</think>\n"
+
+think_end_id = self.tokenizer.convert_tokens_to_ids("</think>")
+thinking_truncated = (
+    self.thinking_budget is not None
+    and len(output.token_ids) >= self.thinking_budget
+    and think_end_id not in output.token_ids  # still inside <think>
+)
+
+if thinking_truncated:
+    # Inject interrupt with mask=0 (not trained on, same treatment as tool response)
+    interrupt_ids = await self.loop.run_in_executor(
+        None, lambda: self.tokenizer.encode(INTERRUPT_PHRASE, add_special_tokens=False)
+    )
+    agent_data.prompt_ids += interrupt_ids
+    agent_data.response_mask += [0] * len(interrupt_ids)
+    if agent_data.response_logprobs:
+        agent_data.response_logprobs += [0.0] * len(interrupt_ids)
+
+    # Sub-call 2: generate just the tool call (small budget)
+    # sampling_params is a dict; not mutated by generate() (Ray serializes it)
+    tool_call_params = {**sampling_params, "max_tokens": 2048}
+    output2: TokenOutput = await self.server_manager.generate(
+        request_id=agent_data.request_id,  # same → same vLLM server → KV cache reuse
+        prompt_ids=agent_data.prompt_ids,
+        sampling_params=tool_call_params,
+        image_data=agent_data.image_data,
+        video_data=agent_data.video_data,
+    )
+    # Accumulate metrics from sub-call 2
+    agent_data.metrics["num_preempted"] = (
+        agent_data.metrics.get("num_preempted", 0) + (output2.num_preempted or 0)
+    )
+    if output2.extra_fields.get("max_global_steps"):
+        agent_data.extra_fields["max_global_steps"] = output2.extra_fields["max_global_steps"]
+
+    # Overwrite response_ids with sub-call 2 output so tool parser sees the tool call
+    agent_data.response_ids = output2.token_ids
+    agent_data.prompt_ids += output2.token_ids
+    agent_data.response_mask += [1] * len(output2.token_ids)
+    if output2.log_probs:
+        agent_data.response_logprobs += output2.log_probs
+```
+
+The `assistant_turns += 1` increment that follows counts both sub-calls as one logical turn —
+the turn limit is not affected.
+
+#### Key design decisions (do not change without re-reading the analysis)
+- **`stop_reason` is useless**: VeRL maps both vLLM `"stop"` and `"length"` to `"completed"`
+  (vllm_async_server.py lines 532–536). Truncation is detected via token ID check instead.
+- **`</think>` is a special token** in Qwen3.5 — maps to exactly one integer ID, so
+  `think_end_id not in output.token_ids` is a reliable exact check (O(n) int scan, ~µs).
+- **Request ID reuse is safe**: `server_manager.generate()` generates a fresh `uuid4()` per
+  actual vLLM call (agent_loop.py line 161); `agent_data.request_id` is only for sticky routing.
+- **`sampling_params` dict is not mutated**: the vLLM server pops `max_tokens` from its own
+  copy (Ray serializes the dict before remote call). Safe to override for sub-call 2.
+
+#### Training script changes
+In `smoke_tir_qwen35.sh` (and eventually `train.sh`), add:
+```bash
+actor_rollout_ref.rollout.multi_turn.thinking_budget=12288
+data.max_response_length=16384   # thinking(12288) + tool_call(2048) + tool_resp(512) + answer(4096) + buffer
+```
+Current `MAX_RESPONSE_LEN=4096` is too small — must increase before enabling the budget.
+
+#### Smoke test to verify the patch
+
+Run with `SMOKE_N=2` on a deliberately hard problem that triggers long thinking.
+Set `MAX_RESPONSE_LEN=16384` and `thinking_budget=12288`. Also set `VERL_DUMP_DIR` so you can
+inspect the raw rollout and confirm:
+1. The interrupt phrase appears in the trajectory with `</think>` before the `<tool_call>`
+2. The tool call was executed (tool response present)
+3. A `\boxed{}` answer appears in the final turn
+4. The trajectory does NOT have `</think>` appearing twice (model didn't re-open thinking)
+
+Commands:
+```bash
+# Apply dump patch first
+cd verl && git apply ../patches/verl_dump_dir.patch && cd ..
+
+# Run smoke with long response budget and thinking budget enabled
+MAX_RESPONSE_LEN=16384 SMOKE_N=2 VERL_DUMP_DIR=outputs/think_interrupt_test \
+  bash scripts/smoke_tir_qwen35.sh
+
+# Inspect the dumped rollout
+ls outputs/think_interrupt_test/
+cat outputs/think_interrupt_test/rollout_*.txt | grep -c "</think>"   # expect 1 per rollout
+cat outputs/think_interrupt_test/rollout_*.txt | grep "time is up"    # expect at least 1
+```
+
+To trigger the interrupt reliably for testing, temporarily set `thinking_budget=500` (very low)
+so it fires on every trajectory. Verify the tool call still executes correctly. Then restore to 12288.
+
+#### After verifying: commit and push to physcode branch
+```bash
+cd verl
+git add verl/experimental/agent_loop/tool_agent_loop.py
+git commit -m "add think-interrupt: cap thinking at budget, inject ScaleRL-style phrase"
+git push fork physcode
+cd ..
+git add verl && git commit -m "bump verl submodule: think-interrupt patch"
+```
+
+#### Stage 0 probe (deferred — not blocking)
+`stage0_probe.py` (vLLM manual 2-phase loop) should eventually match VeRL's behavior.
+This means adding a `thinking_budget` param that splits phase 1 into think-pass + tool-call-pass,
+injecting the same interrupt phrase on truncation. Defer until after the first GRPO run confirms
+the VeRL patch is working — it is a diagnostic tool, not a training blocker.
+
+---
+
+### SFT — SKIPPED (decision 2026-04-04)
+Native tool-call format (qwen3_coder) + enable_thinking=True produces tool calls in smoke test.
+No time for demo curation. Go straight to GRPO. Revisit only if reward signal is flat in Week 3.
 
 ### GRPO eval loop instrumentation
 - Instrument per-type accuracy logging at checkpoints 500 / 1000 / 2000 gradient steps
@@ -85,6 +217,15 @@ Implement and smoke-test the mid-sequence injection in VeRL rollout:
 ### Training data weights
 - Add `_train_weight` column to both parquets (Goldilocks B strategy)
 - Implement online [0.05, 0.95] filter in VeRL reward wrapper (Goldilocks C strategy)
+
+### (Optional, parallel) Verifier comparison
+- Benchmark `desimfj/SCI-Verifier-4B` and `desimfj/SCI-Verifier-8B` vs xVerify-3B-Ib
+- Measure FNR by answer type + inference latency
+- Decision: if FNR lower and latency acceptable, swap verifier before full GRPO run
+
+### (Optional, parallel) Eval setup
+- Set up critpt + any other hard physics benchmarks alongside MATH-500 hard
+- Run zero-shot Qwen3.5-4B to get free baselines before training
 
 ### Week 2 outputs
 - SFT checkpoint (if needed) with ≥30% execution success rate on dev
@@ -103,6 +244,7 @@ Tasks:
 - [ ] Debug reward pipeline: execution errors, verifier integration, reward logging
 - [ ] Confirm reward signal is not sparse (target: >10% of rollouts correct on numerical)
 - [ ] Launch first 4B GRPO run on numerical curriculum once environment is stable
+- [ ] (Optional) principia-collection: filter by physics, verifier round-trip on numerical vs math-object split, dedup against existing corpus — only if reward signal is sparse
 
 ### Week 3 outputs
 - Verified RL environment (reward signal confirmed non-sparse)
@@ -135,7 +277,7 @@ Tasks (run training jobs in parallel — GPU-abundant):
 - [ ] Cost penalty ablation: λ > 0 vs λ = 0
 - [ ] Curriculum ablation: numerical-first vs full mixed from start
 - [ ] Scaling ablation: 0.8B vs 4B TIR-GRPO accuracy
-- [ ] OOD eval: MATH-500 hard subset
+- [ ] OOD eval: MATH-500 hard subset + critpt (if set up in Week 2)
 - [ ] Behavioral analysis (100–150 sampled outputs per condition):
   - Strategy categorization: direct compute, unit conversion scaffolding, error-free single-shot
   - Failure modes: wrong physics setup / execution error / correct code + wrong interpretation

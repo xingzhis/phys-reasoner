@@ -393,10 +393,50 @@ def test_unit_equivalent(pred, gold, unit, expected):
     # Wrong answer stays wrong
     (r"\boxed{(A)}", "B", 0.0),
     (r"\boxed{B}", "A", 0.0),
+    # Letter + trailing content: model outputs value alongside letter
+    (r"\boxed{(D) \ 0}", "D", 1.0),       # (D) \ 0  → D
+    (r"\boxed{D. some text}", "D", 1.0),   # D. text  → D
+    (r"\boxed{A ***}", "A", 1.0),          # A ***    → A
+    (r"\boxed{(B) \lambda/(4n)}", "B", 1.0),  # \text{(B) ...} pattern
+    # Letter + dot/colon
+    (r"\boxed{A.}", "A", 1.0),
+    (r"\boxed{C)}", "C", 1.0),
+    # Wrong still wrong when leading letter differs
+    (r"\boxed{(D) \ 0}", "A", 0.0),
+    # \text{} and \mathrm{} wrappers on gold
+    (r"\boxed{B}", r"\text{B}", 1.0),
 ])
 def test_mcq_paren_normalization(pred, gold, expected):
     result = verify_answer(pred_text=pred, gold_answer=gold,
                            answer_type="mcq", tolerance=0.05, xverify_judge=None)
+    assert result == expected
+
+
+@pytest.mark.parametrize("pred,gold,expected", [
+    # Canonical forms
+    ("True", "True", 1.0),
+    ("False", "False", 1.0),
+    # Yes/No synonyms
+    (r"\boxed{yes}", r"\boxed{Yes}", 1.0),
+    (r"\boxed{no}", r"\boxed{No}", 1.0),
+    # Cross-style: Yes gold vs True pred
+    (r"\boxed{True}", r"\boxed{Yes}", 1.0),
+    (r"\boxed{False}", r"\boxed{No}", 1.0),
+    # Single-letter initials
+    (r"\boxed{T}", r"\boxed{Yes}", 1.0),
+    (r"\boxed{F}", r"\boxed{No}", 1.0),
+    (r"\boxed{Y}", r"\boxed{Yes}", 1.0),
+    (r"\boxed{N}", r"\boxed{No}", 1.0),
+    # Compound gold with leading Yes/No: extract first token
+    (r"\boxed{yes}", r"\boxed{Yes, V = -\frac{1}{2}ar^2}", 1.0),
+    (r"\boxed{No}", r"\boxed{No, some formula}", 1.0),
+    # Wrong
+    (r"\boxed{yes}", r"\boxed{No}", 0.0),
+    (r"\boxed{True}", r"\boxed{No}", 0.0),
+])
+def test_true_false_normalization(pred, gold, expected):
+    result = verify_answer(pred_text=pred, gold_answer=gold,
+                           answer_type="true_false", tolerance=0.05, xverify_judge=None)
     assert result == expected
 
 

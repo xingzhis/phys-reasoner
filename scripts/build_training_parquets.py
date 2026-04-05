@@ -37,7 +37,7 @@ SOURCE OF TRUTH:
 
 Inputs (already cleaned, do not modify these):
     data/processed/drsci_physics_clean.parquet   -- output of drsci_clean.py
-    data/processed/candidates_deduped.parquet    -- output of run_dedup.py
+    data/processed/candidates_filtered.parquet   -- output of filter_data_quality.py
 
 Outputs:
     data/processed/drsci_train.parquet
@@ -89,11 +89,24 @@ def _has_fig_ref(text: str) -> bool:
 # Prompt builder
 # ---------------------------------------------------------------------------
 
-def _build_prompt(question: str) -> list[dict]:
-    """Return the canonical TIR messages list for VeRL's prompt column."""
+_ANSWER_TYPE_HINTS: dict[str, str] = {
+    "mcq":        "This is a multiple-choice question. Put only the letter (A/B/C/D/...) inside \\boxed{}.",
+    "true_false": "This is a true/false question. Put only True or False inside \\boxed{}.",
+}
+
+
+def _build_prompt(question: str, answer_type: str = "") -> list[dict]:
+    """Return the canonical TIR messages list for VeRL's prompt column.
+
+    For MCQ and true/false questions a one-line hint is appended to the user
+    message (not the system prompt) to discourage the model from writing the
+    option value or using yes/no instead of True/False.
+    """
+    hint = _ANSWER_TYPE_HINTS.get(str(answer_type).lower().strip(), "")
+    user_content = f"{question}\n\n{hint}".strip() if hint else question
     return [
         {"role": "system", "content": TIR_SYSTEM_PROMPT},
-        {"role": "user",   "content": question},
+        {"role": "user",   "content": user_content},
     ]
 
 
@@ -132,9 +145,13 @@ def process_drsci(input_path: str, output_path: str, report: bool) -> None:
     df_filtered = df[~fig_mask].copy()
     print(f"  Figure filter: dropped {n_fig} rows ({n_fig/len(df):.1%}) → {len(df_filtered):,} remain")
 
-    # --- Prompt rebuild ---
-    df_filtered["prompt"] = df_filtered[q_col].astype(str).apply(_build_prompt)
-    print(f"  Prompt column rebuilt from TIR_SYSTEM_PROMPT + {q_col}")
+    # --- Prompt rebuild (with answer_type hint for MCQ / true_false) ---
+    df_filtered["prompt"] = df_filtered.apply(
+        lambda r: _build_prompt(str(r[q_col]),
+                                answer_type=r.get("inferred_answer_type", "")),
+        axis=1,
+    )
+    print(f"  Prompt column rebuilt from TIR_SYSTEM_PROMPT + {q_col} (+ type hints)")
 
     # --- VeRL reward_model struct (dict column, not flat dot-notation) ---
     df_filtered["reward_model"] = df_filtered["reward_model.ground_truth"].apply(_build_reward_model)
@@ -168,10 +185,14 @@ def process_corpus(input_path: str, output_path: str, report: bool) -> None:
 
     # No figure filter — corpus is manually curated, no image-dependent rows.
 
-    # --- Prompt rebuild ---
+    # --- Prompt rebuild (with answer_type hint for MCQ / true_false) ---
     df = df.copy()
-    df["prompt"] = df["problem"].astype(str).apply(_build_prompt)
-    print(f"  Prompt column built from TIR_SYSTEM_PROMPT + problem")
+    df["prompt"] = df.apply(
+        lambda r: _build_prompt(str(r["problem"]),
+                                answer_type=r.get("answer_type", "")),
+        axis=1,
+    )
+    print(f"  Prompt column built from TIR_SYSTEM_PROMPT + problem (+ type hints)")
 
     # --- VeRL reward_model struct ---
     df["reward_model"] = df["answer"].apply(_build_reward_model)
@@ -223,7 +244,7 @@ def main() -> None:
     parser.add_argument("--drsci-output",
                         default="data/processed/drsci_train.parquet")
     parser.add_argument("--corpus-input",
-                        default="data/processed/candidates_deduped.parquet")
+                        default="data/processed/candidates_filtered.parquet")
     parser.add_argument("--corpus-output",
                         default="data/processed/corpus_train.parquet")
     args = parser.parse_args()

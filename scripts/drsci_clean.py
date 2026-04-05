@@ -26,6 +26,12 @@ Fixes four categories of formatting artifacts found in drsci_physics_deduped.par
      These are dropped (tag: prose_dropped).
 
   6. Prose-style gold answers (2.1%, 2,318 rows) — dropped
+
+  7. Non-Latin-script gold answers — dropped
+     Gold contains Chinese, Japanese, Korean, or Arabic characters.
+     Valid Unicode math/science notation (×, ≤, ², Fe²⁺, Å) is intentionally kept.
+     Affects primarily equation and expression types with Chinese-language source content.
+     Use the CJK regex, NOT isascii() — isascii() incorrectly flags valid physics Unicode.
      Gold strings that are computation narratives, definition clauses, or
      explanatory sentences rather than clean mathematical answers.
      Six detected patterns (all concentrate in equation/expression types;
@@ -139,6 +145,25 @@ def _extract_single_display_math(s: str) -> str | None:
     return content
 
 
+# ---------------------------------------------------------------------------
+# Step 7: Non-Latin script detection
+# ---------------------------------------------------------------------------
+
+_NON_LATIN_SCRIPT_RE = re.compile(
+    r"[\u4e00-\u9fff"   # CJK Unified Ideographs
+    r"\u3040-\u30ff"    # Hiragana + Katakana
+    r"\u3400-\u4dbf"    # CJK Extension A
+    r"\u0600-\u06ff"    # Arabic
+    r"\u0900-\u097f"    # Devanagari
+    r"\uac00-\ud7af"    # Hangul Syllables
+    r"]"
+)
+
+
+def _has_non_latin_script(s: str) -> bool:
+    return bool(_NON_LATIN_SCRIPT_RE.search(s))
+
+
 _PROSE_PATTERNS = [
     # "Therefore, the final answer is: $\boxed{X}$"
     re.compile(r"^.*?(?:final answer is|answer is|answer:|result is)[:\s]*\$?\\?boxed\{", re.IGNORECASE | re.DOTALL),
@@ -235,6 +260,12 @@ def clean_ground_truth(s: str) -> tuple[str, str]:
     # Dropping them removes 2.1% of rows with < 1pp distribution impact.
     if _is_prose_gold(s):
         return original, "prose_gold_dropped"
+
+    # --- 7. Non-Latin script in gold answer ---
+    # Uses CJK/Arabic regex, NOT isascii() — isascii() incorrectly flags valid
+    # physics Unicode (×, ≤, ², Fe²⁺, Å, superscripts, subscripts).
+    if _has_non_latin_script(s):
+        return original, "non_latin_dropped"
 
     return original, "unchanged"
 
@@ -339,7 +370,8 @@ def main() -> None:
     print(f"\n=== Cleaning summary ===")
     for tag in ["unchanged", "prose_extracted", "display_math_extracted",
                 "dollar_stripped", "double_unescaped",
-                "truncated_dropped", "prose_dropped", "prose_gold_dropped"]:
+                "truncated_dropped", "prose_dropped", "prose_gold_dropped",
+                "non_latin_dropped"]:
         n = tag_counts.get(tag, 0)
         print(f"  {tag:<25} {n:>6}  ({n/total:.1%})")
 
@@ -349,15 +381,18 @@ def main() -> None:
         changed = sum(v for k, v in src_tags.items() if k != "unchanged")
         print(f"  {str(src):<35}  changed={changed:>5} ({changed/len(grp):.1%})")
 
-    # --- Drop truncated + prose ---
-    drop_tags = {"truncated_dropped", "prose_dropped", "prose_gold_dropped"}
-    n_trunc      = tag_counts.get("truncated_dropped", 0)
-    n_prose_drop = tag_counts.get("prose_dropped", 0)
-    n_prose_gold = tag_counts.get("prose_gold_dropped", 0)
+    # --- Drop truncated + prose + non-Latin ---
+    drop_tags = {"truncated_dropped", "prose_dropped", "prose_gold_dropped",
+                 "non_latin_dropped"}
+    n_trunc       = tag_counts.get("truncated_dropped", 0)
+    n_prose_drop  = tag_counts.get("prose_dropped", 0)
+    n_prose_gold  = tag_counts.get("prose_gold_dropped", 0)
+    n_non_latin   = tag_counts.get("non_latin_dropped", 0)
     df_clean = df[~df["_clean_tag"].isin(drop_tags)].copy()
     print(f"\n  Dropped truncated rows:      {n_trunc}")
     print(f"  Dropped prose rows:          {n_prose_drop}")
     print(f"  Dropped prose-gold rows:     {n_prose_gold}")
+    print(f"  Dropped non-Latin rows:      {n_non_latin}  ({n_non_latin/total:.2%})")
     print(f"  Final clean rows: {len(df_clean):,}")
 
     # --- Spot-check prose extractions ---
