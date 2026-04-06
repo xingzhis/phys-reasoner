@@ -1,22 +1,43 @@
 diff --git a/verl/experimental/agent_loop/tool_agent_loop.py b/verl/experimental/agent_loop/tool_agent_loop.py
-index 308ef49..ce38b14 100644
+index b1e28558..db3eb1ba 100644
 --- a/verl/experimental/agent_loop/tool_agent_loop.py
 +++ b/verl/experimental/agent_loop/tool_agent_loop.py
-@@ -198,6 +198,20 @@ class ToolAgentLoop(AgentLoopBase):
+@@ -232,6 +232,41 @@ class ToolAgentLoop(AgentLoopBase):
              extra_fields=agent_data.extra_fields,
          )
          output.extra_fields.update({"turn_scores": agent_data.turn_scores, "tool_rewards": agent_data.tool_rewards})
 +
 +        # TEMPORARY DUMP PATCH — remove after inspection.
-+        # Set VERL_DUMP_DIR=<path> to write one txt file per rollout.
++        # Set VERL_DUMP_DIR=<path> to write one file pair per rollout:
++        #   rollout_<id>.txt       — decoded token stream (with special tokens)
++        #   rollout_<id>.meta.json — mask + logprobs metadata for sanity-checking
 +        _dump_dir = os.environ.get("VERL_DUMP_DIR", "")
 +        if _dump_dir:
 +            try:
++                import json as _json
 +                os.makedirs(_dump_dir, exist_ok=True)
 +                _text = self.tokenizer.decode(agent_data.prompt_ids, skip_special_tokens=False)
-+                _fname = os.path.join(_dump_dir, f"rollout_{agent_data.request_id}.txt")
-+                with open(_fname, "w") as _f:
++                _mask = agent_data.response_mask[: self.response_length]
++                _logprobs = (
++                    agent_data.response_logprobs[: self.response_length]
++                    if agent_data.response_logprobs
++                    else None
++                )
++                _fname_base = os.path.join(_dump_dir, f"rollout_{agent_data.request_id}")
++                with open(_fname_base + ".txt", "w") as _f:
 +                    _f.write(_text)
++                _meta = {
++                    "prompt_len": len(agent_data.prompt_ids) - len(agent_data.response_mask),
++                    "response_len": len(_mask),
++                    "num_trained_tokens": sum(_mask),
++                    "response_mask": _mask,
++                    "logprobs_available": _logprobs is not None,
++                }
++                if _logprobs is not None:
++                    _meta["response_logprobs"] = _logprobs
++                    _meta["logprobs_len_matches_mask"] = len(_logprobs) == len(_mask)
++                with open(_fname_base + ".meta.json", "w") as _f:
++                    _json.dump(_meta, _f, indent=2)
 +            except Exception as _e:
 +                logger.warning(f"VERL_DUMP_DIR write failed: {_e}")
 +
@@ -24,7 +45,7 @@ index 308ef49..ce38b14 100644
  
      async def _handle_pending_state(self, agent_data: AgentData, sampling_params: dict[str, Any]) -> AgentState:
 diff --git a/verl/trainer/constants_ppo.py b/verl/trainer/constants_ppo.py
-index cc58771..80f6910 100644
+index cc587713..80f69100 100644
 --- a/verl/trainer/constants_ppo.py
 +++ b/verl/trainer/constants_ppo.py
 @@ -51,4 +51,7 @@ def get_ppo_ray_runtime_env():

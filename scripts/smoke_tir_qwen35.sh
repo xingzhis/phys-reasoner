@@ -74,15 +74,32 @@ REF_MICRO_BATCH=$PPO_MINI_BATCH
 TOTAL_GENS=$((TRAIN_BATCH * ROLLOUT_N))
 ROLLOUT_MAX_NUM_SEQS=$TOTAL_GENS
 # 4B on H200: 0.5 leaves ample room for FSDP + Ray overhead alongside vLLM.
-VLLM_GPU_MEM_UTIL=0.5
+# Override via env for smaller GPUs (e.g. VLLM_GPU_MEM_UTIL=0.3 for A40).
+VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-0.5}"
 
-# TIR response budget:
-#   Single-turn (MAX_TOOL_TURNS=1): think1 + code1 + response1 + answer ≈ 1536 typical, 3072 hard
-#   Two-turn   (MAX_TOOL_TURNS=2): add think2 + code2 + response2      ≈ 3072 typical, 6144 hard
-# Default to 4096 — safe floor for 2-turn on hard problems; raise to 6144 for full training.
-# max_model_len is set to MAX_PROMPT_LEN + MAX_RESPONSE_LEN*2 to give vLLM headroom.
+# TIR response budget — all five components must be set; MAX_RESPONSE_LEN is derived.
+#
+#   response_length = THINKING_BUDGET + INTERRUPT_LEN
+#                   + TOOL_CALL_BUDGET + MAX_TOOL_RESPONSE_LEN
+#                   + ANSWER_BUDGET
+#
+# INTERRUPT_LEN: exact token count of THINK_INTERRUPT_PHRASE for Qwen3.5-4B.
+# To recompute for a different model:
+#   python3 -c "from transformers import AutoTokenizer; t=AutoTokenizer.from_pretrained('<model>', local_files_only=True); \
+#     print(len(t.encode('\nOkay, time is up. Let me stop thinking and formulate a final answer\n</think>\n', add_special_tokens=False)))"
 MAX_PROMPT_LEN="${MAX_PROMPT_LEN:-1024}"
-MAX_RESPONSE_LEN="${MAX_RESPONSE_LEN:-4096}"
+THINKING_BUDGET="${THINKING_BUDGET:-}"       # required when think-interrupt is enabled
+TOOL_CALL_BUDGET="${TOOL_CALL_BUDGET:-}"     # required when think-interrupt is enabled
+INTERRUPT_LEN=15                             # exact for Qwen3.5-4B
+MAX_TOOL_RESPONSE_LEN=512                    # must match multi_turn.max_tool_response_length below
+ANSWER_BUDGET="${ANSWER_BUDGET:-}"           # required when think-interrupt is enabled
+
+# Derive MAX_RESPONSE_LEN from budgets when think-interrupt is enabled; otherwise use override.
+if [[ -n "$THINKING_BUDGET" && -n "$TOOL_CALL_BUDGET" && -n "$ANSWER_BUDGET" ]]; then
+    MAX_RESPONSE_LEN=$((THINKING_BUDGET + INTERRUPT_LEN + TOOL_CALL_BUDGET + MAX_TOOL_RESPONSE_LEN + ANSWER_BUDGET))
+else
+    MAX_RESPONSE_LEN="${MAX_RESPONSE_LEN:-4096}"
+fi
 
 TIMESTAMP=$(date +%Y%m%d.%H%M%S)
 TRAIN_DIR="$ROOT/outputs/smoke_tir_qwen35_$TIMESTAMP"
@@ -201,8 +218,10 @@ PYTHONNOUSERSITE=1 apptainer exec --nv \
     actor_rollout_ref.rollout.multi_turn.max_assistant_turns=$((MAX_TOOL_TURNS * 2)) \
     actor_rollout_ref.rollout.multi_turn.max_user_turns=$MAX_TOOL_TURNS \
     actor_rollout_ref.rollout.multi_turn.max_parallel_calls=1 \
-    actor_rollout_ref.rollout.multi_turn.max_tool_response_length=512 \
+    actor_rollout_ref.rollout.multi_turn.max_tool_response_length=$MAX_TOOL_RESPONSE_LEN \
     actor_rollout_ref.rollout.multi_turn.tool_response_truncate_side=right \
+    ${THINKING_BUDGET:++actor_rollout_ref.rollout.multi_turn.thinking_budget=$THINKING_BUDGET} \
+    ${TOOL_CALL_BUDGET:++actor_rollout_ref.rollout.multi_turn.tool_call_budget=$TOOL_CALL_BUDGET} \
     reward.custom_reward_function.path="$ROOT/src/phys_reasoner/training/reward.py" \
     reward.custom_reward_function.name=compute_score \
     trainer.critic_warmup=0 \

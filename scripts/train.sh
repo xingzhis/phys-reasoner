@@ -35,8 +35,20 @@ N_GPUS="${N_GPUS:-1}"
 TRAIN_BATCH="${TRAIN_BATCH:-128}"
 ROLLOUT_N="${ROLLOUT_N:-8}"             # GRPO needs n≥2; n=1 → zero advantages
 MAX_PROMPT_LEN="${MAX_PROMPT_LEN:-1024}"
-MAX_RESPONSE_LEN="${MAX_RESPONSE_LEN:-4096}"
 MAX_TOOL_TURNS="${MAX_TOOL_TURNS:-1}"
+
+# Think-interrupt budget (see smoke_tir_qwen35.sh for full explanation).
+THINKING_BUDGET="${THINKING_BUDGET:-}"
+TOOL_CALL_BUDGET="${TOOL_CALL_BUDGET:-}"
+INTERRUPT_LEN=15
+MAX_TOOL_RESPONSE_LEN=512
+ANSWER_BUDGET="${ANSWER_BUDGET:-}"
+
+if [[ -n "$THINKING_BUDGET" && -n "$TOOL_CALL_BUDGET" && -n "$ANSWER_BUDGET" ]]; then
+    MAX_RESPONSE_LEN=$((THINKING_BUDGET + INTERRUPT_LEN + TOOL_CALL_BUDGET + MAX_TOOL_RESPONSE_LEN + ANSWER_BUDGET))
+else
+    MAX_RESPONSE_LEN="${MAX_RESPONSE_LEN:-4096}"
+fi
 
 # Training schedule — use TOTAL_STEPS for a step-capped run, otherwise full epochs.
 TOTAL_EPOCHS="${TOTAL_EPOCHS:-1}"
@@ -147,6 +159,8 @@ PYTHONNOUSERSITE=1 apptainer exec --nv \
     actor_rollout_ref.rollout.max_model_len=$((MAX_PROMPT_LEN + MAX_RESPONSE_LEN * 2)) \
     actor_rollout_ref.rollout.max_num_seqs=$ROLLOUT_MAX_NUM_SEQS \
     actor_rollout_ref.rollout.load_format=safetensors \
+    actor_rollout_ref.rollout.enable_prefix_caching=True \
+    actor_rollout_ref.rollout.enable_chunked_prefill=True \
     actor_rollout_ref.rollout.tensor_model_parallel_size=$N_GPUS \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=$REF_MICRO_BATCH \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=$REF_MICRO_BATCH \
@@ -157,8 +171,10 @@ PYTHONNOUSERSITE=1 apptainer exec --nv \
     actor_rollout_ref.rollout.multi_turn.max_assistant_turns=$((MAX_TOOL_TURNS * 2)) \
     actor_rollout_ref.rollout.multi_turn.max_user_turns=$MAX_TOOL_TURNS \
     actor_rollout_ref.rollout.multi_turn.max_parallel_calls=1 \
-    actor_rollout_ref.rollout.multi_turn.max_tool_response_length=512 \
+    actor_rollout_ref.rollout.multi_turn.max_tool_response_length=$MAX_TOOL_RESPONSE_LEN \
     actor_rollout_ref.rollout.multi_turn.tool_response_truncate_side=right \
+    ${THINKING_BUDGET:++actor_rollout_ref.rollout.multi_turn.thinking_budget=$THINKING_BUDGET} \
+    ${TOOL_CALL_BUDGET:++actor_rollout_ref.rollout.multi_turn.tool_call_budget=$TOOL_CALL_BUDGET} \
     reward.custom_reward_function.path="$ROOT/src/phys_reasoner/training/reward.py" \
     reward.custom_reward_function.name=compute_score \
     trainer.critic_warmup=0 \
