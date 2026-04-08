@@ -2,6 +2,28 @@
 
 from __future__ import annotations
 
+import os
+
+# Lazy singleton: created on first use, reused for the lifetime of the worker.
+# Set XVERIFY_URL=http://<host>:<port>/judge to route the verifier's xVerify
+# fallback to a remote service. Unset → rule-only verification (legacy path).
+_XVERIFY_CLIENT = None
+_XVERIFY_INIT_DONE = False
+
+
+def _get_xverify_judge():
+    global _XVERIFY_CLIENT, _XVERIFY_INIT_DONE
+    if _XVERIFY_INIT_DONE:
+        return _XVERIFY_CLIENT
+    _XVERIFY_INIT_DONE = True
+    url = os.environ.get("XVERIFY_URL", "").strip()
+    if not url:
+        return None
+    from phys_reasoner.verifier.xverify_client import XVerifyHTTPClient
+
+    _XVERIFY_CLIENT = XVerifyHTTPClient(url)
+    return _XVERIFY_CLIENT
+
 
 def compute_score(
     solution_str: str,
@@ -36,6 +58,9 @@ def compute_score(
         unit = extra_info.get("unit", unit)
         tolerance = float(extra_info.get("tolerance", tolerance))
         problem = extra_info.get("problem", problem)
+
+    if xverify_judge is None:
+        xverify_judge = _get_xverify_judge()
 
     score = verify_answer(
         pred_text=solution_str,

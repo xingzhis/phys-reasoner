@@ -145,6 +145,7 @@ PYTHONNOUSERSITE=1 apptainer exec --nv \
   --env "WANDB_PROJECT=$WANDB_PROJECT" \
   --env "WANDB_RUN_ID=$EXPERIMENT" \
   --env "VERL_DUMP_DIR=${VERL_DUMP_DIR:-}" \
+  --env "XVERIFY_URL=${XVERIFY_URL:-}" \
   "$SIF" \
   python3 -m verl.experimental.fully_async_policy.fully_async_main \
     algorithm.adv_estimator=grpo \
