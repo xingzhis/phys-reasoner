@@ -1,0 +1,99 @@
+diff --git a/src/phys_reasoner/training/reward.py b/src/phys_reasoner/training/reward.py
+index c30c1f0..1e3c2e6 100644
+--- a/src/phys_reasoner/training/reward.py
++++ b/src/phys_reasoner/training/reward.py
+@@ -2,7 +2,11 @@
+ 
+ from __future__ import annotations
+ 
++import json
+ import os
++import threading
++import time
++import uuid
+ 
+ # Lazy singleton: created on first use, reused for the lifetime of the worker.
+ # Set XVERIFY_URL=http://<host>:<port>/judge to route the verifier's xVerify
+@@ -10,6 +14,45 @@ import os
+ _XVERIFY_CLIENT = None
+ _XVERIFY_INIT_DONE = False
+ 
++# TEMPORARY DUMP PATCH — remove after inspection.
++# Set VERIFIER_DUMP_PATH=<file.jsonl> to append one JSON line per compute_score
++# call: solution preview, gold, answer_type, whether xVerify was invoked, its
++# raw responses, and the final score. Lock guards multi-threaded reward
++# managers in one process; cross-process safety relies on POSIX append-mode
++# atomicity for short writes (sufficient for inspection runs).
++_DUMP_LOCK = threading.Lock()
++
++
++class _RecordingJudge:
++    """Wraps an xVerify judge so each call is captured for the dump."""
++
++    def __init__(self, inner):
++        self._inner = inner
++        self.calls: list[dict] = []
++
++    def __call__(self, pred_str: str, gold_str: str, problem_str: str = "") -> bool:
++        result = self._inner(pred_str, gold_str, problem_str)
++        self.calls.append(
++            {"pred": pred_str, "gold": gold_str, "result": bool(result)}
++        )
++        return result
++
++
++def _dump_record(record: dict) -> None:
++    path = os.environ.get("VERIFIER_DUMP_PATH", "").strip()
++    if not path:
++        return
++    try:
++        line = json.dumps(record, ensure_ascii=False, default=str) + "\n"
++        parent = os.path.dirname(path)
++        with _DUMP_LOCK:
++            if parent:
++                os.makedirs(parent, exist_ok=True)
++            with open(path, "a") as f:
++                f.write(line)
++    except Exception:  # noqa: BLE001 — never crash training on dump failure
++        pass
++
+ 
+ def _get_xverify_judge():
+     global _XVERIFY_CLIENT, _XVERIFY_INIT_DONE
+@@ -62,6 +105,13 @@ def compute_score(
+     if xverify_judge is None:
+         xverify_judge = _get_xverify_judge()
+ 
++    # TEMPORARY DUMP PATCH — wrap judge to record calls (no-op when disabled).
++    _dump_enabled = bool(os.environ.get("VERIFIER_DUMP_PATH", "").strip())
++    _recorder = None
++    if _dump_enabled and xverify_judge is not None:
++        _recorder = _RecordingJudge(xverify_judge)
++        xverify_judge = _recorder
++
+     score = verify_answer(
+         pred_text=solution_str,
+         gold_answer=ground_truth,
+@@ -71,6 +121,22 @@ def compute_score(
+         xverify_judge=xverify_judge,
+         problem_text=problem,
+     )
++
++    # TEMPORARY DUMP PATCH — emit one record per compute_score call.
++    if _dump_enabled:
++        _dump_record({
++            "id": uuid.uuid4().hex[:12],
++            "pid": os.getpid(),
++            "ts": time.time(),
++            "data_source": data_source,
++            "answer_type": answer_type,
++            "unit": unit,
++            "gold": ground_truth,
++            "solution_preview": solution_str[-1000:],
++            "xverify_calls": _recorder.calls if _recorder is not None else [],
++            "raw_score": score,
++        })
++
+     if score == -1.0:
+         return 0.0
+     return score
