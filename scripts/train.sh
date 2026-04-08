@@ -67,7 +67,11 @@ WANDB_PROJECT="${WANDB_PROJECT:-physcode_tir}"
 # ---------------------------------------------------------------------------
 ROLLOUT_MAX_NUM_SEQS=$((TRAIN_BATCH * ROLLOUT_N))
 PPO_MINI_BATCH=$TRAIN_BATCH
-REF_MICRO_BATCH=$PPO_MINI_BATCH
+# PPO_MICRO_BS: gradient-accumulation micro-batch size. Defaults to PPO_MINI_BATCH (no
+# accumulation). Set to 1 on memory-constrained GPUs (e.g. A40) to halve activation
+# memory at the cost of extra forward/backward passes.
+PPO_MICRO_BS="${PPO_MICRO_BS:-$PPO_MINI_BATCH}"
+REF_MICRO_BATCH="${REF_MICRO_BS:-$PPO_MICRO_BS}"
 
 TIMESTAMP=$(date +%Y%m%d.%H%M%S)
 EXPERIMENT="grpo_qwen35_4b_${TIMESTAMP}"
@@ -138,7 +142,7 @@ PYTHONNOUSERSITE=1 apptainer exec --nv \
     '+actor_rollout_ref.model.override_config={attn_implementation:sdpa}' \
     actor_rollout_ref.actor.optim.lr=$LR \
     actor_rollout_ref.actor.ppo_mini_batch_size=$PPO_MINI_BATCH \
-    actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=$PPO_MINI_BATCH \
+    actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=$PPO_MICRO_BS \
     actor_rollout_ref.actor.ppo_epochs=1 \
     actor_rollout_ref.actor.use_kl_loss=True \
     actor_rollout_ref.actor.kl_loss_coef=0.001 \
@@ -156,7 +160,7 @@ PYTHONNOUSERSITE=1 apptainer exec --nv \
     actor_rollout_ref.rollout.temperature=1.0 \
     actor_rollout_ref.rollout.top_p=0.9 \
     actor_rollout_ref.rollout.gpu_memory_utilization=$VLLM_GPU_MEM_UTIL \
-    actor_rollout_ref.rollout.max_model_len=$((MAX_PROMPT_LEN + MAX_RESPONSE_LEN * 2)) \
+    actor_rollout_ref.rollout.max_model_len=$((MAX_PROMPT_LEN + MAX_RESPONSE_LEN)) \
     actor_rollout_ref.rollout.max_num_seqs=$ROLLOUT_MAX_NUM_SEQS \
     actor_rollout_ref.rollout.load_format=safetensors \
     actor_rollout_ref.rollout.enable_prefix_caching=True \
