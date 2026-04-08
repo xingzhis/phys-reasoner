@@ -114,6 +114,39 @@ PYTHONNOUSERSITE=1 apptainer exec \
 
 **Do NOT use plain `pip install <package>` to replace SIF packages** — upgrading SIF-installed packages via pip in an overlay creates OverlayFS whiteout entries that are silently ignored on RHEL 8 compute nodes when the overlay is mounted `:ro`. The compute node falls back to the SIF's old version. Use `--target /opt/phys-extras/` instead.
 
+### Async training extras (`$ROOT/.async-extras/`)
+
+The `fully_async_policy` path (scripts/train_async.sh, scripts/train_smoke_async.sh) needs
+numpy 2.x because `ray.util.collective` and the NCCL checkpoint engine both pull in cupy,
+and the SIF-shipped `cupy-cuda12x 14.0.1` wheel is built against numpy 2.x ABI. The SIF
+itself ships numpy 1.26, so `import cupy` crashes with
+`numpy.core.multiarray failed to import` unless numpy 2.x is on sys.path first.
+
+We do NOT put numpy 2.x into `/opt/phys-extras/` (the overlay), because the non-async path
+is fine with numpy 1.26 and mixing numpy versions in the overlay is fragile. Instead it goes
+into a host directory under the repo (`$ROOT/.async-extras/`) that is auto-bound by
+apptainer, and is only added to `PYTHONPATH` by the async launchers:
+
+```bash
+# One-time install (host directory, NOT the overlay)
+mkdir -p "$ROOT/.async-extras"
+PYTHONNOUSERSITE=1 apptainer exec \
+  --overlay "$OVERLAY:ro" --no-home --bind /etc/pki:/etc/pki \
+  --env "PYTHONNOUSERSITE=1" "$SIF" \
+  pip install --no-deps --target "$ROOT/.async-extras" "numpy>=2.1,<2.3"
+```
+
+Only `scripts/train_async.sh` prepends this path:
+```
+--env "PYTHONPATH=$ROOT/.async-extras:/opt/phys-extras/"
+```
+The regular `scripts/train.sh` keeps the old `PYTHONPATH=/opt/phys-extras/` and continues
+to use the SIF's numpy 1.26. Rollback is a plain `rm -rf $ROOT/.async-extras` — the overlay
+is never touched.
+
+When moving to a new cluster, re-run the `pip install --target` line once inside the same
+SIF+overlay. The host dir travels with the repo via any `$ROOT` that apptainer auto-binds.
+
 ### sbatch jobs
 
 Key points for all sbatch scripts:

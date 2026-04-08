@@ -17,7 +17,7 @@ mkdir -p "$ROOT/logs"
 # Load machine-local overrides if present
 [ -f "$ROOT/.env" ] && source "$ROOT/.env"
 SIF=$ROOT/verl_vllm017.latest.sif
-OVERLAY=$ROOT/phys-reasoner-overlay-017b.img
+OVERLAY=$ROOT/phys-reasoner-overlay-017.img
 
 # Apptainer writes large temp files during OCI→SIF conversion; point it at scratch
 # so it doesn't try to write to the unwritable SLURM spool dir.

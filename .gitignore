@@ -58,3 +58,5 @@ hf_cache/
 
 old/verl_repo.bak/
 old/
+
+.async-extras/

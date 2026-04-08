@@ -24,7 +24,7 @@ OVERLAY=$ROOT/phys-reasoner-overlay-017.img
 [ -f "$ROOT/.env" ] && source "$ROOT/.env"
 
 # Legacy overlay for the dedup step (needs working HF hub importlib.metadata)
-OVERLAY_LEGACY=$ROOT/phys-reasoner-overlay.img
+OVERLAY_LEGACY=$OVERLAY
 
 RUN="apptainer exec --overlay $OVERLAY:ro --bind /etc/pki:/etc/pki $SIF"
 RUN_LEGACY="apptainer exec --overlay $OVERLAY_LEGACY --bind /etc/pki:/etc/pki $SIF"
