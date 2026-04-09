@@ -32,4 +32,12 @@ HF_HOME="${HF_HOME:-$ROOT/hf_cache}"
 # Always isolate from ~/.local to prevent stale package shadowing
 PYTHONNOUSERSITE=1
 
+# Unset CUDA_VISIBLE_DEVICES so Ray sees all GPUs and can spread placement groups
+# across them. If this is pinned (e.g. to "0"), both rollout and trainer land on
+# the same GPU and OOM.
+unset CUDA_VISIBLE_DEVICES
+
 export ROOT SIF OVERLAY HF_HOME PYTHONNOUSERSITE
+
+WANDB_API_KEY="${WANDB_API_KEY:-}"
+export WANDB_API_KEY

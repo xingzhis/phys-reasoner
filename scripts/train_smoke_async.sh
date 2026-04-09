@@ -49,7 +49,7 @@ ANSWER_BUDGET="${ANSWER_BUDGET:-256}"
 # same as scripts/train_smoke_interrupt.sbatch. The base parquet is whatever the
 # most recent make_smoke_parquet.sh run produced; update BASE_PARQUET if you
 # regenerate it.
-BASE_PARQUET="${BASE_PARQUET:-$ROOT/outputs/smoke_tir_qwen35_20260408.104819/smoke16.parquet}"
+BASE_PARQUET="${BASE_PARQUET:-$ROOT/outputs/smoke_tir_qwen35_20260408.224320/smoke16.parquet}"
 SMOKE_DATA="$ROOT/outputs/rollout_dumps/${RUN_ID}/smoke_turns${MAX_TOOL_TURNS}.parquet"
 mkdir -p "$(dirname "$SMOKE_DATA")"
 
