@@ -1,12 +1,14 @@
 #!/bin/bash
 #SBATCH --job-name=train_smoke
-#SBATCH --partition=gpu
-#SBATCH --qos=qos_nmi
+# Partition and QOS are not set here — set SBATCH_PARTITION and SBATCH_QOS
+# in your .env file (copied from .env.example). env.sh exports them so sbatch
+# picks them up automatically. Override at submit time if needed:
+#   sbatch --partition=<name> --qos=<name> scripts/train_smoke.sbatch
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=128G
-#SBATCH --gres=gpu:h200:1
+#SBATCH --gres=gpu:1
 #SBATCH --time=1:00:00
 #SBATCH --output=logs/%x_%j.log
 #SBATCH --error=logs/%x_%j.err
@@ -23,8 +25,9 @@ source "$ROOT/env.sh"
 # iterative TIR (error-recovery mode). Default=1 matches the original smoke test.
 MAX_TOOL_TURNS="${MAX_TOOL_TURNS:-1}"
 
-# Base parquet (2 rows, pre-sampled). Re-stamp system prompt for MAX_TOOL_TURNS.
-BASE_PARQUET="$ROOT/outputs/smoke_tir_qwen35_20260403.180800/smoke.parquet"
+# Smoke parquet written by smoke_tir_qwen35.sh — 2 pre-sampled rows.
+# Run that script first if this file is missing.
+BASE_PARQUET="${BASE_PARQUET:-$ROOT/data/processed/smoke.parquet}"
 SMOKE_DATA="$ROOT/outputs/rollout_dumps/train_smoke_${SLURM_JOB_ID}/smoke_turns${MAX_TOOL_TURNS}.parquet"
 mkdir -p "$(dirname "$SMOKE_DATA")"
 

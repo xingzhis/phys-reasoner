@@ -128,7 +128,8 @@ if [[ -n "${ROCR_VISIBLE_DEVICES:-}" ]]; then
 fi
 
 # ---------- sample smoke parquet (inside container for correct pandas/pyarrow) ----------
-SMOKE_DATA="$TRAIN_DIR/smoke.parquet"
+# Stable path so train_smoke.sbatch can always find it without a timestamp.
+SMOKE_DATA="$ROOT/data/processed/smoke.parquet"
 echo ""
 echo "Sampling $SMOKE_N rows from: $REAL_PARQUET → $SMOKE_DATA"
 PYTHONNOUSERSITE=1 apptainer exec \

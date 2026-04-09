@@ -55,6 +55,8 @@ cp .env.example .env   # override HF_HOME, SIF, OVERLAY, Slurm partition/QOS, et
 
 ### Fresh environment setup (one-time, from scratch)
 
+See **`docs/setup.md`** for the full step-by-step tutorial (clone → configure → install → datasets → tests → training).
+
 ```bash
 # 1. Pull the SIF and create the overlay (sbatch — takes ~10 min)
 sbatch pull_docker.sbatch
@@ -133,7 +135,7 @@ If zero-shot format compliance < 15%, fine-tune on 2–5k TIR demonstrations.
 Binary reward on final `\boxed{}` answer via VeRL. Curriculum: numerical first → expression + MCQ.
 
 ```bash
-sbatch scripts/grpo_train.sh
+sbatch scripts/train.sbatch
 ```
 
 ### Required VeRL overrides for Qwen3.5-4B

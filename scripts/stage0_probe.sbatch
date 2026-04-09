@@ -1,12 +1,14 @@
 #!/bin/bash
 #SBATCH --job-name=stage0_probe
-#SBATCH --partition=gpu
-#SBATCH --qos=qos_nmi
+# Partition and QOS are not set here — set SBATCH_PARTITION and SBATCH_QOS
+# in your .env file (copied from .env.example). env.sh exports them so sbatch
+# picks them up automatically. Override at submit time if needed:
+#   sbatch --partition=<name> --qos=<name> scripts/stage0_probe.sbatch
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=48G
-#SBATCH --gres=gpu:a100:1
+#SBATCH --gres=gpu:1
 #SBATCH --time=2:00:00
 #SBATCH --output=logs/%x_%j.log
 #SBATCH --error=logs/%x_%j.err

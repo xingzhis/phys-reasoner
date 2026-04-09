@@ -14,17 +14,14 @@ Still want to confirm with collaborator:
 - What's the actual sweet-spot wall-time for fastest backfill scheduling on the GPU partition? (e.g., requesting 12h vs 24h vs 48h — which queues fastest in practice?)
 - Any QoS-specific node-hour costs I should know about (e.g., `regular` vs `premium` cost multiplier)?
 
-## 2. Node availability and queue times
+## 2. Node availability, queue times, and shared QoS
 
 - 4×A100-80G nodes: typical queue wait? worst case?
 - 4×A100-40G nodes: same question
-- Can I request a **heterogeneous job** (one 80G node + one 40G node in the same allocation), e.g.
-  ```
-  sbatch --het-group=0 --gres=gpu:4 -N1 \
-         --het-group=1 --gres=gpu:1 -N1 \
-         run.sbatch
-  ```
-  This would let me put trainer+rollout on the 80G node and the xVerify-7B reward server on the 40G node. If het jobs aren't supported, I'll fall back to co-locating xVerify on the same 80G node.
+- **Heterogeneous jobs**: confirmed supported per https://docs.nersc.gov/jobs/examples/#heterogeneous-jobs. Any practical gotchas with het jobs in your experience?
+- **`shared_g` QoS for fractional-node allocation**: I want to put the xVerify-7B reward server on just **1 GPU** (not a full 4-GPU node — it's a 7B model that fits on one A100). Does Perlmutter offer a `shared` QoS for GPU nodes that lets me request `--gres=gpu:1`?
+- **Mixing QoS in a het job**: can I have one het-group with `--qos=regular_g --gres=gpu:4` (trainer/rollout) and another with `--qos=shared_g --gres=gpu:1` (verifier) in the same `sbatch` invocation?
+- **3-group het jobs**: I may need 3 het-groups (1 trainer node + 2 rollout nodes + 1 shared verifier GPU). Some clusters cap het jobs at 2 groups. Is 3+ supported?
 
 ## 3. Outbound network from compute nodes
 
@@ -36,6 +33,16 @@ Still want to confirm with collaborator:
 - Recommended path for ~200GB of model weights + parquets + checkpoints? `$SCRATCH`? `$PSCRATCH`? `$CFS`?
 - Is the recommended scratch purged on a timer? If so, what's the policy (e.g., 12-week purge)?
 - Apptainer/Singularity SIF images: any size limit, recommended location?
+
+## 4b. Profiling and observability
+
+For Config C (multi-node async rollout), I'll need to profile to confirm rollout is actually scaling across nodes and not bottlenecked by network or sync. A few things I'd like to know:
+
+- Is `nvidia-smi nvlink -gt d` accessible on compute nodes? (Want to monitor NVLink throughput within a node during rollout.)
+- Is there a NERSC-recommended tool for Slingshot per-NIC counters? (`cxi_stat`, `rdma_perftest`, or similar — I want to verify cross-node param sync is hitting the expected bandwidth.)
+- Are there any pre-installed observability tools you'd recommend (Grafana dashboards, Slurm-level GPU metrics, etc.)?
+
+Worst case I'll fall back to `nvidia-smi dmon -s pucvmet -d 2` from a side terminal during a step.
 
 ## 5. Apptainer / Singularity
 

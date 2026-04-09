@@ -39,5 +39,11 @@ unset CUDA_VISIBLE_DEVICES
 
 export ROOT SIF OVERLAY HF_HOME PYTHONNOUSERSITE
 
+# Export SLURM env vars if set in .env (sbatch reads them as defaults
+# when no matching #SBATCH directive is present in the script).
+[ -n "${SBATCH_PARTITION:-}" ] && export SBATCH_PARTITION
+[ -n "${SBATCH_QOS:-}" ]       && export SBATCH_QOS
+[ -n "${SBATCH_ACCOUNT:-}" ]   && export SBATCH_ACCOUNT
+
 WANDB_API_KEY="${WANDB_API_KEY:-}"
 export WANDB_API_KEY
