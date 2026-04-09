@@ -26,11 +26,17 @@ class XVerifyJudge:
         model_name: str = "IAAR-Shanghai/xVerify-7B-I",
         device: str = "cuda",
     ):
+        from huggingface_hub import snapshot_download
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        # transformers 5.3.0 _patch_mistral_regex calls model_info() (network)
+        # unconditionally when given a Hub ID string. Resolve to actual cache
+        # path first so os.path.isdir() returns True and the check is skipped.
+        # On a new HPC without cache, pre-stage the model first then run.
+        model_path = snapshot_download(model_name, local_files_only=True)
+        self.tokenizer = AutoTokenizer.from_pretrained(model_path)
         self.model = AutoModelForCausalLM.from_pretrained(
-            model_name, dtype="auto", device_map=device
+            model_path, dtype="auto", device_map=device
         )
         self.model.eval()
         self._device = device

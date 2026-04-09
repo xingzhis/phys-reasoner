@@ -31,6 +31,7 @@ PYTHONNOUSERSITE=1 apptainer exec --nv \
   --overlay "$OVERLAY:ro" --no-home \
   --bind /etc/pki:/etc/pki \
   --env "PYTHONNOUSERSITE=1" \
+  --env "PYTHONUNBUFFERED=1" \
   --env "PYTHONPATH=$ROOT/src:/opt/phys-extras/" \
   --env "HF_HOME=$HF_HOME" \
   "$SIF" \

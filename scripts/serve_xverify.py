@@ -24,6 +24,7 @@ logger = logging.getLogger("xverify_server")
 _JUDGE = None
 _JUDGE_LOCK = threading.Lock()
 _THRESHOLD = 0.5  # P("Correct") cutoff for the soft-score path
+_DEBUG = False    # set from XVERIFY_DEBUG=1 in main()
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -63,19 +64,40 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": f"bad request: {e}"})
             return
 
-        pred = req.get("pred", "")
-        gold = req.get("gold", "")
-        problem = req.get("problem", "")
+        pred = req.get("pred", "") or ""
+        gold = req.get("gold", "") or ""
+        problem = req.get("problem", "") or ""
+        mode = req.get("mode", "generate")
+        if _DEBUG:
+            logger.info(
+                "judge req lens pred=%d gold=%d problem=%d mode=%s",
+                len(pred), len(gold), len(problem), mode,
+            )
         if _JUDGE is None:
             self._send_json(503, {"error": "judge not ready"})
             return
         try:
             with _JUDGE_LOCK:
-                # logprob path: one forward pass, no autoregressive decode
-                score = _JUDGE.get_logprob_score(pred, gold, problem)
+                try:
+                    if mode == "generate":
+                        # autoregressive decode path (original __call__)
+                        correct = _JUDGE(pred, gold, problem)
+                        score = 1.0 if correct else 0.0
+                    else:
+                        # logprob path: one forward pass, no autoregressive decode
+                        score = _JUDGE.get_logprob_score(pred, gold, problem)
+                except Exception:
+                    # Best-effort GPU recovery so one bad request doesn't poison
+                    # subsequent calls. Re-raise so the outer except logs it.
+                    try:
+                        import torch
+                        torch.cuda.empty_cache()
+                    except Exception:
+                        pass
+                    raise
             self._send_json(200, {"correct": score >= _THRESHOLD, "score": score})
         except Exception as e:  # noqa: BLE001
-            logger.exception("judge error")
+            logger.exception("judge error: %s", e)
             self._send_json(500, {"error": str(e)})
 
 
@@ -102,8 +124,11 @@ def main():
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    global _JUDGE, _THRESHOLD
+    global _JUDGE, _THRESHOLD, _DEBUG
     _THRESHOLD = args.threshold
+    _DEBUG = os.environ.get("XVERIFY_DEBUG", "").strip() not in ("", "0", "false", "False")
+    if _DEBUG:
+        logger.info("XVERIFY_DEBUG enabled — per-request length logging on")
     logger.info("loading %s on %s ...", args.model, args.device)
     _JUDGE = _load_judge(args.model, args.device)
     logger.info("ready: serving on %s:%d (threshold=%.2f)", args.host, args.port, _THRESHOLD)

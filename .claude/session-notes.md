@@ -447,3 +447,58 @@ Key stats (step 2):
 - Added `e2fsck -fp $OVERLAY` at end of setup_overlay.sh
 - Without it, compute nodes may see "unchecked fs" and fail to mount overlay correctly
 - This was the root cause of the hub 0.36.2 mystery (compute node mounted stale overlay)
+
+---
+
+## Remote xVerify service — status (2026-04-08)
+
+**Status**: WORKING on misha00. Moved from misha01 (unstable) to misha00.
+Full bench passed: N=300 THREADS=8, no crashes.
+
+### Inference mode: generate (not logprob) — DECIDED 2026-04-08
+
+Ran `JUDGE_MODE=compare N=200` bench. Results:
+- logprob: 39 ms/call (p50=38ms)
+- generate: 268 ms/call (p50=290ms) — **6.86x slower**
+- Agreement: **95.5%** (191/200)
+- Disagreements: logprob=correct & generate=incorrect: 0; generate=correct & logprob=incorrect: **9**
+
+**Decision: use `generate` (default in `serve_xverify.py`).**
+Rationale: 95.5% agreement is below the 98% threshold for keeping logprob.
+The logprob FNR is strictly conservative (misses 9 real corrects, never false positives),
+but ~4.5% extra FNR on xVerify-fallback cases is real lost reward signal — not acceptable
+when reward is already sparse in early training. 6.86x speed cost is fine; verifier is
+not on the training critical path (GPU on misha00, not the training node).
+
+`serve_xverify.py`: `mode = req.get("mode", "generate")` — production client
+(`XVerifyHTTPClient`) never sends `mode`, falls through to this default.
+`--judge-mode compare` in `bench_xverify.py` still works for future re-checks.
+
+### Bench numbers (production baseline, misha00, 2026-04-08, generate mode)
+- Mode A sequential: 233.6 ms/sample, xVerify p50=293ms p95=313ms
+- Mode B 8-thread: 229.0 ms/sample, speedup **1.02x** — GPU fully saturated, concurrency useless
+- **Production path is Mode A** (VeRL reward is sequential per worker) — concurrency irrelevant
+- For reference: logprob was 39ms/call — generate is ~7x slower but ~4.5% fewer FNs
+
+### Remaining TODOs
+
+**(1) Simple client-side retry** in
+`src/phys_reasoner/verifier/xverify_client.py` — 2–3 retries on
+`ConnectionRefusedError` / `socket.timeout` / `RemoteDisconnected` with
+jittered 100–500ms backoff. Fail-closed after exhaustion. Log at WARNING per
+retry. Do **not** retry on 5xx.
+
+**(2) Server-side request coalescing** — low priority; Mode B speedup 1.26x
+confirms GPU lock is the bottleneck but sequential is the production path.
+Revisit only if multiple VeRL workers start calling concurrently.
+
+### Useful flags / files
+
+- `scripts/bench_xverify.sh` — does a `/health` pre-flight, aborts loudly on
+  unreachable server. Use it instead of running `bench_xverify.py` directly.
+- `XVERIFY_DEBUG=1` on the server — per-request input length logging; cheap,
+  leave on while debugging.
+- `VERIFIER_DUMP_PATH=...` via `patches/verifier_dump.patch` (currently
+  unapplied) — full request/response records for trainer-side inspection.
+- `scripts/bench_xverify.py` is currently **untracked** — commit alongside
+  `bench_xverify.sh` when convenient.
