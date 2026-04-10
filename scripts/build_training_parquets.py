@@ -1,14 +1,19 @@
 """Build VeRL-ready training parquets from cleaned source data.
 
 This script is the single reproducible step between cleaned data and training.
-It does two things for both datasets:
+It does three things for both datasets:
 
-  1. Figure filter (Dr. SCI only): drop rows whose question text references an
-     external figure, diagram, or table that is not present in the problem text.
-     ~1.3% of Dr. SCI rows are dropped (~1,400 / 107,158).
-     The corpus (candidates_deduped) is manually curated and has no image rows.
+  1. Row filtering:
+     - Dr. SCI: drop rows whose question text references an external figure/diagram
+       (~1.3% dropped). Drop rows with NaN `from` or `unknown` answer_type.
+     - Corpus: no row-level filtering (quality filter is a prior step).
 
-  2. Prompt rebuild: overwrite the 'prompt' column with the canonical TIR messages
+  2. Metadata enrichment (extra_info):
+     - Dr. SCI: answer_type, difficulty (float), from, subject, problem, unit, tolerance
+     - Corpus: answer_type, primary_answer_type, domain, domain_coarse, source,
+               difficulty, problem, unit, tolerance
+
+  3. Prompt rebuild: overwrite the 'prompt' column with the canonical TIR messages
      format imported directly from src/phys_reasoner/tir/prompts.py:
 
          [{"role": "system", "content": TIR_SYSTEM_PROMPT},
@@ -37,7 +42,8 @@ SOURCE OF TRUTH:
 
 Inputs (already cleaned, do not modify these):
     data/processed/drsci_physics_clean.parquet   -- output of drsci_clean.py
-    data/processed/candidates_filtered.parquet   -- output of filter_data_quality.py
+    data/processed/candidates_deduped.parquet    -- output of run_dedup.py
+      (or candidates_filtered.parquet if filter_data_quality.py was run first)
 
 Outputs:
     data/processed/drsci_train.parquet
@@ -83,6 +89,70 @@ _FIG_REF_PAT = re.compile(
 
 def _has_fig_ref(text: str) -> bool:
     return bool(_FIG_REF_PAT.search(text))
+
+
+# ---------------------------------------------------------------------------
+# Prompt builder
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Corpus metadata: domain coarse mapping and primary_answer_type normalization
+# ---------------------------------------------------------------------------
+
+DOMAIN_COARSE_MAP: dict[str, str] = {
+    # mechanics
+    "ClassicalMechanics": "mechanics",
+    "Mechanics": "mechanics",
+    "MECHANICS": "mechanics",
+    "TheoreticalMechanics": "mechanics",
+    # em_electro
+    "ClassicalElectromagnetism": "em_electro",
+    "Electrodynamics": "em_electro",
+    "Electromagnetism": "em_electro",
+    "ELECTRICITY": "em_electro",
+    # quantum_modern
+    "QuantumMechanics": "quantum_modern",
+    "AtomicPhysics": "quantum_modern",
+    "Modern Physics": "quantum_modern",
+    "MODERN": "quantum_modern",
+    "ADVANCED": "quantum_modern",
+    "quan": "quantum_modern",
+    # thermo_stat
+    "StatisticalMechanics": "thermo_stat",
+    "Thermodynamics": "thermo_stat",
+    "thermo": "thermo_stat",
+    "stat": "thermo_stat",
+    "THERMODYNAMICS": "thermo_stat",
+    # optics
+    "WaveOptics": "optics",
+    "Optics": "optics",
+    "GeometricalOptics": "optics",
+    "OPTICS": "optics",
+    # other
+    "SemiconductorPhysics": "other",
+    "Solid-StatePhysics": "other",
+    "Relativity": "other",
+    "OE_TO_physics_en_COMP": "other",
+    "fund": "other",
+    "calculus": "other",
+}
+
+
+def normalize_primary_answer_type(raw: str) -> str:
+    """Map 87 raw answer_type values to 7 clean categories.
+
+    Single-type values pass through as-is (numerical, expression, equation,
+    mcq, true_false, interval). JSON list values → "multi-part".
+    """
+    raw = str(raw).strip()
+    if raw.startswith("["):
+        return "multi-part"
+    return raw
+
+
+def map_domain_coarse(raw_domain: str) -> str:
+    """Map 29 raw domain values to 6 coarse buckets."""
+    return DOMAIN_COARSE_MAP.get(str(raw_domain).strip(), "other")
 
 
 # ---------------------------------------------------------------------------
@@ -136,10 +206,23 @@ def process_drsci(input_path: str, output_path: str, report: bool) -> None:
     print(f"\n=== Dr. SCI ===")
     print(f"Loading {input_path}...")
     df = pd.read_parquet(input_path)
-    print(f"  {len(df):,} rows")
+    print(f"  {len(df):,} rows loaded")
+
+    q_col = "extra_info.question"
+
+    # --- Drop rows with NaN `from` ---
+    nan_from_mask = df["extra_info.from"].isna()
+    n_nan_from = nan_from_mask.sum()
+    df = df[~nan_from_mask]
+    print(f"  Dropped {n_nan_from} rows with NaN from → {len(df):,} remain")
+
+    # --- Drop rows with unknown answer_type ---
+    unknown_mask = df["inferred_answer_type"] == "unknown"
+    n_unknown = unknown_mask.sum()
+    df = df[~unknown_mask]
+    print(f"  Dropped {n_unknown} rows with unknown answer_type → {len(df):,} remain")
 
     # --- Figure filter ---
-    q_col = "extra_info.question"
     fig_mask = df[q_col].astype(str).apply(_has_fig_ref)
     n_fig = fig_mask.sum()
     df_filtered = df[~fig_mask].copy()
@@ -156,15 +239,35 @@ def process_drsci(input_path: str, output_path: str, report: bool) -> None:
     # --- VeRL reward_model struct (dict column, not flat dot-notation) ---
     df_filtered["reward_model"] = df_filtered["reward_model.ground_truth"].apply(_build_reward_model)
 
-    # --- extra_info struct: answer_type, unit, tolerance for compute_score ---
+    # --- extra_info struct: answer_type, unit, tolerance, problem, subject,
+    #     difficulty (float), from ---
+    # Track difficulty conversion fallbacks: a fallback to 0.0 would silently
+    # mix with genuine difficulty=0.0 rows, so we count and warn.
+    _difficulty_fallbacks = []
+
+    def _drsci_difficulty(val, idx) -> float:
+        try:
+            return float(val)
+        except (ValueError, TypeError):
+            _difficulty_fallbacks.append((idx, val))
+            return 0.0
+
     df_filtered["extra_info"] = df_filtered.apply(lambda r: _build_extra_info(
         answer_type=r.get("inferred_answer_type", "numerical"),
         unit="",
         tolerance=0.05,
         problem=str(r[q_col]),
         subject=str(r.get("extra_info.subject", "")),
-        difficulty=str(r.get("extra_info.difficulty", "")),
+        difficulty=_drsci_difficulty(r.get("extra_info.difficulty", 0.0), r.name),
+        **{"from": str(r.get("extra_info.from", ""))},
     ), axis=1)
+
+    if _difficulty_fallbacks:
+        print(f"  WARNING: {len(_difficulty_fallbacks)} difficulty values fell back to 0.0!")
+        for idx, val in _difficulty_fallbacks[:10]:
+            print(f"    row {idx}: {val!r} (type={type(val).__name__})")
+    else:
+        print(f"  Difficulty: all {len(df_filtered):,} values converted to float, 0 fallbacks")
 
     # Keep only the columns VeRL needs (drop flat reward_model.* and extra_info.* columns)
     keep_cols = ["data_source", "prompt", "reward_model", "extra_info"]
@@ -187,9 +290,11 @@ def process_corpus(input_path: str, output_path: str, report: bool) -> None:
 
     # --- Prompt rebuild (with answer_type hint for MCQ / true_false) ---
     df = df.copy()
+    # For prompt hints, use the primary_answer_type (not the raw JSON-list value)
+    df["_primary_answer_type"] = df["answer_type"].apply(normalize_primary_answer_type)
     df["prompt"] = df.apply(
         lambda r: _build_prompt(str(r["problem"]),
-                                answer_type=r.get("answer_type", "")),
+                                answer_type=r["_primary_answer_type"]),
         axis=1,
     )
     print(f"  Prompt column built from TIR_SYSTEM_PROMPT + problem (+ type hints)")
@@ -197,7 +302,8 @@ def process_corpus(input_path: str, output_path: str, report: bool) -> None:
     # --- VeRL reward_model struct ---
     df["reward_model"] = df["answer"].apply(_build_reward_model)
 
-    # --- extra_info struct ---
+    # --- extra_info struct: answer_type (raw), primary_answer_type, domain,
+    #     domain_coarse, source, difficulty, problem, unit, tolerance ---
     def _safe_tol(v, default=0.05):
         try:
             return float(v)
@@ -206,19 +312,28 @@ def process_corpus(input_path: str, output_path: str, report: bool) -> None:
 
     df["extra_info"] = df.apply(lambda r: _build_extra_info(
         answer_type=r.get("answer_type", "numerical"),
+        primary_answer_type=normalize_primary_answer_type(r.get("answer_type", "numerical")),
         unit=str(r.get("unit", "")),
         tolerance=_safe_tol(r.get("tolerance", 0.05)),
         problem=str(r.get("problem", "")),
         source=str(r.get("source", "")),
         difficulty=str(r.get("difficulty", "")),
+        domain=str(r.get("domain", "")),
+        domain_coarse=map_domain_coarse(r.get("domain", "")),
     ), axis=1)
 
     keep_cols = ["data_source", "prompt", "reward_model", "extra_info"]
-    # corpus may not have data_source column; add it
+    # data_source = actual source (e.g. UGPhysics, OlympiadBench, etc.)
     if "data_source" not in df.columns:
-        df["data_source"] = df.get("source", "corpus")
+        df["data_source"] = df["source"]
     df_out = df[keep_cols]
     print(f"  Output columns: {keep_cols}")
+
+    # Print metadata summary
+    pat = df["_primary_answer_type"].value_counts()
+    print(f"  primary_answer_type: {pat.to_dict()}")
+    dc = df["domain"].apply(map_domain_coarse).value_counts()
+    print(f"  domain_coarse: {dc.to_dict()}")
 
     if not report:
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)

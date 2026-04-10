@@ -214,9 +214,10 @@ No time for demo curation. Go straight to GRPO. Revisit only if reward signal is
 - Dev set: 1k stratified holdout balanced by answer type (fixed before any training)
 - Needed for RQ2 correlation analysis
 
-### Training data weights
-- Add `_train_weight` column to both parquets (Goldilocks B strategy)
-- Implement online [0.05, 0.95] filter in VeRL reward wrapper (Goldilocks C strategy)
+### Training data weights (Strategy B)
+- Data pipeline Steps 0–5 (see `.claude/plans/data-pipeline.md`)
+- Steps 0 and 0b (metadata enrichment + train/dev/test split) can run now
+- Steps 3–5 (probe rollouts → Goldilocks weights) blocked on think-interrupt budget decision
 
 ### (Optional, parallel) Verifier comparison
 - Benchmark `desimfj/SCI-Verifier-4B` and `desimfj/SCI-Verifier-8B` vs xVerify-3B-Ib
@@ -228,62 +229,72 @@ No time for demo curation. Go straight to GRPO. Revisit only if reward signal is
 - Run zero-shot Qwen3.5-4B to get free baselines before training
 
 ### Week 2 outputs
-- SFT checkpoint (if needed) with ≥30% execution success rate on dev
-- Instrumented GRPO eval loop (per-type accuracy at checkpoints)
-- Both parquets with `_train_weight` column
-- Fixed dev/test splits
+- Think-interrupt patch committed to physcode branch and smoke-tested
+- Data pipeline Steps 0 and 0b complete: enriched parquets + train/dev/test splits
+- Data pipeline Steps 1–5 complete (if think-interrupt budget decided): probe subset + Goldilocks weights
+- Fixed dev/test splits for GRPO eval instrumentation
 
 ---
 
 ## Week 3 — 2026-04-14 to 2026-04-20
 
-**Goal:** RL environment verified end-to-end; first 4B GRPO run launched.
+**Goal:** Stage 1 GRPO launched with Goldilocks-weighted dataset.
 
 Tasks:
-- [ ] 0.8B GRPO smoke test on numerical-only curriculum (~subset of Dr. SCI numerical)
+- [ ] Data pipeline Steps 3–5 (if not done in Week 2): probe rollouts → pass rates → `_train_weight` column
+- [ ] Data pipeline Step 6: hard bank (`data/processed/hard_bank.parquet`)
+- [ ] 0.8B GRPO smoke test on numerical-only curriculum with Strategy B weights
 - [ ] Debug reward pipeline: execution errors, verifier integration, reward logging
 - [ ] Confirm reward signal is not sparse (target: >10% of rollouts correct on numerical)
-- [ ] Launch first 4B GRPO run on numerical curriculum once environment is stable
-- [ ] (Optional) principia-collection: filter by physics, verifier round-trip on numerical vs math-object split, dedup against existing corpus — only if reward signal is sparse
+- [ ] Launch **Stage 1**: 4B GRPO, numerical curriculum, ~700 steps, Strategy B weights
+- [ ] (Optional) principia-collection: only if reward signal is sparse on current data
 
 ### Week 3 outputs
-- Verified RL environment (reward signal confirmed non-sparse)
-- First 4B GRPO learning curve on numerical curriculum
+- Hard bank parquet
+- Stage 1 training run launched (learning curve on numerical)
+- Verified reward signal is non-sparse
 
 ---
 
 ## Week 4 — 2026-04-21 to 2026-04-27
 
-**Goal:** Full curriculum running; TIR-GRPO vs CoT-GRPO comparison at checkpoints.
+**Goal:** Stage 1 complete → rescore → Stage 2 launched; TIR vs CoT comparison starts.
 
 Tasks:
-- [ ] Expand 4B GRPO to expression + MCQ types
-- [ ] Compare TIR-GRPO vs CoT-GRPO at 500 / 1000 / 2000 gradient step checkpoints
-  - Per-type accuracy for both conditions
-  - Compute Pearson correlation: per-type LaTeX FN rate vs per-type accuracy gap
+- [ ] Stage 1 completes (~700 steps)
+- [ ] **Strategy D rescore**: run `rescore_goldilocks.py` with Stage 1 checkpoint on stratified subset (~5k rows); update `_train_weight`; graduate hard bank problems with pass_rate > 0.05
+- [ ] Launch **Stage 2**: 4B GRPO, numerical + expression + MCQ, ~700 steps, updated weights
+- [ ] Launch CoT-GRPO baseline run in parallel (same data, same checkpoints)
+- [ ] Compare TIR-GRPO vs CoT-GRPO at Stage 1 checkpoint: per-type accuracy + RQ2 correlation sketch
 - [ ] Start writing related work + methods sections
 
 ### Week 4 outputs
-- Mid-project comparison table (TIR-GRPO vs CoT-GRPO by answer type + checkpoint)
-- First RQ2 correlation plot (FN rate vs accuracy gap)
+- Strategy D rescore results (Goldilocks zone drift: which strata graduated?)
+- Stage 2 training run launched
+- First TIR vs CoT comparison table
 
 ---
 
 ## Week 5 — 2026-04-28 to 2026-05-04
 
-**Goal:** Ablations and OOD eval done; behavioral analysis; results frozen.
+**Goal:** Stage 2 complete → rescore → Stage 3; ablations and OOD eval.
 
-Tasks (run training jobs in parallel — GPU-abundant):
-- [ ] Cost penalty ablation: λ > 0 vs λ = 0
-- [ ] Curriculum ablation: numerical-first vs full mixed from start
-- [ ] Scaling ablation: 0.8B vs 4B TIR-GRPO accuracy
-- [ ] OOD eval: MATH-500 hard subset + critpt (if set up in Week 2)
+Tasks:
+- [ ] Stage 2 completes (~700 steps)
+- [ ] **Strategy D rescore**: Stage 2 checkpoint → update weights + hard bank for Stage 3
+- [ ] Launch **Stage 3**: full mix including hard bank graduates, ~700 steps
+- [ ] Ablations (run in parallel on collaborator cluster):
+  - Cost penalty: λ > 0 vs λ = 0
+  - Curriculum: numerical-first vs full mixed from start
+  - Scaling: 0.8B vs 4B TIR-GRPO
+- [ ] OOD eval: MATH-500 hard subset + critpt (zero-shot baseline if not done in Week 2)
 - [ ] Behavioral analysis (100–150 sampled outputs per condition):
   - Strategy categorization: direct compute, unit conversion scaffolding, error-free single-shot
-  - Failure modes: wrong physics setup / execution error / correct code + wrong interpretation
+  - Failure modes: wrong physics / execution error / correct code + wrong interpretation
   - Truncation rate vs CoT baseline (target: below 22%)
 
 ### Week 5 outputs
+- Stage 3 training run launched
 - Ablation table
 - OOD result table (MATH-500 hard)
 - Behavioral analysis summary

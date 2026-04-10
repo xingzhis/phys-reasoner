@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Active Plan
 
-**Read first:** `.claude/plans/physcode.md` — the 6-week implementation plan. Started 2026-03-31, Week 1 in progress.
+**Read first:** `.claude/plans/physcode.md` — the 6-week implementation plan. Started 2026-03-31, Week 2 in progress.
+
+**Data pipeline:** `.claude/plans/data-pipeline.md` — step-by-step plan for Goldilocks data filtering (Steps 0–6 + Strategy D rescoring). Each step is a separate session.
 
 **Session notes (start here for new sessions):** `.claude/session-notes.md` — current state, completed work, and next steps in priority order.
 

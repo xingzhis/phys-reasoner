@@ -26,65 +26,73 @@ If < 15% → generate 2–5k TIR demonstrations via GPT-4o/Claude (auto-exec fil
 
 ---
 
-## Goldilocks Data Selection: Strategy B + C
+## Goldilocks Data Selection: Strategy B + D
 
-**Context:** Pass@k (k=8) was run on ~600-row stratified samples from each corpus — not on all 113k problems. Per-problem difficulty labels are unavailable for ~99% of the data.
+**Context:** Pass@k estimates from a small sample tell us per-stratum Goldilocks rates but not per-problem pass rates across 113k rows. Strategy B uses those stratum-level rates to initialize weighted sampling; Strategy D updates per-problem pass rates iteratively using training checkpoints.
 
 ### Why not hard-filter to Goldilocks problems only?
 
 - Corpus: hard filter leaves only ~1,200 problems (18% of 6,866) — too small for stable GRPO.
-- Dr. SCI: 18% of 107k ≈ 19k problems would survive, which is fine in isolation, but the filter requires per-problem pass rates we don't have.
-- Pass@k estimates from k=8 are noisy near the boundary (a problem at 0.12 may truly be 0.18).
-- The Goldilocks zone shifts during training as the model improves — static pre-filtering discards future gradient signal.
+- Dr. SCI: 18% of 107k ≈ 19k problems would survive, but the filter requires per-problem pass rates we don't have for 99% of rows.
+- Pass@k estimates from k=8 are noisy near the boundary.
+- The Goldilocks zone shifts during training as the model improves — static pre-filtering discards future gradient signal. Strategy D handles this dynamically.
 
-### Strategy B — Bucket weights at data loading time
+### Strategy B — Probe-based bucket weights (Stage 1 initialization)
 
-Use measured Goldilocks rates per `(source × answer_type)` bucket as sampling weights. No additional inference needed — just a lookup table derived from the pass@k sample.
+Before Stage 1, run 8 TIR rollouts on a stratified probe subset (~2.5k rows) using the base model (Qwen3.5-4B instruct). Compute per-problem pass rate. Aggregate to per-stratum Goldilocks rates (pass_rate ∈ [0.05, 0.95]). Add a `_train_weight` column to the train parquets encoding each problem's stratum weight.
 
-**Measured Goldilocks rates (xVerify-7B, pass@8):**
+**Stratification dimensions:**
+- Dr. SCI: `(inferred_answer_type × extra_info.from × difficulty_bin)` where difficulty_bin = low(0.0) / medium(0.125–0.375) / high(0.5–0.75)
+- Corpus: `(primary_answer_type × source)`
 
-| Source | Answer type | Goldilocks rate | Suggested weight |
-|--------|-------------|-----------------|------------------|
-| SciBench_RL | any | ~40% | 1.0 |
-| any | mcq | ~34% | 0.9 |
-| MegaScience / WebInstruct | numerical | ~19–23% | 0.6 |
-| UGPhysics | numerical | ~19% | 0.6 |
-| any | expression | ~15% | 0.5 |
-| OlympiadBench | any | ~14% | 0.4 |
-| natural_reasoning | equation | ~10% | 0.3 |
-| any | multi-part | ~4% | 0.1 |
-| PHYBench | any | ~20% (high truncation) | 0.3 |
+Weights are proportional to stratum Goldilocks rate. Problems in strata with very low Goldilocks rate (mostly too hard) are downweighted, not excluded — they enter via the hard bank in later stages.
 
-**Implementation:** Add a `_train_weight` column to `drsci_physics_clean.parquet` and `candidates_deduped.parquet` via a small preprocessing script. GRPO data loader reads this column for weighted sampling.
+**Note on old weight table:** An earlier proxy table derived from 600-row pass@k samples has been superseded. The probe rollouts in Step 3 of `data-pipeline.md` produce the authoritative weights.
 
-### Strategy C — Online filtering during GRPO
+### Strategy D — Stage rescoring and dataset rebuild
 
-During training, GRPO generates k rollouts per problem. Before the gradient update, compute:
-```
-live_pass_rate = n_correct / k
-```
-If `live_pass_rate` falls outside `[0.05, 0.95]`, skip the gradient update for that step.
-- Too easy (> 0.95): all rollouts correct, group-relative advantage ≈ 0 anyway.
-- Too hard (< 0.05): all rollouts wrong, no signal, just noise.
+After each training stage (~700 steps), run `rescore_goldilocks.py` with the stage checkpoint on a stratified subset (size TBD, baseline 5k rows; scale up if compute allows). Recompute per-problem pass rates. Update `_train_weight` and the hard bank:
 
-This adapts dynamically — problems that were "too hard" early in training become learnable as the model improves. Implementation: a few lines in the verl reward wrapper.
+- Problems that were too hard (pass_rate < 0.05 under base model) but now have pass_rate ∈ [0.05, 0.95] graduate from the hard bank into the active training set.
+- Problems that have become too easy (pass_rate > 0.95) are downweighted.
+- Updated `_train_weight` values take effect for the next stage.
 
-### Why B + C together?
+This is how the model's improving capability is exploited: the Goldilocks zone expands as training progresses, and the dataset composition tracks it automatically.
 
-B ensures we preferentially sample from rich Goldilocks buckets at the data-loading level, reducing wasted forward passes. C discards the zero-gradient problems that slip through at runtime and adapts as the model's capability changes. Neither requires re-running inference.
+### Why not an online per-batch filter (Strategy C)?
+
+GRPO already handles the degenerate cases without extra engineering: if all k rollouts are correct, group-relative advantage = 1 − 1 = 0 (no gradient); if all wrong, advantage = 0 − 0 = 0. Explicit skip logic would only save the forward pass on those batches. With B+D keeping the dataset clean offline, the frequency of these degenerate batches is low. Strategy C is dropped.
+
+### Hard problem bank
+
+Problems with pass_rate < 0.05 in the initial probe are placed in `data/processed/hard_bank.parquet` rather than discarded. They are re-evaluated at each stage rescore (Strategy D). Once a problem's pass rate rises above 0.05, it enters the active training pool. This is the primary mechanism for the Stage 2+ curriculum expansion.
+
+### Multi-stage training structure
+
+| Stage | Data source | Curriculum | Steps |
+|---|---|---|---|
+| Stage 1 | Strategy B weights (probe-based) | Numerical-first | ~700 |
+| Stage 2 | Strategy D rescore of Stage 1 ckpt | Numerical + expression + MCQ | ~700 |
+| Stage 3 | Strategy D rescore of Stage 2 ckpt | Full mix + hard bank graduates | ~700 |
+
+See `.claude/plans/data-pipeline.md` for the full pipeline spec.
 
 ---
 
-## Dataset Sizes (as of 2026-03-30)
+## Dataset Sizes (as of 2026-04-10)
 
-| Corpus | File | Rows | Notes |
-|--------|------|------|-------|
-| 6.8k corpus | `data/processed/candidates_deduped.parquet` | 6,866 | 5 sources; has `answer_type`, `difficulty`, `unit` |
-| Dr. SCI | `data/processed/drsci_physics_clean.parquet` | 107,158 | 3 sources; has `inferred_answer_type`; prose-gold dropped |
+| Corpus | Training parquet | Rows | Split (train/dev/test) |
+|--------|-----------------|------|------------------------|
+| Corpus | `data/processed/corpus_train.parquet` | 6,866 | ~6,466 / 200 / 200 |
+| Dr. SCI | `data/processed/drsci_train.parquet` | 105,729 | ~101,729 / 2,000 / 2,000 |
 
-**Combined training pool: ~114,024 problems.**
+**Combined training pool: ~108,195 problems (after split).**
 
-Dr. SCI is ~15× larger; without weighting it will dominate. Oversample the 6.8k corpus by a factor of ~3–5× relative to its raw size to maintain source diversity across all 5 corpus sources (SciBench_RL, PHYSICS, UGPhysics, OlympiadBench, PHYBench).
+Dr. SCI is ~15× larger; without weighting it will dominate. Strategy B weights handle this — corpus sources (SciBench_RL, PHYSICS, UGPhysics, OlympiadBench, PHYBench) are oversampled relative to their raw share via per-stratum weights.
+
+**Metadata enrichment (as of data pipeline Step 0):**
+- Both train parquets will have enriched `extra_info` preserving: `from` (Dr. SCI), `domain_coarse` (corpus), `primary_answer_type` (corpus, normalizing 87 raw types to 7: numerical/expression/equation/mcq/true_false/interval/multi-part)
+- Splits are stratified by these fields; see `data-pipeline.md` for details.
 
 ---
 
@@ -138,14 +146,11 @@ VeRL calls `compute_score()` per-sample. xVerify-7B needs ~14GB GPU RAM and ~0.5
 
 ---
 
-## Immediate Next Steps (priority order)
+## Immediate Next Steps (as of 2026-04-10)
 
-1. **VeRL single-block injection** — implement and smoke-test mid-sequence `[output]` injection (gating item).
-2. **Stage 0 probe** — 100-problem TIR zero-shot; decide SFT go/no-go.
-3. **Execution sandbox** — subprocess isolation, 30s timeout.
-4. **LaTeX FN rate measurement** — per-type FN rate on training corpus (gold-vs-gold round-trip with rule verifier).
-5. **Add `_train_weight` column** to both clean parquets (Goldilocks B above).
-6. **GRPO setup with verl** — binary reward, online filter (C above), numerical curriculum.
+1. **Think-interrupt patch** — implement in `verl/verl/experimental/agent_loop/tool_agent_loop.py` (spec in `physcode.md` Week 2). Gating item for all training.
+2. **Data pipeline** — Steps 0–6 in `.claude/plans/data-pipeline.md`. Each step is a separate session. Steps 0 and 0b can start immediately; Steps 3+ require think-interrupt to be settled.
+3. **Stage 1 GRPO run** — numerical curriculum, Strategy B weights, ~700 steps.
 
 ---
 

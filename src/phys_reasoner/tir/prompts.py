@@ -88,6 +88,10 @@ TOOL_CALL_STOP = "</tool_call>"
 # Phase 1 stops at </tool_call> — special token, model has strong prior on it.
 # Phase 2 has NO stop token — generation runs to EOS or max_tokens.
 
+# Think-interrupt phrase — injected when thinking exceeds budget (mask=0 in training).
+# Must match verl/verl/experimental/agent_loop/tool_agent_loop.py exactly.
+THINK_INTERRUPT_PHRASE = "\nOkay, I have thought enough. Let me continue.\n</think>\n"
+
 # ---------------------------------------------------------------------------
 # Allowed packages (must stay in sync with sandbox.py ALLOWED_PACKAGES)
 # ---------------------------------------------------------------------------
