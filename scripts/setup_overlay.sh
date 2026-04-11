@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 source "$ROOT/env.sh"
 
 echo "=== setup_overlay.sh ==="
@@ -94,9 +94,29 @@ APT pip install --no-cache-dir --no-deps --target /opt/phys-extras/ \
     "flash-linear-attention==0.4.2" \
     "fla-core==0.4.2"
 
-# --- 5. Final smoke check ---
+# --- 5. Async extras (numpy 2.x for the fully_async_policy training path) ---
+# Lives outside the overlay because the non-async path is happy with numpy 1.26
+# and mixing numpy versions in a single overlay is fragile. The async launchers
+# (train_async.sh, train_async_2node.sbatch) prepend $ROOT/.async-extras to
+# PYTHONPATH; the sync launchers (train.sh, smoke_tir_qwen35.sh) do not.
+# Reason: vLLM 0.17 cupy-cuda12x is built against numpy 2.x ABI but the SIF
+# ships numpy 1.26 → `import cupy` crashes inside ray.util.collective without this.
 echo ""
-echo "=== 5/5  Smoke-check ==="
+echo "=== 5/6  Install .async-extras (numpy 2.x) ==="
+ASYNC_EXTRAS="$ROOT/.async-extras"
+if [[ -d "$ASYNC_EXTRAS/numpy" ]]; then
+    echo "  already installed: $ASYNC_EXTRAS"
+else
+    mkdir -p "$ASYNC_EXTRAS"
+    PYTHONNOUSERSITE=1 apptainer exec \
+        --overlay "$OVERLAY" --no-home --bind /etc/pki:/etc/pki \
+        --env "PYTHONNOUSERSITE=1" "$SIF" \
+        pip install --no-cache-dir --no-deps --target "$ASYNC_EXTRAS" "numpy>=2.1,<2.3"
+fi
+
+# --- 6. Final smoke check ---
+echo ""
+echo "=== 6/6  Smoke-check ==="
 APT python3 -c "
 import verl, transformers, vllm
 from transformers import AutoConfig
@@ -119,6 +139,19 @@ if snaps:
     print(f'  Qwen3.5-4B:   model_type={cfg.model_type} ✓')
 else:
     print('  Qwen3.5-4B:   not in cache — skipping')
+"
+
+# Async extras check (separate apptainer call so we can set the same PYTHONPATH
+# the async launchers use, and verify numpy 2.x is actually loadable).
+echo ""
+PYTHONNOUSERSITE=1 apptainer exec --nv \
+    --overlay "$OVERLAY:ro" --no-home --bind /etc/pki:/etc/pki \
+    --env "PYTHONNOUSERSITE=1" \
+    --env "PYTHONPATH=$ROOT/.async-extras:/opt/phys-extras/" \
+    "$SIF" python3 -c "
+import numpy
+assert numpy.__version__.startswith('2.'), f'expected numpy 2.x, got {numpy.__version__}'
+print(f'  numpy (async path): {numpy.__version__} ✓')
 "
 
 echo ""

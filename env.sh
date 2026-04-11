@@ -15,7 +15,15 @@
 # SIF and OVERLAY can be overridden there if the filenames differ.
 
 # Derive ROOT from this file's location so sourcing from any cwd works.
-ROOT="${ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+# Use `pwd -P` (physical path) so apptainer --no-home sees the canonical path
+# even if the user enters via a /home/* symlink that isn't mounted in the container.
+ROOT="${ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)}"
+# Normalize: many sibling scripts set ROOT themselves with plain `pwd` before
+# sourcing env.sh, which preserves /home/* symlinks. Re-resolve to the physical
+# path so apptainer (--no-home) can always see it.
+if [ -d "$ROOT" ]; then
+    ROOT="$(cd "$ROOT" && pwd -P)"
+fi
 
 # Load machine-local overrides (HF_HOME, SBATCH_PARTITION, SIF, OVERLAY, etc.)
 [ -f "$ROOT/.env" ] && source "$ROOT/.env"
