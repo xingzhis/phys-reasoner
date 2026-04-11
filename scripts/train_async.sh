@@ -146,6 +146,7 @@ PYTHONNOUSERSITE=1 apptainer exec --nv \
   --env "WANDB_RUN_ID=$EXPERIMENT" \
   --env "VERL_DUMP_DIR=${VERL_DUMP_DIR:-}" \
   --env "XVERIFY_URL=${XVERIFY_URL:-}" \
+  --env "RAY_ADDRESS=${RAY_ADDRESS:-}" \
   --env "VERIFIER_DUMP_PATH=${VERIFIER_DUMP_PATH:-}" \
   "$SIF" \
   python3 -m verl.experimental.fully_async_policy.fully_async_main \
