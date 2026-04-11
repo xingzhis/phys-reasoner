@@ -1,6 +1,78 @@
 # Session Notes — for next session context
 
-Last updated: 2026-04-05 (session 5)
+Last updated: 2026-04-10 (session 6)
+
+---
+
+## Handoff: dump_rollouts / Step 2 of data-pipeline.md
+
+**Where to pick up:** running the probe rollout experiment on the Goldilocks subset using `scripts/dump_rollouts.py`, then writing a small `analyze_rollouts.py` to decide whether `max_tool_calls=1` is enough or needs to become 2.
+
+### State of `scripts/dump_rollouts.py` (as of 2026-04-10)
+
+Faithfully mirrors VeRL's `ToolAgentLoop` for Qwen3.5 qwen3_coder format:
+- Phase 1 (`enable_thinking=True`) → stop at `</tool_call>` → think-interrupt if thinking budget exceeded → phase 1b (`max_tokens=tool_call_budget`) → sandbox exec → phase 2 tool injection (`enable_thinking=False`) → final answer.
+- Emits `rollouts.parquet` always; per-rollout txt files only with `--dump_txt` / `DUMP_TXT=1` env var (off by default, slow).
+- `n <= 0` or `n >= len(df)` → uses all rows in parquet order (eval mode); otherwise `df.sample(n, seed)`.
+- Wired via `scripts/dump_rollouts.sh`. Cache env vars (`TRITON_CACHE_DIR`, `FLASHINFER_WORKSPACE_BASE`, `XDG_CACHE_HOME`, `MPLCONFIGDIR`) are already set to `/tmp` — needed under `--no-home`.
+- Parquet columns: `problem_idx, rollout_idx, gold_answer, answer_type, phase1_text, interrupted, phase1b_text, code, sandbox_stdout, sandbox_error, phase2_text, extra_info`. Scoring is a separate step — the parquet does NOT contain a parsed `\boxed{}` or a correctness label.
+
+**Tests:** `tests/test_dump_rollouts.py` (30 tests, all pass in container). Includes `TestPromptFidelityVsVeRL` which asserts our phase 1 prompt and tool injection are byte-identical to `verl.utils.chat_template.apply_chat_template`. Any drift from VeRL will fail this test loudly.
+
+### Training budgets (Qwen3.5-4B, matches `train_smoke_interrupt.sbatch`)
+
+```
+THINKING_BUDGET=12288
+TOOL_CALL_BUDGET=2048
+ANSWER_BUDGET=4096
+MAX_PROMPT_LEN=1024           # dump_rollouts default
+MAX_TOOL_RESPONSE_LEN=512     # dump_rollouts default
+```
+
+Budget identity: `response_length = thinking + interrupt_len + tool_call + max_tool_response + answer`, and `max_model_len = max_prompt_len + response_length`. dump_rollouts derives `interrupt_len` at runtime from `tokenizer.encode(THINK_INTERRUPT_PHRASE)` — no hardcoded constant.
+
+### Think-interrupt phrase (updated 2026-04-10)
+
+```python
+THINK_INTERRUPT_PHRASE = "\nOkay, I've thought enough. Time to write my response.\n</think>\n"
+```
+
+Lives in TWO places that MUST stay in sync:
+- `src/phys_reasoner/tir/prompts.py::THINK_INTERRUPT_PHRASE`
+- `verl/verl/experimental/agent_loop/tool_agent_loop.py::THINK_INTERRUPT_PHRASE`
+
+Design notes kept in the VeRL file's comment: don't say "final answer" or "stop" (biases away from tool use), don't say "continue" (observed failure mode — model keeps thinking in the non-existent content slot). "Time to write my response" is deliberately neutral over the two valid next actions: `<tool_call>` or a direct `\boxed{}`.
+
+### Observed phrase behavior on probe_subset (n=3, seed=42)
+
+- With full training budgets (12288/2048/4096): rollout 1 still exceeds `THINKING_BUDGET` on the oscillator problem (genuinely hard thinking, not a phrase issue). After interrupt, phase 2 reaches `\boxed{E \sqrt{...}}` but without using the tool. So the phrase is doing its job: the model does transition from thinking to response.
+- Rollout 2 (proton velocity) produced a tool call but **phase 2 didn't emit `\boxed{}`** — this is the "tool call errored, model tried to refine with a second call but max_tool_calls=1 forbids it" case (see next section).
+
+### Open design question: `max_tool_calls=1` vs `2`
+
+User currently commits to `max_tool_calls=1` and believes the "refine after sandbox error" failure mode is rare. This was based on a small dataset. We agreed on the following plan instead of deciding now:
+
+1. **Keep `max_tool_calls=1`.** Don't touch prompts or the rollout loop.
+2. **Run the Step 2 probe rollout experiment on the Goldilocks subset** with the training budgets above. The `rollouts.parquet` it produces IS the diagnostic dataset — no separate run needed.
+3. **Write `scripts/analyze_rollouts.py`** (~30 lines) that takes `rollouts.parquet` + scoring and buckets rollouts by `(sandbox_error, has_boxed, is_correct)`. Report three percentages:
+   - **Mode A:** code errored AND no boxed answer — a second call could rescue.
+   - **Mode B:** code errored AND boxed answer is wrong — a second call could rescue.
+   - **Mode C (ignore):** code errored but boxed answer is right — second call wouldn't change reward.
+4. **Decision gate:** if Mode A + Mode B combined is <5% of total → keep `max_tool_calls=1`. If >15% → bump to 2 as a separate branch (small change: system prompt in `prompts.py::make_system_prompt(2)` + loop modification in `dump_rollouts.py` to handle the second round). In between: late-stage ablation.
+
+Scoring for `analyze_rollouts.py` needs to come from `src/phys_reasoner/verifier/` (rule + xVerify fallback). Do NOT reinvent parsing — the verifier stack is the source of truth.
+
+### Gotchas for next session
+
+- **Cache dirs under `--no-home`:** `dump_rollouts.sh` already sets all of `TRITON_CACHE_DIR`, `FLASHINFER_WORKSPACE_BASE`, `XDG_CACHE_HOME`, `MPLCONFIGDIR` to `/tmp/...`. If you copy this into a new script, you need all four.
+- **Qwen3.5-4B on H200 / A100**: `GPU_MEM=0.7` is comfortable. vLLM `max_model_len` is derived from budgets — don't pass it explicitly.
+- **Container invocation:** `source env.sh && PYTHONNOUSERSITE=1 apptainer exec --overlay "$OVERLAY:ro" --no-home --bind /etc/pki:/etc/pki --env "PYTHONNOUSERSITE=1" --env "PYTHONPATH=/opt/phys-extras/" --env "HF_HOME=$HF_HOME" --env "HF_DATASETS_OFFLINE=1" "$SIF" python3 -m pytest tests/test_dump_rollouts.py` — always run tests in-container.
+- **Fidelity test uses Qwen3.5-0.8B** (cached). If it disappears from HF cache the test skips automatically; not a blocker.
+
+### Recent outputs (reference only, don't reuse)
+
+- `outputs/rollouts_20260410.223922/` — 3 probe rollouts with full training budgets, new phrase. Rollout 1 = thinking overflow + recovered in phase 2; rollout 2 = tool errored + no boxed.
+- Previous runs (210559, 214034, 205943) are earlier diagnostics — safe to ignore.
 
 ---
 

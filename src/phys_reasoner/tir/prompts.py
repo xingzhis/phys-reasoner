@@ -90,7 +90,7 @@ TOOL_CALL_STOP = "</tool_call>"
 
 # Think-interrupt phrase — injected when thinking exceeds budget (mask=0 in training).
 # Must match verl/verl/experimental/agent_loop/tool_agent_loop.py exactly.
-THINK_INTERRUPT_PHRASE = "\nOkay, I have thought enough. Let me continue.\n</think>\n"
+THINK_INTERRUPT_PHRASE = "\nOkay, I've thought enough. Time to write my response.\n</think>\n"
 
 # ---------------------------------------------------------------------------
 # Allowed packages (must stay in sync with sandbox.py ALLOWED_PACKAGES)
