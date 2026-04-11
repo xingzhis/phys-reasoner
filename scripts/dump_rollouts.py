@@ -200,6 +200,9 @@ def run_dump(
     max_prompt_len: int = 1024,
     max_tool_response_len: int = 512,
     dump_txt: bool = False,
+    start_idx: int | None = None,
+    end_idx: int | None = None,
+    chunk_size: int | None = None,
 ) -> None:
     from transformers import AutoTokenizer  # noqa: PLC0415
     from vllm import LLM, SamplingParams  # noqa: PLC0415
@@ -252,6 +255,16 @@ def run_dump(
     df = df.reset_index(drop=True)
     print(f"Loaded {len(df)} problems from {parquet_path}")
 
+    # --- Apply shard slice (after sampling, before expansion) ---
+    if start_idx is not None or end_idx is not None:
+        s = start_idx if start_idx is not None else 0
+        e = end_idx if end_idx is not None else len(df)
+        s = max(0, s)
+        e = min(len(df), e)
+        df = df.iloc[s:e].reset_index(drop=True)
+        original_indices = original_indices[s:e]
+        print(f"Shard slice: rows [{s}:{e}) = {len(df)} problems")
+
     # --- Build phase 1 prompts ---
     problems, golds, answer_types, extra_infos = [], [], [], []
     phase1_prompts = []
@@ -275,17 +288,7 @@ def run_dump(
             )
         )
 
-    # --- Expand for n_rollouts ---
-    expanded_prompts = []
-    expanded_map = []  # (problem_idx, rollout_idx)
-    for i in range(len(df)):
-        for r in range(n_rollouts):
-            expanded_prompts.append(phase1_prompts[i])
-            expanded_map.append((i, r))
-    total = len(expanded_prompts)
-    print(f"Expanded to {total} rollouts ({len(df)} problems x {n_rollouts} rollouts)")
-
-    # --- Create vLLM engine ---
+    # --- Create vLLM engine (once; reused across chunks) ---
     print(f"Creating vLLM engine: max_model_len={max_model_len}, gpu_mem={gpu_mem}")
     llm = LLM(
         model=model_path,
@@ -312,10 +315,9 @@ def run_dump(
         )
         return full[len(_dummy_prefix):]
 
-    # =====================================================================
-    # Phase 1: thinking + tool call (or just thinking if interrupt fires)
-    # =====================================================================
+    # --- Shared sampling params ---
     p1_max = thinking_budget if interrupt_enabled else max_tokens
+    p2_max = answer_budget if interrupt_enabled else max_tokens
     p1_params = SamplingParams(
         max_tokens=p1_max,
         stop=[TOOL_CALL_STOP],
@@ -323,39 +325,13 @@ def run_dump(
         temperature=temperature,
         top_p=top_p,
     )
-    print(f"Phase 1: generating {total} rollouts, max_tokens={p1_max}")
-    p1_outputs = llm.generate(expanded_prompts, p1_params)
-
-    # =====================================================================
-    # Check interrupt condition (mirrors tool_agent_loop.py lines 297-299)
-    # =====================================================================
-    p1_texts = []
-    p1_stops = []
-    interrupted_flags = []
-    p1b_indices = []
-    p1b_prompts = []
-
-    for i, out in enumerate(p1_outputs):
-        p1 = out.outputs[0]
-        p1_texts.append(p1.text)
-        p1_stops.append(p1.finish_reason or "unknown")
-
-        needs_interrupt = (
-            interrupt_enabled
-            and len(p1.token_ids) >= thinking_budget
-            and think_end_id not in p1.token_ids
-        )
-        interrupted_flags.append(needs_interrupt)
-
-        if needs_interrupt:
-            p1b_indices.append(i)
-            p1b_prompts.append(expanded_prompts[i] + p1.text + THINK_INTERRUPT_PHRASE)
-
-    # =====================================================================
-    # Phase 1b: tool call generation after interrupt (only for interrupted)
-    # =====================================================================
-    p1b_data: dict[int, tuple[str, str]] = {}  # idx -> (text, stop_reason)
-    if p1b_indices:
+    p2_params = SamplingParams(
+        max_tokens=p2_max,
+        temperature=temperature,
+        top_p=top_p,
+    )
+    p1b_params = None
+    if interrupt_enabled:
         p1b_params = SamplingParams(
             max_tokens=tool_call_budget,
             stop=[TOOL_CALL_STOP],
@@ -363,184 +339,222 @@ def run_dump(
             temperature=temperature,
             top_p=top_p,
         )
-        n_interrupted = len(p1b_indices)
-        print(f"Phase 1b: {n_interrupted}/{total} interrupted, max_tokens={tool_call_budget}")
-        p1b_outputs = llm.generate(p1b_prompts, p1b_params)
-        for j, idx in enumerate(p1b_indices):
-            p1b_out = p1b_outputs[j].outputs[0]
-            p1b_data[idx] = (p1b_out.text, p1b_out.finish_reason or "unknown")
-    else:
-        print("Phase 1b: no interrupts fired")
 
-    # =====================================================================
-    # Extract code + sandbox execution
-    # =====================================================================
-    codes: list[str | None] = []
-    sandbox_stdouts: list[str] = []
-    sandbox_errs: list[str] = []
-    sandbox_errors: list[bool] = []
+    # --- Chunk setup ---
+    n_problems = len(df)
+    chunk = chunk_size if (chunk_size is not None and chunk_size > 0) else n_problems
+    n_chunks = (n_problems + chunk - 1) // chunk
+    total_all = n_problems * n_rollouts
+    print(f"Chunking: {n_problems} problems × {n_rollouts} rollouts = {total_all} "
+          f"rollouts, chunk_size={chunk} ({n_chunks} chunks)")
 
-    for i in range(total):
-        if interrupted_flags[i]:
-            p1b_text, _ = p1b_data[i]
-            code = extract_tool_call_code(p1b_text)
-        else:
-            code = extract_tool_call_code(p1_texts[i])
-        codes.append(code)
-
-        if code is not None:
-            res = execute_code(code)
-            sandbox_stdouts.append(res.stdout)
-            sandbox_errs.append(res.stderr)
-            sandbox_errors.append(res.error)
-        else:
-            sandbox_stdouts.append("")
-            sandbox_errs.append("")
-            sandbox_errors.append(False)
-
-    # =====================================================================
-    # Build phase 2 prompts with tool injection
-    # =====================================================================
-    injection_texts: list[str] = []
-    phase2_prompts: list[str] = []
-
-    for i in range(total):
-        # Build tool response text (matches PythonSandboxTool.execute)
-        if codes[i] is not None and not sandbox_errors[i]:
-            output_text = sandbox_stdouts[i] or "(no output)"
-        elif codes[i] is not None and sandbox_errors[i]:
-            output_text = f"(execution error)\n{sandbox_errs[i][:300]}"
-        else:
-            output_text = "(no code block)"
-
-        # Truncate tool response (matches VeRL: tool_response_truncate_side=right)
-        if len(output_text) > max_tool_response_len:
-            output_text = "(truncated)..." + output_text[-max_tool_response_len:]
-
-        injection = _make_tool_injection(output_text)
-        injection_texts.append(injection)
-
-        if interrupted_flags[i]:
-            p1b_text, _ = p1b_data[i]
-            p2_prompt = expanded_prompts[i] + p1_texts[i] + THINK_INTERRUPT_PHRASE + p1b_text + injection
-        else:
-            p2_prompt = expanded_prompts[i] + p1_texts[i] + injection
-        phase2_prompts.append(p2_prompt)
-
-    # =====================================================================
-    # Phase 2: final answer
-    # =====================================================================
-    p2_max = answer_budget if interrupt_enabled else max_tokens
-    p2_params = SamplingParams(
-        max_tokens=p2_max,
-        temperature=temperature,
-        top_p=top_p,
-    )
-    print(f"Phase 2: generating {total} rollouts, max_tokens={p2_max}")
-    p2_outputs = llm.generate(phase2_prompts, p2_params)
-
-    # =====================================================================
-    # Write outputs: txt files + rollouts.parquet
-    # =====================================================================
-    records = []
-    summary_lines = [
-        f"{'#':>4}  {'prob':>4}  {'roll':>4}  {'type':15s}  {'intr':5s}  {'code?':6s}  "
+    all_records: list[dict] = []
+    all_summary_lines: list[str] = [
+        f"{'#':>6}  {'prob':>5}  {'roll':>4}  {'type':15s}  {'intr':5s}  {'code?':6s}  "
         f"{'exec?':6s}  {'boxed?':8s}  problem[:50]",
-        "-" * 110,
+        "-" * 112,
     ]
+    global_i = 0
 
-    for i in range(total):
-        prob_idx, roll_idx = expanded_map[i]
-        p2 = p2_outputs[i].outputs[0]
-        p2_text = p2.text
-        p2_stop = p2.finish_reason or "unknown"
+    for k in range(n_chunks):
+        chunk_path = os.path.join(out_dir, f"rollouts_chunk_{k:04d}.parquet")
+        if os.path.exists(chunk_path):
+            print(f"[chunk {k+1}/{n_chunks}] resume: loading existing {chunk_path}")
+            resumed = pd.read_parquet(chunk_path).to_dict("records")
+            all_records.extend(resumed)
+            global_i += len(resumed)
+            continue
 
-        boxed = _extract_boxed(p2_text) or _extract_boxed(p1_texts[i])
-        if interrupted_flags[i]:
-            p1b_text, _ = p1b_data[i]
-            boxed = boxed or _extract_boxed(p1b_text)
+        lo = k * chunk
+        hi = min((k + 1) * chunk, n_problems)
+        print(f"\n[chunk {k+1}/{n_chunks}] problems [{lo}:{hi}) ({hi-lo} problems)")
 
-        p1b_text_for_output = p1b_data[i][0] if interrupted_flags[i] else ""
-        p1b_stop_for_output = p1b_data[i][1] if interrupted_flags[i] else ""
+        # --- Expand for this chunk ---
+        expanded_prompts: list[str] = []
+        expanded_map: list[tuple[int, int]] = []
+        for i in range(lo, hi):
+            for r in range(n_rollouts):
+                expanded_prompts.append(phase1_prompts[i])
+                expanded_map.append((i, r))
+        total = len(expanded_prompts)
 
-        if dump_txt:
-            txt = _format_rollout_txt(
-                idx=i,
-                problem=problems[prob_idx],
-                gold=golds[prob_idx],
-                answer_type=answer_types[prob_idx],
-                phase1_prompt=phase1_prompts[prob_idx],
-                p1_text=p1_texts[i],
-                p1_stop=p1_stops[i],
-                interrupted=interrupted_flags[i],
-                p1b_text=p1b_text_for_output,
-                p1b_stop=p1b_stop_for_output,
-                code=codes[i],
-                sandbox_stdout=sandbox_stdouts[i],
-                sandbox_err=sandbox_errs[i],
-                sandbox_error=sandbox_errors[i],
-                injection_text=injection_texts[i],
-                p2_text=p2_text,
-                p2_stop=p2_stop,
-                boxed=boxed,
-                interrupt_phrase=THINK_INTERRUPT_PHRASE,
+        # ===== Phase 1 =====
+        print(f"  phase 1: {total} rollouts, max_tokens={p1_max}")
+        p1_outputs = llm.generate(expanded_prompts, p1_params)
+
+        p1_texts: list[str] = []
+        p1_stops: list[str] = []
+        interrupted_flags: list[bool] = []
+        p1b_indices: list[int] = []
+        p1b_prompts: list[str] = []
+        for i, out in enumerate(p1_outputs):
+            p1 = out.outputs[0]
+            p1_texts.append(p1.text)
+            p1_stops.append(p1.finish_reason or "unknown")
+            needs_interrupt = (
+                interrupt_enabled
+                and len(p1.token_ids) >= thinking_budget
+                and think_end_id not in p1.token_ids
             )
-            out_path = os.path.join(out_dir, f"rollout_{i:03d}.txt")
-            with open(out_path, "w") as f:
-                f.write(txt)
+            interrupted_flags.append(needs_interrupt)
+            if needs_interrupt:
+                p1b_indices.append(i)
+                p1b_prompts.append(expanded_prompts[i] + p1.text + THINK_INTERRUPT_PHRASE)
 
-        summary_lines.append(
-            f"{i:>4}  {prob_idx:>4}  {roll_idx:>4}  {answer_types[prob_idx]:15s}  "
-            f"{'yes' if interrupted_flags[i] else 'no':5s}  "
-            f"{'yes' if codes[i] else 'no':6s}  "
-            f"{'yes' if sandbox_stdouts[i] else 'no':6s}  "
-            f"{str(boxed)[:8] if boxed else 'None':8s}  "
-            f"{problems[prob_idx][:50]!r}"
-        )
+        # ===== Phase 1b =====
+        p1b_data: dict[int, tuple[str, str]] = {}
+        if p1b_indices:
+            print(f"  phase 1b: {len(p1b_indices)}/{total} interrupted, max_tokens={tool_call_budget}")
+            p1b_outputs = llm.generate(p1b_prompts, p1b_params)
+            for j, idx in enumerate(p1b_indices):
+                p1b_out = p1b_outputs[j].outputs[0]
+                p1b_data[idx] = (p1b_out.text, p1b_out.finish_reason or "unknown")
 
-        # Build parquet record
-        records.append({
-            "problem_idx": original_indices[prob_idx],
-            "rollout_idx": roll_idx,
-            "gold_answer": golds[prob_idx],
-            "answer_type": answer_types[prob_idx],
-            "phase1_text": p1_texts[i],
-            "interrupted": interrupted_flags[i],
-            "phase1b_text": p1b_text_for_output if interrupted_flags[i] else None,
-            "code": codes[i],
-            "sandbox_stdout": sandbox_stdouts[i],
-            "sandbox_error": sandbox_errors[i],
-            "phase2_text": p2_text,
-            "extra_info": extra_infos[prob_idx],
-        })
+        # ===== Sandbox =====
+        codes: list[str | None] = []
+        sandbox_stdouts: list[str] = []
+        sandbox_errs: list[str] = []
+        sandbox_errors: list[bool] = []
+        for i in range(total):
+            if interrupted_flags[i]:
+                p1b_text, _ = p1b_data[i]
+                code = extract_tool_call_code(p1b_text)
+            else:
+                code = extract_tool_call_code(p1_texts[i])
+            codes.append(code)
+            if code is not None:
+                res = execute_code(code)
+                sandbox_stdouts.append(res.stdout)
+                sandbox_errs.append(res.stderr)
+                sandbox_errors.append(res.error)
+            else:
+                sandbox_stdouts.append("")
+                sandbox_errs.append("")
+                sandbox_errors.append(False)
 
-    # Write summary
+        # ===== Build phase 2 prompts =====
+        injection_texts: list[str] = []
+        phase2_prompts: list[str] = []
+        for i in range(total):
+            if codes[i] is not None and not sandbox_errors[i]:
+                output_text = sandbox_stdouts[i] or "(no output)"
+            elif codes[i] is not None and sandbox_errors[i]:
+                output_text = f"(execution error)\n{sandbox_errs[i][:300]}"
+            else:
+                output_text = "(no code block)"
+            if len(output_text) > max_tool_response_len:
+                output_text = "(truncated)..." + output_text[-max_tool_response_len:]
+            injection = _make_tool_injection(output_text)
+            injection_texts.append(injection)
+            if interrupted_flags[i]:
+                p1b_text, _ = p1b_data[i]
+                p2_prompt = expanded_prompts[i] + p1_texts[i] + THINK_INTERRUPT_PHRASE + p1b_text + injection
+            else:
+                p2_prompt = expanded_prompts[i] + p1_texts[i] + injection
+            phase2_prompts.append(p2_prompt)
+
+        # ===== Phase 2 =====
+        print(f"  phase 2: {total} rollouts, max_tokens={p2_max}")
+        p2_outputs = llm.generate(phase2_prompts, p2_params)
+
+        # ===== Build chunk records =====
+        chunk_records: list[dict] = []
+        for i in range(total):
+            prob_idx, roll_idx = expanded_map[i]
+            p2 = p2_outputs[i].outputs[0]
+            p2_text = p2.text
+            p2_stop = p2.finish_reason or "unknown"
+            boxed = _extract_boxed(p2_text) or _extract_boxed(p1_texts[i])
+            if interrupted_flags[i]:
+                p1b_text, _ = p1b_data[i]
+                boxed = boxed or _extract_boxed(p1b_text)
+            p1b_text_for_output = p1b_data[i][0] if interrupted_flags[i] else ""
+            p1b_stop_for_output = p1b_data[i][1] if interrupted_flags[i] else ""
+
+            if dump_txt:
+                txt = _format_rollout_txt(
+                    idx=global_i,
+                    problem=problems[prob_idx],
+                    gold=golds[prob_idx],
+                    answer_type=answer_types[prob_idx],
+                    phase1_prompt=phase1_prompts[prob_idx],
+                    p1_text=p1_texts[i],
+                    p1_stop=p1_stops[i],
+                    interrupted=interrupted_flags[i],
+                    p1b_text=p1b_text_for_output,
+                    p1b_stop=p1b_stop_for_output,
+                    code=codes[i],
+                    sandbox_stdout=sandbox_stdouts[i],
+                    sandbox_err=sandbox_errs[i],
+                    sandbox_error=sandbox_errors[i],
+                    injection_text=injection_texts[i],
+                    p2_text=p2_text,
+                    p2_stop=p2_stop,
+                    boxed=boxed,
+                    interrupt_phrase=THINK_INTERRUPT_PHRASE,
+                )
+                out_path = os.path.join(out_dir, f"rollout_{global_i:06d}.txt")
+                with open(out_path, "w") as f:
+                    f.write(txt)
+
+            all_summary_lines.append(
+                f"{global_i:>6}  {prob_idx:>5}  {roll_idx:>4}  {answer_types[prob_idx]:15s}  "
+                f"{'yes' if interrupted_flags[i] else 'no':5s}  "
+                f"{'yes' if codes[i] else 'no':6s}  "
+                f"{'yes' if sandbox_stdouts[i] else 'no':6s}  "
+                f"{str(boxed)[:8] if boxed else 'None':8s}  "
+                f"{problems[prob_idx][:50]!r}"
+            )
+            global_i += 1
+
+            chunk_records.append({
+                "problem_idx": original_indices[prob_idx],
+                "rollout_idx": roll_idx,
+                "gold_answer": golds[prob_idx],
+                "answer_type": answer_types[prob_idx],
+                "phase1_text": p1_texts[i],
+                "interrupted": interrupted_flags[i],
+                "phase1b_text": p1b_text_for_output if interrupted_flags[i] else None,
+                "code": codes[i],
+                "sandbox_stdout": sandbox_stdouts[i],
+                "sandbox_error": sandbox_errors[i],
+                "phase2_text": p2_text,
+                "extra_info": extra_infos[prob_idx],
+            })
+
+        # Flush chunk parquet (crash safety)
+        pd.DataFrame(chunk_records).to_parquet(chunk_path, index=False)
+        print(f"  flushed {len(chunk_records)} rollouts → {chunk_path}")
+        all_records.extend(chunk_records)
+
+    # ===== Final outputs =====
+    total_rollouts = len(all_records)
+    n_interrupted_total = sum(1 for r in all_records if r["interrupted"])
+
     summary_path = os.path.join(out_dir, "summary.txt")
     with open(summary_path, "w") as f:
         f.write(f"model             : {model_path}\n")
         f.write(f"parquet           : {parquet_path}\n")
-        f.write(f"n_problems        : {len(df)}\n")
+        f.write(f"n_problems        : {n_problems}\n")
         f.write(f"n_rollouts        : {n_rollouts}\n")
-        f.write(f"total             : {total}\n")
+        f.write(f"total             : {total_rollouts}\n")
+        f.write(f"chunk_size        : {chunk}  (n_chunks={n_chunks})\n")
         f.write(f"temperature       : {temperature}  top_p={top_p}  enable_thinking={enable_thinking}\n")
         if interrupt_enabled:
             f.write(f"thinking_budget   : {thinking_budget}\n")
             f.write(f"tool_call_budget  : {tool_call_budget}\n")
             f.write(f"answer_budget     : {answer_budget}\n")
             f.write(f"interrupt_len     : {interrupt_len}\n")
-            n_interrupted = sum(interrupted_flags)
-            f.write(f"interrupted       : {n_interrupted}/{total}\n")
+            f.write(f"interrupted       : {n_interrupted_total}/{total_rollouts}\n")
         else:
             f.write(f"max_tokens        : {max_tokens}\n")
         f.write("\n")
-        f.write("\n".join(summary_lines) + "\n")
+        f.write("\n".join(all_summary_lines) + "\n")
 
-    # Write parquet
     parquet_path_out = os.path.join(out_dir, "rollouts.parquet")
-    pd.DataFrame(records).to_parquet(parquet_path_out, index=False)
-    print(f"\nSaved {total} rollouts + summary → {out_dir}/")
+    pd.DataFrame(all_records).to_parquet(parquet_path_out, index=False)
+    print(f"\nSaved {total_rollouts} rollouts + summary → {out_dir}/")
     print(f"Parquet: {parquet_path_out}")
-    print("\n".join(summary_lines))
 
 
 def main() -> None:
@@ -572,6 +586,13 @@ def main() -> None:
                    help="Tool response text cap in chars (matches VeRL)")
     p.add_argument("--dump_txt", action="store_true", default=False,
                    help="Also write per-rollout human-readable txt files (slow; parquet is always written)")
+    p.add_argument("--start_idx", type=int, default=None,
+                   help="Shard slice start (applied after sampling). Use with --end_idx to split across GPUs.")
+    p.add_argument("--end_idx", type=int, default=None,
+                   help="Shard slice end (exclusive). Use with --start_idx to split across GPUs.")
+    p.add_argument("--chunk_size", type=int, default=None,
+                   help="Problems per chunk; parquet is flushed after each chunk for crash safety. "
+                        "Resume works: re-running skips chunks whose parquet already exists.")
     args = p.parse_args()
 
     run_dump(
@@ -592,6 +613,9 @@ def main() -> None:
         max_prompt_len=args.max_prompt_len,
         max_tool_response_len=args.max_tool_response_len,
         dump_txt=args.dump_txt,
+        start_idx=args.start_idx,
+        end_idx=args.end_idx,
+        chunk_size=args.chunk_size,
     )
 
 

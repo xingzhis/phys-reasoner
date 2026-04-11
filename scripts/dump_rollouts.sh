@@ -45,6 +45,11 @@ THINKING_BUDGET="${THINKING_BUDGET:-}"
 TOOL_CALL_BUDGET="${TOOL_CALL_BUDGET:-}"
 ANSWER_BUDGET="${ANSWER_BUDGET:-}"
 
+# Sharding / chunking (all optional)
+START_IDX="${START_IDX:-}"
+END_IDX="${END_IDX:-}"
+CHUNK_SIZE="${CHUNK_SIZE:-}"
+
 # Resolve relative parquet path
 [[ "$PARQUET" != /* ]] && PARQUET="$ROOT/$PARQUET"
 
@@ -99,6 +104,9 @@ PYTHONNOUSERSITE=1 apptainer exec --nv \
     ${THINKING_BUDGET:+--thinking_budget "$THINKING_BUDGET"} \
     ${TOOL_CALL_BUDGET:+--tool_call_budget "$TOOL_CALL_BUDGET"} \
     ${ANSWER_BUDGET:+--answer_budget "$ANSWER_BUDGET"} \
+    ${START_IDX:+--start_idx "$START_IDX"} \
+    ${END_IDX:+--end_idx "$END_IDX"} \
+    ${CHUNK_SIZE:+--chunk_size "$CHUNK_SIZE"} \
     ${DUMP_TXT:+--dump_txt} \
   2>&1 | tee "$OUT_DIR/run.log"
 
