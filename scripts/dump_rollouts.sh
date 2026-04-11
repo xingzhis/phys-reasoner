@@ -53,8 +53,12 @@ CHUNK_SIZE="${CHUNK_SIZE:-}"
 # Resolve relative parquet path
 [[ "$PARQUET" != /* ]] && PARQUET="$ROOT/$PARQUET"
 
-TIMESTAMP=$(date +%Y%m%d.%H%M%S)
-OUT_DIR="$ROOT/outputs/rollouts_${TIMESTAMP}"
+if [[ -n "${OUT_DIR:-}" ]]; then
+    [[ "$OUT_DIR" != /* ]] && OUT_DIR="$ROOT/$OUT_DIR"
+else
+    TIMESTAMP=$(date +%Y%m%d.%H%M%S)
+    OUT_DIR="$ROOT/outputs/rollouts_${TIMESTAMP}"
+fi
 mkdir -p "$OUT_DIR"
 
 echo "=== dump_rollouts: TIR trajectory inspection ==="

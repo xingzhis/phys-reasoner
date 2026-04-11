@@ -1,12 +1,23 @@
 # Session Notes — for next session context
 
-Last updated: 2026-04-10 (session 6)
+Last updated: 2026-04-11 (session 7)
 
 ---
 
-## Handoff: dump_rollouts / Step 2 of data-pipeline.md
+## Handoff: probe rollout launch (Step 3 of data-pipeline.md)
 
-**Where to pick up:** running the probe rollout experiment on the Goldilocks subset using `scripts/dump_rollouts.py`, then writing a small `analyze_rollouts.py` to decide whether `max_tool_calls=1` is enough or needs to become 2.
+**Read this first:** `.claude/plans/probe-rollout.md` — calibration numbers, hardware
+extrapolation, launch commands, and cross-cluster guidance. Written 2026-04-11 so a
+fresh session on the school HPC (or collaborator cluster) can pick up the probe run
+without re-deriving budgets or runtime estimates.
+
+**Where to pick up:** launching `scripts/dump_rollouts.py` on `probe_subset.parquet`
+(2500 rows × 8 rollouts) with the 2-GPU template in probe-rollout.md, then writing
+`analyze_rollouts.py` to decide whether `max_tool_calls=1` is enough or needs to become 2.
+
+**Script state (2026-04-11):** dump_rollouts.py now supports `--start_idx/--end_idx`
+(sharding across GPUs) and `--chunk_size` (per-chunk parquet flush + automatic
+crash resume). All 30 tests pass. See probe-rollout.md for the full launch template.
 
 ### State of `scripts/dump_rollouts.py` (as of 2026-04-10)
 
