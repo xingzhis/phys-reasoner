@@ -57,6 +57,34 @@ class XVerifyHTTPClient:
         self._backoff_min = backoff_min
         self._backoff_max = backoff_max
 
+    def health_check(self) -> bool:
+        """Return True if the server responds to GET /health with 200.
+
+        Used by reward.py's ``PHYS_REQUIRE_XVERIFY=1`` guardrail to fail loudly
+        at process start if the configured URL points at a dead server (e.g.
+        stale rendezvous file from a previous run whose companion job crashed).
+        """
+        conn_cls = (
+            http.client.HTTPSConnection if self._scheme == "https" else http.client.HTTPConnection
+        )
+        # Derive /health from whatever path the client was constructed with.
+        # For the canonical serve_xverify.py layout the path is /judge; otherwise
+        # fall back to a plain /health at the server root.
+        if self._path.endswith("/judge"):
+            health_path = self._path[: -len("/judge")] + "/health"
+        else:
+            health_path = "/health"
+        try:
+            conn = conn_cls(self._host, self._port, timeout=self._timeout)
+            try:
+                conn.request("GET", health_path)
+                resp = conn.getresponse()
+                return resp.status == 200
+            finally:
+                conn.close()
+        except Exception:
+            return False
+
     def __call__(self, pred_str: str, gold_str: str, problem_str: str = "") -> bool:
         body = json.dumps(
             {"pred": pred_str, "gold": gold_str, "problem": problem_str}

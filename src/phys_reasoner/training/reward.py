@@ -4,24 +4,94 @@ from __future__ import annotations
 
 import os
 
-# Lazy singleton: created on first use, reused for the lifetime of the worker.
-# Set XVERIFY_URL=http://<host>:<port>/judge to route the verifier's xVerify
-# fallback to a remote service. Unset → rule-only verification (legacy path).
+# Lazy singleton: created on first successful URL discovery, reused for the
+# lifetime of the worker. URL is discovered via (1) XVERIFY_URL env var, OR
+# (2) a rendezvous file at outputs/xverify_endpoints/current.url written by
+# the companion serve_xverify.sbatch job. The file fallback exists because in
+# the multi-node async path, Ray actor processes inherit env from the Ray
+# daemons — which are started BEFORE the companion xverify job has written
+# its URL. Without the file fallback, the singleton initializes to None and
+# stays None for the rest of the process, silently disabling xverify.
+#
+# We do NOT short-circuit on a "tried once" flag; if the URL is not yet
+# available on the first call, subsequent calls retry. The check is cheap
+# (env lookup + os.path.isfile) so per-step overhead is negligible.
 _XVERIFY_CLIENT = None
-_XVERIFY_INIT_DONE = False
+# Tracks whether the current singleton has been health-checked against the
+# server. Separate from _XVERIFY_CLIENT so that the check only runs once per
+# process (not per compute_score call).
+_XVERIFY_HEALTH_CHECKED = False
+
+
+def _require_xverify() -> bool:
+    """Whether production-mode xverify enforcement is active.
+
+    Set ``PHYS_REQUIRE_XVERIFY=1`` on production training jobs. When active:
+      * A missing URL raises RuntimeError (loud fail at first compute_score
+        call — catches the silent rule-only-fallback mode).
+      * An unreachable/unhealthy URL also raises.
+      * Test/smoke runs leave this unset so they can run without the companion.
+    """
+    return os.environ.get("PHYS_REQUIRE_XVERIFY", "").strip() == "1"
+
+
+def _discover_xverify_url() -> str:
+    """Return the xVerify URL from env or rendezvous file, or empty string."""
+    url = os.environ.get("XVERIFY_URL", "").strip()
+    if url:
+        return url
+    # Rendezvous file fallback. Path can be overridden via XVERIFY_URL_FILE.
+    rendezvous = os.environ.get("XVERIFY_URL_FILE", "").strip()
+    if not rendezvous:
+        # Default location relative to repo root. Walk up from this file:
+        # src/phys_reasoner/training/reward.py → repo root.
+        here = os.path.abspath(os.path.dirname(__file__))
+        repo_root = os.path.abspath(os.path.join(here, "..", "..", ".."))
+        rendezvous = os.path.join(repo_root, "outputs", "xverify_endpoints", "current.url")
+    if not os.path.isfile(rendezvous):
+        return ""
+    try:
+        with open(rendezvous, "r") as f:
+            line = f.readline().strip()
+        return line if line and not line.startswith("#") else ""
+    except OSError:
+        return ""
 
 
 def _get_xverify_judge():
-    global _XVERIFY_CLIENT, _XVERIFY_INIT_DONE
-    if _XVERIFY_INIT_DONE:
+    global _XVERIFY_CLIENT, _XVERIFY_HEALTH_CHECKED
+    if _XVERIFY_CLIENT is not None:
         return _XVERIFY_CLIENT
-    _XVERIFY_INIT_DONE = True
-    url = os.environ.get("XVERIFY_URL", "").strip()
+    url = _discover_xverify_url()
+    require = _require_xverify()
     if not url:
+        if require:
+            raise RuntimeError(
+                "PHYS_REQUIRE_XVERIFY=1 is set but no xverify URL was "
+                "discovered (checked XVERIFY_URL env var and default "
+                "rendezvous file outputs/xverify_endpoints/current.url, "
+                "plus XVERIFY_URL_FILE override). Production training must "
+                "not silently fall back to rule-based reward: the rule "
+                "verifier has ~68% false-negative rate on expression-type "
+                "answers, which would train the model on a degraded signal. "
+                "Verify the companion serve_xverify.sbatch job is running "
+                "and has written its rendezvous file."
+            )
         return None
     from phys_reasoner.verifier.xverify_client import XVerifyHTTPClient
 
-    _XVERIFY_CLIENT = XVerifyHTTPClient(url)
+    client = XVerifyHTTPClient(url)
+    if require and not _XVERIFY_HEALTH_CHECKED:
+        if not client.health_check():
+            raise RuntimeError(
+                f"PHYS_REQUIRE_XVERIFY=1 is set and an xverify URL was "
+                f"discovered ({url}) but the server did not pass its "
+                f"health check. It may be queue-stuck, crashed, or still "
+                f"loading its model. Check the companion serve_xverify "
+                f"job status and logs before restarting training."
+            )
+        _XVERIFY_HEALTH_CHECKED = True
+    _XVERIFY_CLIENT = client
     return _XVERIFY_CLIENT
 
 

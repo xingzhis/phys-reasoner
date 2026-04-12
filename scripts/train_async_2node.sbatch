@@ -34,16 +34,21 @@
 #   TIME_LIMIT                           — defaults to 3 hours
 #
 #SBATCH --job-name=train_async_2node
-#SBATCH --partition=gpu
-#SBATCH --qos=qos_nmi
+#SBATCH --partition=gpu_h200
 #SBATCH --nodes=2
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=256G
-#SBATCH --gres=gpu:h100:4
+#SBATCH --gres=gpu:h200:4
 #SBATCH --time=6:00:00
 #SBATCH --output=logs/%x_%j.log
 #SBATCH --error=logs/%x_%j.err
+#
+# Submit overrides for the resume rehearsal (gap #2 from perlmutter handoff):
+#   sbatch --export=ALL,EXPERIMENT=resume_test_v1,SAVE_FREQ=2,TOTAL_STEPS=6 \
+#          scripts/train_async_2node.sbatch
+# Then scancel mid-run and resubmit with the same EXPERIMENT — verl's
+# trainer.resume_mode=auto picks up the latest checkpoint in default_local_dir.
 
 set -euo pipefail
 
@@ -61,12 +66,12 @@ echo "  Time     : $(date -Iseconds)"
 unset SIF OVERLAY
 source "$ROOT/env.sh"
 
-# env.sh defaults OVERLAY to phys-reasoner-overlay-017.img (no 'b'), which is
-# the OLD overlay without transformers 5.3.0. Pin to the active overlay here.
-OVERLAY="$ROOT/phys-reasoner-overlay-017b.img"
-export OVERLAY
 if [[ ! -f "$OVERLAY" ]]; then
     echo "ERROR: overlay not found: $OVERLAY" >&2
+    exit 1
+fi
+if [[ ! -f "$SIF" ]]; then
+    echo "ERROR: SIF not found: $SIF" >&2
     exit 1
 fi
 echo "  SIF      : $SIF"
@@ -85,9 +90,19 @@ XVERIFY_JOBID=""
 if [[ -z "${XVERIFY_URL:-}" && "${XVERIFY_DISABLE:-0}" != "1" ]]; then
     # Clean stale URL file from previous runs.
     rm -f "$ROOT/outputs/xverify_endpoints/current.url"
-    XVERIFY_JOBID=$(sbatch --parsable "$ROOT/scripts/serve_xverify.sbatch" 2>&1 || echo "")
+    # Spawn the companion on a less-contended partition than the main training
+    # job. .env's SBATCH_PARTITION is usually the heavy-GPU partition (gpu_h200,
+    # gpu_b200) which is queue-stuck for whole-node jobs. xverify only needs 1
+    # GPU and a 7B model fits on l40s/rtx_5000_ada/etc. Override at the spawn
+    # site so the companion always lands somewhere it can actually start.
+    XVERIFY_PARTITION="${XVERIFY_PARTITION:-scavenge_gpu}"
+    XVERIFY_GRES="${XVERIFY_GRES:-gpu:l40s:1}"
+    XVERIFY_JOBID=$(sbatch --parsable \
+        --partition="$XVERIFY_PARTITION" \
+        --gres="$XVERIFY_GRES" \
+        "$ROOT/scripts/serve_xverify.sbatch" 2>&1 || echo "")
     if [[ "$XVERIFY_JOBID" =~ ^[0-9]+$ ]]; then
-        echo "[xverify] submitted companion job $XVERIFY_JOBID"
+        echo "[xverify] submitted companion job $XVERIFY_JOBID on $XVERIFY_PARTITION ($XVERIFY_GRES)"
     else
         echo "[xverify] WARNING: sbatch failed: $XVERIFY_JOBID"
         XVERIFY_JOBID=""
@@ -150,6 +165,18 @@ APPTAINER_CMD=(
     --env "PYTHONPATH=$ROOT/.async-extras:/opt/phys-extras/"
     --env "HF_HOME=$HF_HOME"
     --env "XDG_CACHE_HOME=/tmp/.cache"
+    # flashinfer hardcodes ~/.cache/flashinfer at import time; with --no-home that
+    # path is unwritable. FLASHINFER_WORKSPACE_BASE redirects it. HOME=/tmp is a
+    # belt-and-suspenders default for any other library that checks $HOME.
+    --env "FLASHINFER_WORKSPACE_BASE=/tmp"
+    --env "HOME=/tmp"
+    --env "TRITON_CACHE_DIR=/tmp/.cache/triton"
+    --env "MPLCONFIGDIR=/tmp/.cache/matplotlib"
+    # Production-mode xverify enforcement. When set to 1, any Ray actor whose
+    # reward function fails to discover a live xverify server raises loudly
+    # instead of silently falling back to rule-only. Must be forwarded to the
+    # Ray daemon env so that actors spawned by the daemon inherit it.
+    --env "PHYS_REQUIRE_XVERIFY=${PHYS_REQUIRE_XVERIFY:-0}"
     "$SIF"
 )
 
@@ -165,7 +192,7 @@ srun --nodes=1 --ntasks=1 -w "$HEAD_NODE" --output="logs/%x_%j.ray_head.log" \
         --port=$RAY_PORT \
         --dashboard-host=0.0.0.0 \
         --dashboard-port=$DASHBOARD_PORT \
-        --num-gpus=4 \
+        --num-gpus="${N_GPUS_ROLLOUT:-4}" \
         --block &
 RAY_HEAD_PID=$!
 
@@ -180,7 +207,7 @@ srun --nodes=1 --ntasks=1 -w "$WORKER_NODE" --output="logs/%x_%j.ray_worker.log"
     "${APPTAINER_CMD[@]}" \
     ray start \
         --address="$RAY_ADDRESS" \
-        --num-gpus=4 \
+        --num-gpus="${N_GPUS_TRAIN:-4}" \
         --block &
 RAY_WORKER_PID=$!
 
@@ -188,7 +215,10 @@ RAY_WORKER_PID=$!
 # 3. Wait for cluster to have 2 alive nodes with 8 GPUs.
 # ---------------------------------------------------------------------------
 echo "[ray] waiting for 2-node cluster ..."
-srun --nodes=1 --ntasks=1 -w "$HEAD_NODE" \
+# --overlap lets this srun share the HEAD task slot with the backgrounded
+# `ray start --head --block` srun above. Without it, slurm queues this step
+# behind the ray-head srun and the cluster probe never runs (silent hang).
+srun --overlap --nodes=1 --ntasks=1 -w "$HEAD_NODE" \
     "${APPTAINER_CMD[@]}" \
     python3 -c "
 import ray, time, sys
@@ -197,7 +227,8 @@ for i in range(60):
     nodes = [n for n in ray.nodes() if n['Alive']]
     gpus  = sum(int(n['Resources'].get('GPU', 0)) for n in nodes)
     print(f'[ray-probe] attempt {i}: {len(nodes)} nodes, {gpus} gpus', flush=True)
-    if len(nodes) >= 2 and gpus >= 8:
+    expected_gpus = ${N_GPUS_ROLLOUT:-4} + ${N_GPUS_TRAIN:-4}
+    if len(nodes) >= 2 and gpus >= expected_gpus:
         print(f'[ray-probe] READY: {len(nodes)} nodes, {gpus} gpus', flush=True)
         sys.exit(0)
     time.sleep(2)
@@ -216,10 +247,19 @@ export TOTAL_STEPS="${TOTAL_STEPS:-3}"
 export TRAIN_BATCH="${TRAIN_BATCH:-4}"
 export ROLLOUT_N="${ROLLOUT_N:-4}"
 export MODEL="${MODEL:-Qwen/Qwen3.5-4B}"
-export N_GPUS_ROLLOUT=4
-export N_GPUS_TRAIN=4
+export N_GPUS_ROLLOUT="${N_GPUS_ROLLOUT:-4}"
+export N_GPUS_TRAIN="${N_GPUS_TRAIN:-4}"
 export NNODES_ROLLOUT=1
 export NNODES_TRAIN=1
+# Save/resume controls. Default -1 = no checkpointing (smoke runs).
+# For the resume rehearsal pass SAVE_FREQ=2 and a stable EXPERIMENT name.
+export SAVE_FREQ="${SAVE_FREQ:--1}"
+export EXPERIMENT="${EXPERIMENT:-}"
+# Rehearsal data: probe_subset (~2,500 stratified rows from train_split) is small
+# enough that the dataloader doesn't dominate iter time, while still exercising
+# every answer_type / source / difficulty bucket. Override TRAIN_FILES for production.
+export TRAIN_FILES="${TRAIN_FILES:-$ROOT/data/processed/probe_subset.parquet}"
+export VAL_FILES="${VAL_FILES:-$ROOT/data/processed/corpus_dev.parquet}"
 export THINKING_BUDGET="${THINKING_BUDGET:-12288}"
 export TOOL_CALL_BUDGET="${TOOL_CALL_BUDGET:-2048}"
 export ANSWER_BUDGET="${ANSWER_BUDGET:-4096}"
@@ -267,7 +307,8 @@ fi
 export XVERIFY_URL
 
 echo "[driver] starting train_async.sh on $HEAD_NODE ..."
-srun --nodes=1 --ntasks=1 -w "$HEAD_NODE" \
+# --overlap: share HEAD task slot with the ray-head --block srun.
+srun --overlap --nodes=1 --ntasks=1 -w "$HEAD_NODE" \
     bash "$ROOT/scripts/train_async.sh"
 DRIVER_EXIT=$?
 
@@ -278,7 +319,7 @@ echo "[driver] exited with $DRIVER_EXIT"
 # ---------------------------------------------------------------------------
 echo "[ray] stopping cluster ..."
 for N in "$HEAD_NODE" "$WORKER_NODE"; do
-    srun --nodes=1 --ntasks=1 -w "$N" \
+    srun --overlap --nodes=1 --ntasks=1 -w "$N" \
         "${APPTAINER_CMD[@]}" \
         ray stop --force || true
 done

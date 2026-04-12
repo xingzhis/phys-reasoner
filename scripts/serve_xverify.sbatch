@@ -18,16 +18,18 @@
 #          scripts/serve_xverify.sbatch
 #
 #SBATCH --job-name=xverify_server
-#SBATCH --partition=gpu
-#SBATCH --qos=qos_nmi
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=64G
-#SBATCH --gres=gpu:l40s:1
+#SBATCH --gres=gpu:1
 #SBATCH --time=6:00:00
 #SBATCH --output=logs/%x_%j.log
 #SBATCH --error=logs/%x_%j.err
+#
+# Partition is read from SBATCH_PARTITION (set in .env). xVerify-7B fits on a
+# single L40S/A100/H100/H200 — any 1-GPU shared allocation works.
+# To pin a different class:  sbatch --partition=gpu_l40s scripts/serve_xverify.sbatch
 
 set -euo pipefail
 
@@ -37,9 +39,6 @@ mkdir -p logs outputs/xverify_endpoints
 
 unset SIF OVERLAY
 source "$ROOT/env.sh"
-# Pin to active overlay (env.sh default is stale — 017 vs 017b)
-OVERLAY="$ROOT/phys-reasoner-overlay-017b.img"
-export OVERLAY
 
 PORT="${PORT:-8765}"
 XVERIFY_MODEL="${XVERIFY_MODEL:-IAAR-Shanghai/xVerify-7B-I}"

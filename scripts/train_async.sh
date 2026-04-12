@@ -43,8 +43,11 @@ echo "  OVERLAY: $OVERLAY"
 # Configurable params — override via env vars
 # ---------------------------------------------------------------------------
 MODEL="${MODEL:-Qwen/Qwen3.5-4B}"
-TRAIN_FILES="${TRAIN_FILES:-$ROOT/data/processed/drsci_physics_clean.parquet}"
-VAL_FILES="${VAL_FILES:-$ROOT/data/processed/corpus_train.parquet}"
+# Defaults are the production-correct split outputs (Step 0b in
+# .claude/plans/data-pipeline.md). Smoke / rehearsal sbatch scripts override
+# TRAIN_FILES to data/processed/probe_subset.parquet for speed.
+TRAIN_FILES="${TRAIN_FILES:-$ROOT/data/processed/drsci_train_split.parquet}"
+VAL_FILES="${VAL_FILES:-$ROOT/data/processed/drsci_dev.parquet}"
 
 # Resource split: rollout and trainer live on disjoint GPUs on this node.
 N_GPUS_ROLLOUT="${N_GPUS_ROLLOUT:-1}"
@@ -100,7 +103,10 @@ PPO_MICRO_BS_PER_GPU="${PPO_MICRO_BS_PER_GPU:-1}"
 LOG_PROB_MICRO_BS_PER_GPU="${LOG_PROB_MICRO_BS_PER_GPU:-$PPO_MICRO_BS_PER_GPU}"
 
 TIMESTAMP=$(date +%Y%m%d.%H%M%S)
-EXPERIMENT="grpo_async_${TIMESTAMP}"
+# EXPERIMENT can be pinned via env so resume runs land in the same default_local_dir.
+# verl's trainer.resume_mode defaults to 'auto' — if a checkpoint already exists in
+# default_local_dir, training resumes from it automatically.
+EXPERIMENT="${EXPERIMENT:-grpo_async_${TIMESTAMP}}"
 TRAIN_DIR="$ROOT/outputs/$WANDB_PROJECT/$EXPERIMENT"
 mkdir -p "$TRAIN_DIR" "$ROOT/logs"
 
@@ -146,6 +152,7 @@ PYTHONNOUSERSITE=1 apptainer exec --nv \
   --env "WANDB_RUN_ID=$EXPERIMENT" \
   --env "VERL_DUMP_DIR=${VERL_DUMP_DIR:-}" \
   --env "XVERIFY_URL=${XVERIFY_URL:-}" \
+  --env "PHYS_REQUIRE_XVERIFY=${PHYS_REQUIRE_XVERIFY:-0}" \
   --env "RAY_ADDRESS=${RAY_ADDRESS:-}" \
   --env "VERIFIER_DUMP_PATH=${VERIFIER_DUMP_PATH:-}" \
   "$SIF" \
