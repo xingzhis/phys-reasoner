@@ -24,8 +24,14 @@
 #   5. Optional 1-GPU async smoke (1 trainer + 1 rollout, TOTAL_STEPS=1)
 #
 # Usage:
-#   bash scripts/bootstrap_perlmutter.sh                # CPU node: stops after step 5
-#   srun --gres=gpu:1 --pty bash scripts/bootstrap_perlmutter.sh   # full pipeline incl. smoke
+#   bash scripts/bootstrap_perlmutter.sh                # CPU node: stops after step 4
+#   srun --gres=gpu:2 --pty bash scripts/bootstrap_perlmutter.sh   # full pipeline incl. smoke
+#
+# IMPORTANT: the smoke needs **2 GPUs** because fully_async_policy requires
+# disjoint rollout and trainer pools (1 GPU rollout + 1 GPU trainer). A 1-GPU
+# allocation will fail with "Total available GPUs 0 is less than total desired GPUs 1"
+# after Ray dedicates the only GPU to the rollouter and the trainer's placement
+# group can't be satisfied.
 
 set -euo pipefail
 
@@ -134,12 +140,22 @@ echo "  all required parquets present"
 # 4. 1-GPU smoke. Requires a GPU allocation. Skipped (with warning) otherwise.
 # ---------------------------------------------------------------------------
 step "4  single-GPU async smoke"
-if ! command -v nvidia-smi >/dev/null 2>&1 || ! nvidia-smi -L >/dev/null 2>&1; then
+GPU_COUNT=$(nvidia-smi -L 2>/dev/null | wc -l || echo 0)
+if (( GPU_COUNT == 0 )); then
     echo "  no GPU visible — skipping smoke"
-    echo "  re-run inside a GPU allocation:"
-    echo "    srun --gres=gpu:1 --time=30:00 --pty bash scripts/bootstrap_perlmutter.sh"
+    echo "  re-run inside a 2-GPU allocation:"
+    echo "    srun --gres=gpu:2 --time=30:00 --pty bash scripts/bootstrap_perlmutter.sh"
     echo
     echo "=== bootstrap (steps 0-3) PASSED ==="
+    exit 0
+fi
+if (( GPU_COUNT < 2 )); then
+    echo "  WARNING: only $GPU_COUNT GPU visible — fully_async_policy needs 2"
+    echo "           (one for rollout pool, one for trainer pool)."
+    echo "  re-run inside a 2-GPU allocation:"
+    echo "    srun --gres=gpu:2 --time=30:00 --pty bash scripts/bootstrap_perlmutter.sh"
+    echo
+    echo "=== bootstrap (steps 0-3) PASSED — smoke skipped ==="
     exit 0
 fi
 
@@ -155,9 +171,11 @@ NNODES_TRAIN=1 \
 SAVE_FREQ=-1 \
 EXPERIMENT="bootstrap_smoke" \
 LOGGERS=console \
-THINKING_BUDGET= \
-TOOL_CALL_BUDGET= \
-ANSWER_BUDGET= \
+THINKING_BUDGET="${THINKING_BUDGET:-2048}" \
+TOOL_CALL_BUDGET="${TOOL_CALL_BUDGET:-512}" \
+ANSWER_BUDGET="${ANSWER_BUDGET:-512}" \
+TRAIN_FILES="$ROOT/data/processed/probe_subset.parquet" \
+VAL_FILES="$ROOT/data/processed/corpus_dev.parquet" \
 bash "$ROOT/scripts/train_async.sh"
 
 echo
