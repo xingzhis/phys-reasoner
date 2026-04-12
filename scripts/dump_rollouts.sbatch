@@ -51,6 +51,10 @@ THINKING_BUDGET="${THINKING_BUDGET:-}"
 TOOL_CALL_BUDGET="${TOOL_CALL_BUDGET:-}"
 ANSWER_BUDGET="${ANSWER_BUDGET:-}"
 
+# Sampling params (optional — defaults match dump_rollouts.py)
+TOP_K="${TOP_K:-}"
+PRESENCE_PENALTY="${PRESENCE_PENALTY:-}"
+
 # Sharding / chunking (optional)
 START_IDX="${START_IDX:-}"
 END_IDX="${END_IDX:-}"
@@ -136,8 +140,10 @@ apptainer exec --nv \
     --seed     "$SEED" \
     --gpu_mem  "$GPU_MEM" \
     --max_tokens "$MAX_TOKENS" \
-    --temperature 1.0 \
-    --top_p    0.9 \
+    --temperature "${TEMPERATURE:-1.0}" \
+    --top_p    "${TOP_P:-0.9}" \
+    ${TOP_K:+--top_k "$TOP_K"} \
+    ${PRESENCE_PENALTY:+--presence_penalty "$PRESENCE_PENALTY"} \
     $( [ "$ENABLE_THINKING" = "1" ] && echo "--enable_thinking" ) \
     ${THINKING_BUDGET:+--thinking_budget "$THINKING_BUDGET"} \
     ${TOOL_CALL_BUDGET:+--tool_call_budget "$TOOL_CALL_BUDGET"} \

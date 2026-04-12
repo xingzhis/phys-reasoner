@@ -192,6 +192,8 @@ def run_dump(
     gpu_mem: float = 0.38,
     temperature: float = 1.0,
     top_p: float = 0.9,
+    top_k: int = -1,
+    presence_penalty: float = 0.0,
     enable_thinking: bool = True,
     max_tokens: int = 8192,
     thinking_budget: int | None = None,
@@ -318,17 +320,16 @@ def run_dump(
     # --- Shared sampling params ---
     p1_max = thinking_budget if interrupt_enabled else max_tokens
     p2_max = answer_budget if interrupt_enabled else max_tokens
+    _common = dict(temperature=temperature, top_p=top_p, top_k=top_k, presence_penalty=presence_penalty)
     p1_params = SamplingParams(
         max_tokens=p1_max,
         stop=[TOOL_CALL_STOP],
         include_stop_str_in_output=True,
-        temperature=temperature,
-        top_p=top_p,
+        **_common,
     )
     p2_params = SamplingParams(
         max_tokens=p2_max,
-        temperature=temperature,
-        top_p=top_p,
+        **_common,
     )
     p1b_params = None
     if interrupt_enabled:
@@ -336,8 +337,7 @@ def run_dump(
             max_tokens=tool_call_budget,
             stop=[TOOL_CALL_STOP],
             include_stop_str_in_output=True,
-            temperature=temperature,
-            top_p=top_p,
+            **_common,
         )
 
     # --- Chunk setup ---
@@ -432,42 +432,60 @@ def run_dump(
                 sandbox_errs.append("")
                 sandbox_errors.append(False)
 
-        # ===== Build phase 2 prompts =====
-        injection_texts: list[str] = []
+        # ===== Build phase 2 prompts (only for rollouts that produced a tool call) =====
+        # Matches VeRL's tool_agent_loop.py: if no tool_calls found after phase 1,
+        # the agent returns AgentState.TERMINATED — no tool response injection, no
+        # phase 2 generation. The model's phase 1 output is the final answer.
+        injection_texts: list[str] = [""] * total
+        phase2_indices: list[int] = []
         phase2_prompts: list[str] = []
         for i in range(total):
-            if codes[i] is not None and not sandbox_errors[i]:
+            if codes[i] is None:
+                # No tool call → terminate (match VeRL behavior)
+                continue
+            if not sandbox_errors[i]:
                 output_text = sandbox_stdouts[i] or "(no output)"
-            elif codes[i] is not None and sandbox_errors[i]:
-                output_text = f"(execution error)\n{sandbox_errs[i][:300]}"
             else:
-                output_text = "(no code block)"
+                output_text = f"(execution error)\n{sandbox_errs[i][:300]}"
             if len(output_text) > max_tool_response_len:
                 output_text = "(truncated)..." + output_text[-max_tool_response_len:]
             injection = _make_tool_injection(output_text)
-            injection_texts.append(injection)
+            injection_texts[i] = injection
             if interrupted_flags[i]:
                 p1b_text, _ = p1b_data[i]
                 p2_prompt = expanded_prompts[i] + p1_texts[i] + THINK_INTERRUPT_PHRASE + p1b_text + injection
             else:
                 p2_prompt = expanded_prompts[i] + p1_texts[i] + injection
+            phase2_indices.append(i)
             phase2_prompts.append(p2_prompt)
 
-        # ===== Phase 2 =====
-        print(f"  phase 2: {total} rollouts, max_tokens={p2_max}")
-        p2_outputs = llm.generate(phase2_prompts, p2_params)
+        # ===== Phase 2 (only for rollouts with tool calls) =====
+        p2_results: dict[int, tuple[str, str]] = {}
+        if phase2_prompts:
+            print(f"  phase 2: {len(phase2_prompts)}/{total} rollouts (skipped {total - len(phase2_prompts)} with no tool call), max_tokens={p2_max}")
+            p2_outputs = llm.generate(phase2_prompts, p2_params)
+            for j, idx in enumerate(phase2_indices):
+                p2_out = p2_outputs[j].outputs[0]
+                p2_results[idx] = (p2_out.text, p2_out.finish_reason or "unknown")
+        else:
+            print(f"  phase 2: 0/{total} rollouts needed phase 2 (all terminated without tool call)")
 
         # ===== Build chunk records =====
         chunk_records: list[dict] = []
         for i in range(total):
             prob_idx, roll_idx = expanded_map[i]
-            p2 = p2_outputs[i].outputs[0]
-            p2_text = p2.text
-            p2_stop = p2.finish_reason or "unknown"
-            boxed = _extract_boxed(p2_text) or _extract_boxed(p1_texts[i])
+            if i in p2_results:
+                p2_text, p2_stop = p2_results[i]
+            else:
+                p2_text = None
+                p2_stop = "terminated_no_tool_call"
+            boxed_candidates = _extract_boxed(p1_texts[i])
             if interrupted_flags[i]:
                 p1b_text, _ = p1b_data[i]
-                boxed = boxed or _extract_boxed(p1b_text)
+                boxed_candidates = boxed_candidates or _extract_boxed(p1b_text)
+            if p2_text:
+                boxed_candidates = _extract_boxed(p2_text) or boxed_candidates
+            boxed = boxed_candidates[-1] if boxed_candidates else None
             p1b_text_for_output = p1b_data[i][0] if interrupted_flags[i] else ""
             p1b_stop_for_output = p1b_data[i][1] if interrupted_flags[i] else ""
 
@@ -488,7 +506,7 @@ def run_dump(
                     sandbox_err=sandbox_errs[i],
                     sandbox_error=sandbox_errors[i],
                     injection_text=injection_texts[i],
-                    p2_text=p2_text,
+                    p2_text=p2_text or "",
                     p2_stop=p2_stop,
                     boxed=boxed,
                     interrupt_phrase=THINK_INTERRUPT_PHRASE,
@@ -569,6 +587,8 @@ def main() -> None:
     p.add_argument("--gpu_mem", type=float, default=0.38)
     p.add_argument("--temperature", type=float, default=1.0)
     p.add_argument("--top_p", type=float, default=0.9)
+    p.add_argument("--top_k", type=int, default=-1)
+    p.add_argument("--presence_penalty", type=float, default=0.0)
     p.add_argument("--enable_thinking", action="store_true", default=False)
     # Budget args — simple mode
     p.add_argument("--max_tokens", type=int, default=8192,
@@ -605,6 +625,8 @@ def main() -> None:
         gpu_mem=args.gpu_mem,
         temperature=args.temperature,
         top_p=args.top_p,
+        top_k=args.top_k,
+        presence_penalty=args.presence_penalty,
         enable_thinking=args.enable_thinking,
         max_tokens=args.max_tokens,
         thinking_budget=args.thinking_budget,
