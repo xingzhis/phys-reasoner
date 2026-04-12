@@ -21,15 +21,23 @@ _MATHRM_RE = re.compile(r"\\(?:mathrm|mathbf)\{~?([^}]*)\}")
 
 
 def extract_answer(text: str) -> list[str]:
-    """Extract answer(s) from model output.
+    """Extract the final answer from model output.
 
-    1. Find all \\boxed{...} using brace-depth stack
-    2. Fallback: keyword search ("answer is", "answer:")
+    Uses the **last** \\boxed{} expression, matching standard math evaluation
+    practice (MATH, GSM8K, Qwen). This handles the common case where a model
+    writes a preliminary \\boxed{} in a <think> block then a final \\boxed{}
+    in its answer — only the final one counts. Multi-part answers should be
+    comma-separated inside a single \\boxed{a, b} (split_by_comma handles
+    them downstream).
+
+    Fallback chain:
+    1. Last \\boxed{...} via brace-depth stack
+    2. Keyword search ("answer is", "answer:")
     3. Last resort: return [text.strip()]
     """
     boxed = _extract_boxed(text)
     if boxed:
-        return boxed
+        return [boxed[-1]]
 
     lower = text.lower()
     for kw in ("the answer is", "answer is", "answer:"):
