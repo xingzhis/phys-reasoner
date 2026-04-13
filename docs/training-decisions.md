@@ -165,3 +165,77 @@ VeRL calls `compute_score()` per-sample. xVerify-7B needs ~14GB GPU RAM and ~0.5
 | Qwen3.5-4B | No-Think, Dr. SCI sample (pass@8) | 24.3% | `zero_shot_drsci_sample_xv7b.parquet` (prose-gold filtered) |
 
 Non-truncated accuracy (think-ON): **49.0%** — the ceiling for fixed compute budget.
+
+---
+
+## Sampling Parameters for Thinking-Mode Rollouts (2026-04-13, final)
+
+### The `!!!` Degeneration Problem — Root Cause: CUDA Graph Instability
+
+Qwen3.5-4B with `enable_thinking=True` degenerates into repetitive single-token loops (`!!!...`) in ~96% of rollouts when using vLLM without `enforce_eager=True`. The degeneration appears **exclusively in phase 2** (after tool response injection), never in phase 1 thinking/tool-call generation. It is stochastic (mixed within every problem, not problem-dependent).
+
+**Root cause: CUDA graph capture is numerically unstable with Qwen3.5's hybrid GDN (Gated Delta Network) linear attention layers.** With `enforce_eager=False` (vLLM's default), vLLM captures the forward pass into static CUDA graphs. These graphs produce subtly wrong logits on long-context phase 2 prompts, causing the model to enter absorbing repetition states. VeRL's `RolloutConfig` defaults to `enforce_eager=True`, which is why VeRL rollouts never exhibited this.
+
+Diagnostic history (each row used `enforce_eager=False` unless noted):
+
+| Run | `enforce_eager` | `top_p` | `temp` | `pp` | `!!!` degen |
+|-----|-----------------|---------|--------|------|-------------|
+| probe_calib_A/B | False | 0.9 | 1.0 | 0 | **96–97%** |
+| probe_v2_A_fixed | False | 1.0 | 1.0 | 0 | **97%** |
+| probe_fix_pp15 | False | 0.95 | 1.0 | 1.5 | 0% |
+| probe_fix_t14 | False | 1.0 | 1.4 | 0 | 0% |
+| **eager_test** | **True** | **1.0** | **1.0** | **0** | **0%** |
+
+The `presence_penalty=1.5` and `top_p=0.95` "fixes" were masking the CUDA graph instability by constraining the distribution enough to avoid the degenerate states — not addressing the root cause.
+
+### Decision: `enforce_eager=True`, standard RL sampling (`top_p=1.0`)
+
+**Chosen config** (matching VeRL framework + RL theory):
+```
+enforce_eager=True
+temperature=1.0, top_p=1.0, top_k=-1, presence_penalty=0.0, repetition_penalty=1.0
+```
+
+- `enforce_eager=True`: eliminates CUDA graph instability (matches VeRL `RolloutConfig` default)
+- `top_p=1.0`: raw policy sampling for on-policy GRPO (no uncorrected IS mismatch)
+- No `presence_penalty`: avoids context-dependent distribution modification during training
+- Qwen model card params (`top_p=0.95, top_k=20, pp=1.5`) reserved for inference/eval only
+
+### Bug Fixes in `dump_rollouts.py` vs VeRL (2026-04-13)
+
+Four code-level discrepancies were found and fixed:
+
+1. **Missing `enforce_eager=True`** (PRIMARY FIX) — `dump_rollouts.py` used vLLM's default `enforce_eager=False`, enabling CUDA graphs that are unstable with Qwen3.5's GDN attention. VeRL defaults to `enforce_eager=True`. Fixed: `LLM(enforce_eager=True)`.
+
+2. **Missing `<|im_end|>` after `</tool_call>`** — `dump_rollouts.py` stops phase 1 generation at the `</tool_call>` stop string, so the model never emits the `<|im_end|>` token that closes the assistant turn. In VeRL there is no stop string; the model generates past `</tool_call>` and naturally emits `<|im_end|>`. Fixed: `_make_tool_injection` now prepends `<|im_end|>`.
+
+3. **`enable_thinking=False` in tool injection** — `dump_rollouts.py` used `enable_thinking=False` when building the tool response injection, producing a pre-closed empty `<think>\n\n</think>\n\n` block. VeRL passes `enable_thinking=True` (from `apply_chat_template_kwargs`), producing an open `<think>\n` block that lets the model optionally reason before answering. Fixed: injection now uses the same `enable_thinking` flag as phase 1.
+
+4. **`top_p` default** — Changed to 1.0 to match RL theory (raw policy sampling). VeRL framework default is also 1.0; the 0.9 in training scripts was a pre-fix artifact.
+
+### TODO: Update VeRL training scripts before final run
+
+The following VeRL training scripts still use `top_p=0.9` (a pre-fix artifact). Change to `top_p=1.0` for theoretical correctness (raw policy sampling in on-policy GRPO). **Do not edit yet** — preserve reproducibility of existing smoke test results. Apply before the final Stage 1 training run.
+
+| Script | Line | Current | Target |
+|--------|------|---------|--------|
+| `scripts/smoke_tir_qwen35.sh` | ~207 | `top_p=0.9` | `top_p=1.0` |
+| `scripts/smoke_tir.sh` | ~161 | `top_p=0.9` | `top_p=1.0` |
+| `scripts/train_async.sh` | ~199 | `top_p=0.9` | `top_p=1.0` |
+
+`enforce_eager=True` is already the VeRL `RolloutConfig` default — no change needed there.
+
+**Open question:** The CUDA graph instability was confirmed on B200 (SM_100, Blackwell). VeRL defaults to `enforce_eager=True` regardless of GPU, suggesting this is a known cross-architecture issue with vLLM + hybrid attention models. Worth testing on H200/A100 if performance matters — CUDA graphs are 2-3x faster, so if they're stable on Ampere/Hopper the training scripts could conditionally enable them.
+
+### Bug Fixes in Probe Pipeline (2026-04-12)
+
+1. **`extract_answer()` now uses last `\boxed{}`** — standard practice (MATH, GSM8K eval). Fixes 0.35% of rollouts incorrectly scored 0.0 when model writes `\boxed{}` in both think block and final answer. Changed in `src/phys_reasoner/verifier/extract.py`.
+
+2. **`dump_rollouts.py` early termination** — when model produces no tool call after phase 1, terminate immediately (no forced phase 2). Matches VeRL's `tool_agent_loop.py` line 361: `return AgentState.TERMINATED`. Previously the probe injected a fake `"(no code block)"` tool response and forced phase 2, causing confusion.
+
+3. **`dump_rollouts.sbatch` env vars** — added missing `PYTHONPATH=/opt/phys-extras/`, `TRITON_CACHE_DIR`, `XDG_CACHE_HOME` (matching `dump_rollouts.sh`). Without these, Qwen3.5 model type and triton caching fail on compute nodes.
+
+### Cluster Notes (2026-04-12)
+
+- **`gpu_rtx6000` (rtx_pro_6000_blackwell) incompatible with this SIF** — flash-attn PTX compiled for older SM arch, Blackwell SM_120 not supported. `cudaErrorUnsupportedPtxVersion`. Avoid this partition.
+- **CPU-only scoring jobs**: use `day_amd` partition (easier to get than `day`). `devel` has QOS limits if interactive session running. `gpu_b200` requires `--gres=gpu:1` minimum (QOSMinGRES).

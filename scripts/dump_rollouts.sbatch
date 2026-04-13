@@ -141,7 +141,7 @@ apptainer exec --nv \
     --gpu_mem  "$GPU_MEM" \
     --max_tokens "$MAX_TOKENS" \
     --temperature "${TEMPERATURE:-1.0}" \
-    --top_p    "${TOP_P:-0.9}" \
+    --top_p    "${TOP_P:-1.0}" \
     ${TOP_K:+--top_k "$TOP_K"} \
     ${PRESENCE_PENALTY:+--presence_penalty "$PRESENCE_PENALTY"} \
     $( [ "$ENABLE_THINKING" = "1" ] && echo "--enable_thinking" ) \

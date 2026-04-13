@@ -191,7 +191,7 @@ def run_dump(
     seed: int = 42,
     gpu_mem: float = 0.38,
     temperature: float = 1.0,
-    top_p: float = 0.9,
+    top_p: float = 1.0,
     top_k: int = -1,
     presence_penalty: float = 0.0,
     enable_thinking: bool = True,
@@ -297,15 +297,22 @@ def run_dump(
         dtype="bfloat16",
         gpu_memory_utilization=gpu_mem,
         max_model_len=max_model_len,
+        enforce_eager=True,  # Match VeRL; CUDA graphs can destabilize Qwen3.5 GDN attention
     )
 
     # --- Tool injection helper (matches VeRL's Qwen3.5 dummy-user workaround) ---
+    # VeRL's verl/utils/chat_template.py uses the same dummy-user trick and passes
+    # enable_thinking from apply_chat_template_kwargs (=True in our config).
+    # We must also prepend <|im_end|> to close the assistant turn that was cut short
+    # by the </tool_call> stop string — in VeRL the model generates past </tool_call>
+    # and naturally emits <|im_end|>, but here we stopped generation early.
+    _im_end = tokenizer.eos_token  # <|im_end|> for Qwen3.5
     _dummy_user = [{"role": "user", "content": [{"type": "text", "text": ""}]}]
     _dummy_prefix = tokenizer.apply_chat_template(
         _dummy_user,
         add_generation_prompt=False,
         tokenize=False,
-        enable_thinking=False,
+        enable_thinking=enable_thinking,
     )
 
     def _make_tool_injection(output_text: str) -> str:
@@ -313,9 +320,9 @@ def run_dump(
             _dummy_user + [{"role": "tool", "content": output_text}],
             add_generation_prompt=True,
             tokenize=False,
-            enable_thinking=False,
+            enable_thinking=enable_thinking,
         )
-        return full[len(_dummy_prefix):]
+        return _im_end + full[len(_dummy_prefix):]
 
     # --- Shared sampling params ---
     p1_max = thinking_budget if interrupt_enabled else max_tokens
@@ -586,7 +593,7 @@ def main() -> None:
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--gpu_mem", type=float, default=0.38)
     p.add_argument("--temperature", type=float, default=1.0)
-    p.add_argument("--top_p", type=float, default=0.9)
+    p.add_argument("--top_p", type=float, default=1.0)
     p.add_argument("--top_k", type=int, default=-1)
     p.add_argument("--presence_penalty", type=float, default=0.0)
     p.add_argument("--enable_thinking", action="store_true", default=False)
