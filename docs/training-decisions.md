@@ -227,6 +227,42 @@ The following VeRL training scripts still use `top_p=0.9` (a pre-fix artifact). 
 
 **Open question:** The CUDA graph instability was confirmed on B200 (SM_100, Blackwell). VeRL defaults to `enforce_eager=True` regardless of GPU, suggesting this is a known cross-architecture issue with vLLM + hybrid attention models. Worth testing on H200/A100 if performance matters — CUDA graphs are 2-3x faster, so if they're stable on Ampere/Hopper the training scripts could conditionally enable them.
 
+### vLLM Qwen3.5 Bug: B200-Specific TRTLLM Prefill Corruption (2026-04-13, final diagnosis)
+
+**Bug:** On B200 GPUs (Blackwell SM_100), vLLM with Qwen3.5-4B produces catastrophic output corruption (`!!!` repetition loops in phase 1 thinking). The corruption exhibits two apparent patterns that are actually the same underlying bug:
+1. **Single large batch (≥400 prompts)**: ~45% of phase-2 rollouts degenerate immediately
+2. **Many sequential small batches (40 each) through same engine**: clean for ~10 chunks, then abrupt 100% degeneration that persists (KV-cache state poisoning pattern)
+
+**Root cause (confirmed):** **TRTLLM prefill attention backend on Blackwell.** vLLM's flashinfer auto-detects TRTLLM for SM_100 and the kernel has known correctness issues with long contexts. Matches [flashinfer#1968](https://github.com/flashinfer-ai/flashinfer/issues/1968), [vllm#35138](https://github.com/vllm-project/vllm/issues/35138), and analogous issues.
+
+**Controlled experiment (B200 vs H200 vs A100/H100, all identical code + params):**
+
+| GPU | Run | Chunks | Degen |
+|-----|-----|--------|-------|
+| B200 | drift_test_b200 (no fix) | 4 | Chunks 0-5 clean, chunk 10+ drifts to 100% |
+| **B200** | **drift_b200_notrtllm (`VLLM_USE_TRTLLM_ATTENTION=0`)** | **4** | **0/160 (0%)** ✓ |
+| H200 | drift_test_h200 | 4 | **0/320 (0%)** ✓ |
+| **H200** | **probe_v5_A (full scale)** | **25** | **0/10000 (0%)** ✓ |
+| RTX 5000 Ada (gpu partition) | drift_test_gpu | 4 | **0/320 (0%)** ✓ |
+
+**The fix:** Set env var `VLLM_USE_TRTLLM_ATTENTION=0` when running on B200, OR run on H200/A100/Ada GPUs which don't use the TRTLLM prefill path.
+
+**Prior hypotheses that were WRONG:**
+- ~~`top_p=0.9` too aggressive~~ — same rate at 1.0
+- ~~Missing `presence_penalty=1.5`~~ — only masked the bug by reducing "!" probability
+- ~~CUDA graph instability (`enforce_eager=False`)~~ — `enforce_eager=True` didn't fix it
+- ~~Batch-size threshold at 400~~ — actually the drift happens at any batch size after enough chunks
+- ~~FP nondeterminism across batch sizes~~ — would affect all GPUs equally
+- ~~Cascade attention corruption (`disable_cascade_attn`)~~ — did not help
+
+**Implications for VeRL training:**
+- On A100 (SM_80): completely unaffected — A100 uses FlashAttention 2, not TRTLLM. The planned 3×4×A100 async setup is safe.
+- On H200/H100 (SM_90): unaffected — TRTLLM not auto-detected at this SM level.
+- On B200 (SM_100): set `VLLM_USE_TRTLLM_ATTENTION=0` as a rollout env var in Hydra config or apptainer exec, OR avoid B200 entirely.
+- The `max_num_seqs` cap we considered earlier is **not needed** — there was no real batch-size threshold, just the TRTLLM backend.
+
+**Probe pipeline (2026-04-14):** Use `gpu_h200` partition (or `gpu` partition with RTX 5000 Ada) with default `CHUNK_SIZE=50`. Do not use `gpu_b200` unless `VLLM_USE_TRTLLM_ATTENTION=0` is set.
+
 ### Bug Fixes in Probe Pipeline (2026-04-12)
 
 1. **`extract_answer()` now uses last `\boxed{}`** — standard practice (MATH, GSM8K eval). Fixes 0.35% of rollouts incorrectly scored 0.0 when model writes `\boxed{}` in both think block and final answer. Changed in `src/phys_reasoner/verifier/extract.py`.

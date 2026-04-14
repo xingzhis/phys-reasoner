@@ -130,6 +130,7 @@ apptainer exec --nv \
   --env "TRITON_CACHE_DIR=/tmp/.cache/triton" \
   --env "FLASHINFER_WORKSPACE_BASE=/tmp" \
   --env "MPLCONFIGDIR=/tmp/.cache/matplotlib" \
+  ${VLLM_USE_TRTLLM_ATTENTION:+--env "VLLM_USE_TRTLLM_ATTENTION=$VLLM_USE_TRTLLM_ATTENTION"} \
   "$SIF" \
   python3 "$ROOT/scripts/dump_rollouts.py" \
     --model    "$MODEL" \

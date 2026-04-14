@@ -92,10 +92,34 @@ WANDB_PROJECT="${WANDB_PROJECT:-physcode_tir}"
 # LOGGERS=console,wandb and export WANDB_API_KEY for real runs.
 LOGGERS="${LOGGERS:-console}"
 
+# Rollout inspection (for spot-checking generation quality, especially the
+# Qwen3.5-4B batch-size degeneration bug — see docs/training-decisions.md):
+#   LOG_VAL_GENERATIONS=N — N samples logged to wandb as a Table per validation step
+#                          (tied to trainer.test_freq, so already infrequent; default 8)
+#   DUMP_VAL_ROLLOUTS=1   — dump FULL validation batch to JSONL per test_freq step
+#                          (low overhead, only runs at validation)
+#   DUMP_TRAIN_ROLLOUTS=1 — dump FULL training batch to JSONL EVERY training step
+#                          (~50-100 MB/step for TRAIN_BATCH=256 × n=8; expensive,
+#                          only enable for debugging sessions)
+DUMP_VAL_ROLLOUTS="${DUMP_VAL_ROLLOUTS:-1}"
+DUMP_TRAIN_ROLLOUTS="${DUMP_TRAIN_ROLLOUTS:-}"
+
 # ---------------------------------------------------------------------------
 # Derived settings
 # ---------------------------------------------------------------------------
 ROLLOUT_MAX_NUM_SEQS=$((TRAIN_BATCH * ROLLOUT_N))
+
+# Qwen3.5-4B + vLLM corrupts outputs on B200 (Blackwell SM_100) due to the
+# auto-detected TRTLLM prefill attention kernel. See docs/training-decisions.md.
+# Fix: set VLLM_USE_TRTLLM_ATTENTION=0 or avoid B200. A100/H100/H200 are unaffected.
+if [[ "${SLURM_JOB_PARTITION:-}" == gpu_b200* ]] || [[ "${SBATCH_PARTITION:-}" == gpu_b200* ]]; then
+    if [ -z "${VLLM_USE_TRTLLM_ATTENTION:-}" ]; then
+        echo "WARNING: running on gpu_b200 without VLLM_USE_TRTLLM_ATTENTION=0." >&2
+        echo "  Qwen3.5-4B rollouts will degenerate into !!! repetition on B200." >&2
+        echo "  Set VLLM_USE_TRTLLM_ATTENTION=0 or use gpu_h200/gpu partition." >&2
+        echo "  See docs/training-decisions.md." >&2
+    fi
+fi
 PPO_MINI_BATCH=$TRAIN_BATCH
 # Per-GPU micro batch on the trainer side. Default to 1 on the async path
 # because the trainer GPU is typically the memory-constrained one in smoke runs.
@@ -155,6 +179,7 @@ PYTHONNOUSERSITE=1 apptainer exec --nv \
   --env "PHYS_REQUIRE_XVERIFY=${PHYS_REQUIRE_XVERIFY:-0}" \
   --env "RAY_ADDRESS=${RAY_ADDRESS:-}" \
   --env "VERIFIER_DUMP_PATH=${VERIFIER_DUMP_PATH:-}" \
+  ${VLLM_USE_TRTLLM_ATTENTION:+--env "VLLM_USE_TRTLLM_ATTENTION=$VLLM_USE_TRTLLM_ATTENTION"} \
   "$SIF" \
   python3 -m verl.experimental.fully_async_policy.fully_async_main \
     algorithm.adv_estimator=grpo \
@@ -240,6 +265,9 @@ PYTHONNOUSERSITE=1 apptainer exec --nv \
     trainer.experiment_name="$EXPERIMENT" \
     trainer.default_local_dir="$TRAIN_DIR" \
     trainer.default_hdfs_dir=null \
+    trainer.log_val_generations=${LOG_VAL_GENERATIONS:-8} \
+    ${DUMP_TRAIN_ROLLOUTS:++trainer.rollout_data_dir=$TRAIN_DIR/rollout_dumps} \
+    ${DUMP_VAL_ROLLOUTS:++trainer.validation_data_dir=$TRAIN_DIR/validation_dumps} \
     "trainer.logger=[$(echo "$LOGGERS" | sed 's/,/","/g; s/^/"/; s/$/"/')]" \
     2>&1 | tee "$TRAIN_DIR/train.log"
 

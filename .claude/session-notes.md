@@ -1,587 +1,180 @@
 # Session Notes — for next session context
 
-Last updated: 2026-04-11 (session 7)
+Last updated: 2026-04-14 (session 8 handoff)
 
 ---
 
-## Handoff: probe rollout launch (Step 3 of data-pipeline.md)
+## Status: Probe complete, ready for Strategy B weights
 
-**Read this first:** `.claude/plans/probe-rollout.md` — calibration numbers, hardware
-extrapolation, launch commands, and cross-cluster guidance. Written 2026-04-11 so a
-fresh session on the school HPC (or collaborator cluster) can pick up the probe run
-without re-deriving budgets or runtime estimates.
+**Completed this session:**
+- Debugged and fixed the Qwen3.5 `!!!` degeneration bug (root cause: B200 TRTLLM prefill corruption — not sampling params, not batch size, not CUDA graphs)
+- Generated full probe on H200: `outputs/probe_v5_A` + `outputs/probe_v5_B` (2×10000 = 20000 rollouts, 0.1% degenerate)
+- Scored via xVerify-7B: `outputs/probe_v5_scored/rollouts_scored.parquet` + `score_summary.txt`
+- **Result: 22.18% overall hit rate, 49.68% pass@1 → SFT SKIPPED** per CLAUDE.md threshold
 
-**Where to pick up:** launching `scripts/dump_rollouts.py` on `probe_subset.parquet`
-(2500 rows × 8 rollouts) with the 2-GPU template in probe-rollout.md, then writing
-`analyze_rollouts.py` to decide whether `max_tool_calls=1` is enough or needs to become 2.
-
-**Script state (2026-04-11):** dump_rollouts.py now supports `--start_idx/--end_idx`
-(sharding across GPUs) and `--chunk_size` (per-chunk parquet flush + automatic
-crash resume). All 30 tests pass. See probe-rollout.md for the full launch template.
-
-### State of `scripts/dump_rollouts.py` (as of 2026-04-10)
-
-Faithfully mirrors VeRL's `ToolAgentLoop` for Qwen3.5 qwen3_coder format:
-- Phase 1 (`enable_thinking=True`) → stop at `</tool_call>` → think-interrupt if thinking budget exceeded → phase 1b (`max_tokens=tool_call_budget`) → sandbox exec → phase 2 tool injection (`enable_thinking=False`) → final answer.
-- Emits `rollouts.parquet` always; per-rollout txt files only with `--dump_txt` / `DUMP_TXT=1` env var (off by default, slow).
-- `n <= 0` or `n >= len(df)` → uses all rows in parquet order (eval mode); otherwise `df.sample(n, seed)`.
-- Wired via `scripts/dump_rollouts.sh`. Cache env vars (`TRITON_CACHE_DIR`, `FLASHINFER_WORKSPACE_BASE`, `XDG_CACHE_HOME`, `MPLCONFIGDIR`) are already set to `/tmp` — needed under `--no-home`.
-- Parquet columns: `problem_idx, rollout_idx, gold_answer, answer_type, phase1_text, interrupted, phase1b_text, code, sandbox_stdout, sandbox_error, phase2_text, extra_info`. Scoring is a separate step — the parquet does NOT contain a parsed `\boxed{}` or a correctness label.
-
-**Tests:** `tests/test_dump_rollouts.py` (30 tests, all pass in container). Includes `TestPromptFidelityVsVeRL` which asserts our phase 1 prompt and tool injection are byte-identical to `verl.utils.chat_template.apply_chat_template`. Any drift from VeRL will fail this test loudly.
-
-### Training budgets (Qwen3.5-4B, matches `train_smoke_interrupt.sbatch`)
-
-```
-THINKING_BUDGET=12288
-TOOL_CALL_BUDGET=2048
-ANSWER_BUDGET=4096
-MAX_PROMPT_LEN=1024           # dump_rollouts default
-MAX_TOOL_RESPONSE_LEN=512     # dump_rollouts default
-```
-
-Budget identity: `response_length = thinking + interrupt_len + tool_call + max_tool_response + answer`, and `max_model_len = max_prompt_len + response_length`. dump_rollouts derives `interrupt_len` at runtime from `tokenizer.encode(THINK_INTERRUPT_PHRASE)` — no hardcoded constant.
-
-### Think-interrupt phrase (updated 2026-04-10)
-
-```python
-THINK_INTERRUPT_PHRASE = "\nOkay, I've thought enough. Time to write my response.\n</think>\n"
-```
-
-Lives in TWO places that MUST stay in sync:
-- `src/phys_reasoner/tir/prompts.py::THINK_INTERRUPT_PHRASE`
-- `verl/verl/experimental/agent_loop/tool_agent_loop.py::THINK_INTERRUPT_PHRASE`
-
-Design notes kept in the VeRL file's comment: don't say "final answer" or "stop" (biases away from tool use), don't say "continue" (observed failure mode — model keeps thinking in the non-existent content slot). "Time to write my response" is deliberately neutral over the two valid next actions: `<tool_call>` or a direct `\boxed{}`.
-
-### Observed phrase behavior on probe_subset (n=3, seed=42)
-
-- With full training budgets (12288/2048/4096): rollout 1 still exceeds `THINKING_BUDGET` on the oscillator problem (genuinely hard thinking, not a phrase issue). After interrupt, phase 2 reaches `\boxed{E \sqrt{...}}` but without using the tool. So the phrase is doing its job: the model does transition from thinking to response.
-- Rollout 2 (proton velocity) produced a tool call but **phase 2 didn't emit `\boxed{}`** — this is the "tool call errored, model tried to refine with a second call but max_tool_calls=1 forbids it" case (see next section).
-
-### Open design question: `max_tool_calls=1` vs `2`
-
-User currently commits to `max_tool_calls=1` and believes the "refine after sandbox error" failure mode is rare. This was based on a small dataset. We agreed on the following plan instead of deciding now:
-
-1. **Keep `max_tool_calls=1`.** Don't touch prompts or the rollout loop.
-2. **Run the Step 2 probe rollout experiment on the Goldilocks subset** with the training budgets above. The `rollouts.parquet` it produces IS the diagnostic dataset — no separate run needed.
-3. **Write `scripts/analyze_rollouts.py`** (~30 lines) that takes `rollouts.parquet` + scoring and buckets rollouts by `(sandbox_error, has_boxed, is_correct)`. Report three percentages:
-   - **Mode A:** code errored AND no boxed answer — a second call could rescue.
-   - **Mode B:** code errored AND boxed answer is wrong — a second call could rescue.
-   - **Mode C (ignore):** code errored but boxed answer is right — second call wouldn't change reward.
-4. **Decision gate:** if Mode A + Mode B combined is <5% of total → keep `max_tool_calls=1`. If >15% → bump to 2 as a separate branch (small change: system prompt in `prompts.py::make_system_prompt(2)` + loop modification in `dump_rollouts.py` to handle the second round). In between: late-stage ablation.
-
-Scoring for `analyze_rollouts.py` needs to come from `src/phys_reasoner/verifier/` (rule + xVerify fallback). Do NOT reinvent parsing — the verifier stack is the source of truth.
-
-### Gotchas for next session
-
-- **Cache dirs under `--no-home`:** `dump_rollouts.sh` already sets all of `TRITON_CACHE_DIR`, `FLASHINFER_WORKSPACE_BASE`, `XDG_CACHE_HOME`, `MPLCONFIGDIR` to `/tmp/...`. If you copy this into a new script, you need all four.
-- **Qwen3.5-4B on H200 / A100**: `GPU_MEM=0.7` is comfortable. vLLM `max_model_len` is derived from budgets — don't pass it explicitly.
-- **Container invocation:** `source env.sh && PYTHONNOUSERSITE=1 apptainer exec --overlay "$OVERLAY:ro" --no-home --bind /etc/pki:/etc/pki --env "PYTHONNOUSERSITE=1" --env "PYTHONPATH=/opt/phys-extras/" --env "HF_HOME=$HF_HOME" --env "HF_DATASETS_OFFLINE=1" "$SIF" python3 -m pytest tests/test_dump_rollouts.py` — always run tests in-container.
-- **Fidelity test uses Qwen3.5-0.8B** (cached). If it disappears from HF cache the test skips automatically; not a blocker.
-
-### Recent outputs (reference only, don't reuse)
-
-- `outputs/rollouts_20260410.223922/` — 3 probe rollouts with full training budgets, new phrase. Rollout 1 = thinking overflow + recovered in phase 2; rollout 2 = tool errored + no boxed.
-- Previous runs (210559, 214034, 205943) are earlier diagnostics — safe to ignore.
+**Next work (start here):**
+- Step 4 of `.claude/plans/data-pipeline.md`: compute Strategy B weights from `probe_v5_scored`
+- Per-stratum Goldilocks rates → per-problem `_train_weight` column on train parquets
 
 ---
 
-## Where things stand
+## Key discovery: Qwen3.5 + vLLM B200 bug (read `docs/training-decisions.md`)
 
-### Data (DONE)
-- **6.8k corpus**: `data/processed/candidates_deduped.parquet` — 6,866 rows, columns: `problem`, `answer`, `answer_type`, `source`, `difficulty`, `unit`
-- **Dr. SCI**: `data/processed/drsci_physics_clean.parquet` — 107,158 rows (after all cleaning + prose-gold drop), columns include `inferred_answer_type`
-- Both have been through full cleaning pipelines. Dr. SCI cleaning has 6 drop steps; prose-gold drop (step 6) is new as of 2026-03-30.
+Only B200 (Blackwell SM_100) is affected. vLLM auto-selects the TRTLLM prefill attention kernel which has known correctness issues with long-context GDN models.
 
-  ### Training-ready parquets (last rebuilt 2026-04-03)
-- **`data/processed/drsci_train.parquet`** — 105,730 rows (Dr. SCI clean − 1,428 figure-ref rows)
-- **`data/processed/corpus_train.parquet`** — 6,840 rows
-- Generated by `scripts/build_training_parquets.py` — the single reproducible step from cleaned → VeRL-ready
-- Both have 4 columns: `data_source`, `prompt`, `reward_model` (struct), `extra_info` (struct)
-- `prompt` column: system=`TIR_SYSTEM_PROMPT`, user=raw question + MCQ/TF hint if applicable
-- **Re-run `build_training_parquets.py` whenever** `TIR_SYSTEM_PROMPT` or MCQ/TF hints change in `prompts.py`
-- ⚠️ Known gap: `grpo_train.sh` does not pass `tools=[PYTHON_TOOL_SCHEMA]` via `apply_chat_template_kwargs` → tool XML schema not injected during training. Fix after smoke test.
+| GPU | Status | Fix needed? |
+|-----|--------|-------------|
+| B200 | **BROKEN** — drifts to 100% degeneration after ~10 chunks | `VLLM_USE_TRTLLM_ATTENTION=0` or avoid |
+| H200 | Clean at full scale (10k rollouts, batch=400) | None |
+| A100 / H100 | Clean | None |
+| RTX 5000 Ada | Clean | None |
 
-### Smoke parquet maintenance
-Current smoke parquet: `outputs/smoke_tir_qwen35_20260403.180800/smoke.parquet` (3 rows: 2 corpus + 1 MCQ)
-Referenced by: `train_smoke.sbatch` (`BASE_PARQUET`)
+**For the planned 3×4×A100 async training setup: completely unaffected.** A100 uses FA2, not TRTLLM.
 
-**Whenever you rebuild the training parquets, also rebuild the smoke parquet:**
+---
+
+## How to rerun the full probe pipeline
+
+### 1. Generate probe rollouts (2500 problems × 8 rollouts = 20000 on H200)
+
 ```bash
-bash scripts/make_smoke_parquet.sh
-# then update BASE_PARQUET in scripts/train_smoke.sbatch to the printed path
-```
-Options: `N_CORPUS=2 N_MCQ=1 SEED=42` (defaults). The MCQ row is included deliberately to verify hint injection in rollout dumps.
+# Shard A: problems [0, 1250)
+sbatch --partition=gpu_h200 --gres=gpu:h200:1 --time=24:00:00 --job-name=probe_X_A \
+  --export=ALL,N=-1,N_ROLLOUTS=8,\
+PARQUET=data/processed/probe_subset.parquet,\
+THINKING_BUDGET=12288,TOOL_CALL_BUDGET=2048,ANSWER_BUDGET=4096,\
+ENABLE_THINKING=1,TEMPERATURE=1.0,TOP_P=1.0,GPU_MEM=0.85,\
+START_IDX=0,END_IDX=1250,CHUNK_SIZE=50,\
+OUT_DIR=outputs/probe_X_A \
+  scripts/dump_rollouts.sbatch
 
-### Verifier (DONE)
-- Full rule + xVerify-7B pipeline working
-- `_sympy_numerical_equiv` numerical substitution tier implemented and tested
-- Authoritative baseline: `data/results/rescore_7b_v3.parquet` (6,866 rows, think-ON, 39.7% accuracy with xVerify-7B)
-
-### Pass@k baselines (DONE)
-- Corpus sample (311 rows): `data/results/zero_shot_corpus_passk_xv7b.parquet` — 30.3% pass@8
-- Dr. SCI sample (580 rows, prose-gold filtered): `data/results/zero_shot_drsci_sample_xv7b.parquet` — 24.3% pass@8
-- Goldilocks [15%–85%]: ~17–18% of problems in both corpora
-- Key doc: `docs/verifier-zero-shot-experiments.md` (has all tables, methodology, truncation discussion)
-
-### Project direction (CHANGED 2026-03-31)
-- **Old direction** (adaptive-compute-routing): 4-action routing policy — ABANDONED
-- **New direction** (PhysCode): single-block TIR + RLVR, execution-based reward
-- See `docs/physcode_proposal_v5.md` and `.claude/plans/physcode.md`
-
-### TIR format: SWITCHING TO NATIVE TOOL-CALLING (decision 2026-04-01)
-- **Old plan**: custom `[code]...[/code]` stop-string injection
-- **Decision**: switch to Qwen3.5's native tool-call format before the full Stage 0 probe
-- See "IMMEDIATE NEXT STEPS" below for full rationale and implementation plan
-
-### Model name
-- Using **Qwen3.5-4B** (not Qwen3-4B). References to "Qwen3-4B" in `docs/grpo_training.md` are intentional — that doc describes POLARIS results which use the older Qwen3-4B.
-
----
-
-## IMMEDIATE NEXT STEPS (start here next session)
-
-### 🔴 TOP PRIORITY: Think-interrupt patch for VeRL
-
-Full spec is in `.claude/plans/physcode.md` → "Week 2 → Think-interrupt patch". Read it before starting.
-
-**What it is:** ScaleRL-style forced truncation. If the model is still inside `<think>` at
-12,288 tokens, inject "Okay, time is up..." + `</think>` (mask=0) and continue to tool call.
-Trains the model to work within token budgets.
-
-**File to edit:** `verl/verl/experimental/agent_loop/tool_agent_loop.py`
-(submodule at `git@github.com:xingzhis/verl.git`, branch `physcode` — commit change there)
-
-**Key things already verified (don't re-derive):**
-- `stop_reason` is useless — both stop and length → "completed" in VeRL (vllm_async_server.py:535)
-- Detect truncation via: `len(output.token_ids) >= thinking_budget AND think_end_id not in output.token_ids`
-- `</think>` is a special token in Qwen3.5 → single integer ID, no decode needed
-- Calling `server_manager.generate()` twice with same `request_id` is safe (fresh uuid4 per call internally)
-- `sampling_params` dict is not mutated by generate() (Ray serializes it) → `{**sampling_params, "max_tokens": 2048}` for sub-call 2 is safe
-- Both sub-calls count as ONE assistant turn (increment once, after both)
-- `MAX_RESPONSE_LEN` must be raised to 16384 in the smoke script before testing
-
-**Smoke test:** Set `thinking_budget=500` (very low) to reliably trigger interrupt on every
-trajectory. Apply dump patch, run `SMOKE_N=2 VERL_DUMP_DIR=outputs/think_interrupt_test`.
-Inspect rollouts: confirm interrupt phrase present, tool call executed, `\boxed{}` in answer.
-
----
-
-### Session 5 completed (2026-04-05)
-
-- **verl submodule migration**: replaced loose `verl_repo/` directory with git submodule
-  at `verl/` pointing to fork `git@github.com:xingzhis/verl.git` branch `physcode`.
-  All 4 file references updated (env.sh, setup_overlay.sh, CLAUDE.md, patches/README.md).
-  verl reinstalled in 017b overlay. All 191 CPU tests pass; GPU tests unchanged.
-  `verl_repo.bak/` kept as safety backup (gitignored).
-- **Dump patch reverted** from verl repo before push to fork — stays as `patches/verl_dump_dir.patch`.
-- Think-interrupt: fully designed and specced in plans, NOT YET IMPLEMENTED.
-
----
-
-### ✅ RESOLVED: Qwen3.5-4B GRPO smoke test PASSING (job 1457563, 2026-04-02)
-
-End-to-end pipeline confirmed: vLLM rollout → tool calls → FSDP training × 2 steps.
-See "Session 4 work completed" for full stats and environment details.
-
-**Next priority**: investigate Ray worker teardown crash (see "IMMEDIATE NEXT SESSION" above).
-
----
-
-### ✅ RESOLVED: TIR format is now Qwen native tool-calling (hermes)
-
-The [code]...[/code] format was abandoned. VeRL smoke test with Qwen3-0.6B now passes
-end-to-end using hermes tool-call format. grpo_train.sh is patched and ready.
-See "VeRL TIR smoke test lessons" section below.
-
-### ✅ RESOLVED: SFT decision — SKIPPING SFT, going straight to GRPO (2026-04-04)
-
-Earlier zero-shot probe (0/4 tool calls, 2026-04-01) was with the old custom `[code]` format
-before the switch to native tool-calling. With native qwen3_coder format + tool schema injection
-+ enable_thinking=True, the smoke test showed `num_turns/mean: 2.75` — tool calls are firing.
-
-**Decision**: skip SFT. No time for data curation and the format switch resolves the root cause.
-
-**Watch for**: sparse reward signal in early GRPO (flat learning curve = tool-call rate too low
-on harder problems → reconsider SFT at that point).
-
-### ⚠️ BLOCKER (OLD — now resolved): Switch TIR format to Qwen native tool-calling
-
-The custom `[code]...[/code]` format was smoke-tested on 2 samples (Qwen3.5-4B, `enable_thinking=False`) and revealed fundamental fragility. **Do not run the full 100-sample probe or begin training until this is fixed.**
-
-#### What went wrong (smoke test findings, 2026-04-01)
-
-**Failure 1 — Wrong closing tag** (sample 1, equation type):
-- Model wrote `</code>` (HTML-style) instead of `[/code]` (our format)
-- Stop token `[/code]` never fired; `code_extracted=False`; no execution
-- Model then wrote `[output]` and `[answer]` itself (hallucinated the output)
-- This will happen at nontrivial frequency during training, producing zero-reward rollouts with noisy gradients
-
-**Failure 2 — Phase 2 loops** (sample 0, numerical type):
-- Model solved the problem analytically in the reasoning section, wrote `[answer] \boxed{...}` mid-reasoning, THEN wrote the code block (backwards order)
-- After `[output]` injection, phase 2 saw a "complete" TIR trajectory and started a NEW TIR cycle — looped through reasoning+code+output+answer again, hit max_tokens
-- Root cause: model has no trained sense of when the TIR cycle ends; without special tokens, it repeats the pattern
-
-**Failure 3 — Redundant calculation** (sample 0):
-- Model fully computed the answer analytically in reasoning, THEN wrote identical code to confirm
-- Code is not discovering the answer, just rubber-stamping it
-- Less critical during training (reward still fires) but bad for learning the intended behavior
-
-**Root cause of all three**: `[code]...[/code]` is an invented format the model has never been trained on. It has no semantic meaning, collides with HTML (`</code>`), and gives no signal for when the turn ends.
-
-#### The fix: Qwen native tool-calling
-
-Qwen3.5 is trained on tool-call format:
-```
-<tool_call>
-{"name": "python", "arguments": {"code": "..."}}
-</tool_call>
-<tool_response>
-{"output": "..."}
-</tool_response>
-final answer text... \boxed{X}
+# Shard B: problems [1250, 2500)
+sbatch --partition=gpu_h200 --gres=gpu:h200:1 --time=24:00:00 --job-name=probe_X_B \
+  --export=ALL,N=-1,N_ROLLOUTS=8,\
+PARQUET=data/processed/probe_subset.parquet,\
+THINKING_BUDGET=12288,TOOL_CALL_BUDGET=2048,ANSWER_BUDGET=4096,\
+ENABLE_THINKING=1,TEMPERATURE=1.0,TOP_P=1.0,GPU_MEM=0.85,\
+START_IDX=1250,END_IDX=2500,CHUNK_SIZE=50,\
+OUT_DIR=outputs/probe_X_B \
+  scripts/dump_rollouts.sbatch
 ```
 
-Advantages:
-- `</tool_call>` is a **special token** — no HTML confusion, model knows exactly when to emit it
-- Model is pre-trained to wait after `<tool_response>` before writing the final answer — eliminates the looping issue
-- Single-round restriction is natural: inject `<tool_response>` once, model writes final answer and EOS
-- More stable training signal — the tool-call pattern is deeply in the base model weights
+Runtime: each shard ~4-5h on H200 (single GPU). Chunks flush to parquet every 50 problems → automatic resume if cancelled.
 
-VeRL compatibility: minimal changes. The agent loop structure is identical:
-- Phase 1: stop at `</tool_call>` (special token, trivially detectable)
-- Parse JSON from tool call to extract code string
-- Execute code via `sandbox.py` (unchanged)
-- Inject `<tool_response>{"output": "..."}</tool_response>` (response_mask=0)
-- Phase 2: run to EOS
+**If forced to run on B200**: add `VLLM_USE_TRTLLM_ATTENTION=0` to the `--export` (already plumbed through apptainer via `dump_rollouts.sbatch`).
 
-#### Implementation plan (≈1 day)
+### 2. Score the rollouts (requires xVerify server)
 
-1. **`prompts.py`**: Rewrite `TIR_SYSTEM_PROMPT` for tool-call format. Register a `python` tool in the system prompt via `apply_chat_template(tools=[...])`. Remove `CODE_STOP`; add `TOOL_CALL_STOP` (the `</tool_call>` special token ID).
+```bash
+# Step 2a: Start xVerify-7B server (GPU, 6h wall time, writes URL rendezvous file)
+sbatch --partition=gpu_h200 --gres=gpu:h200:1 scripts/serve_xverify.sbatch
 
-2. **`tir_agent_loop.py`**: Replace stop-string logic with tool-call token detection. Replace JSON-injection with `<tool_response>` format. Parse code from `arguments.code` field.
-
-3. **`stage0_probe.py`**: Update phase 1 stop to use the `</tool_call>` token. Update output injection to use `<tool_response>` format. Update `extract_code` to parse from JSON.
-
-4. **`grpo_train.sh`**: Pass `tools=[...]` in `apply_chat_template_kwargs` (or handle in agent loop). Keep `enable_thinking=False`.
-
-5. **Tests**: Update `tests/test_tir.py` for new format. Smoke test on 2 samples before full probe.
-
-Key unknown: whether VeRL's `apply_chat_template_kwargs` can pass `tools=[...]` list, or whether the agent loop needs to handle tool schema directly. Check `verl_repo/verl/experimental/agent_loop/agent_loop.py:apply_chat_template` first.
-
----
-
-## Existing work: TIR pipeline files (partially obsolete — update for tool-calling)
-
-Files that will need updating:
-- `src/phys_reasoner/tir/prompts.py` — rewrite system prompt and stop token
-- `src/phys_reasoner/tir/tir_agent_loop.py` — rewrite phase 1 stop + injection format
-- `src/phys_reasoner/eval/stage0_probe.py` — rewrite phase 1 stop + injection format
-
-Files that stay the same:
-- `src/phys_reasoner/tir/sandbox.py` — unchanged, code execution is format-agnostic
-- `src/phys_reasoner/verifier/` — unchanged
-- `scripts/grpo_train.sh` — minor update only (tool schema in kwargs)
-- `scripts/stage0_probe.sbatch` — unchanged
-
-Critical settings that MUST remain (even after switch):
-- **`enable_thinking=False` everywhere** — Qwen3.5 defaults to thinking=ON; must be set in `apply_chat_template` (probe) and `data.apply_chat_template_kwargs.enable_thinking=False` (training). Forgetting either silently breaks the model. See `src/phys_reasoner/tir/prompts.py` module docstring.
-
----
-
-## DATA QUALITY — Figure/Image References (RESOLVED)
-
-1,428 rows (1.3% of Dr. SCI) dropped in `drsci_train.parquet` via high-confidence regex in
-`scripts/build_training_parquets.py`. Earlier estimate of 4.2% was inflated by false positives
-("sketch the graph", MCQs mentioning mirrors/graphs) — the refined filter targets only phrases
-that unambiguously reference an external figure: "as shown in the figure", "refer to fig. 2",
-"from the diagram above", `fig. N`, etc. The corpus has no figure-dependent rows.
-
----
-
-## Session 3 work completed (2026-04-01)
-
-### grpo_train.sh patched (2 fixes)
-- `ROLLOUT_LOAD_FORMAT` default: `dummy` → `safetensors`
-- Added `max_user_turns=1` to TIR_ARGS
-- Backup: `scripts/grpo_train.sh.bak.20260401`
-
-### TIR rollout inspection tooling (new)
-- `scripts/dump_rollouts.py` — offline 2-phase vLLM loop, saves per-rollout txt files
-- `scripts/dump_rollouts.sh` — interactive wrapper (defaults: 0.6B, n=4, 8192 tokens)
-- `scripts/dump_rollouts.sbatch` — sbatch version for H200; uses `SLURM_SUBMIT_DIR`
-- Injection replicates VeRL exactly via dummy-user workaround (verl/utils/chat_template.py lines 87-114)
-- Each txt shows: problem → phase1 → extracted code → sandbox stdout → injection (repr) → phase2 → verdict
-
-### Qwen3.5-4B template quirk (important for all future scripts)
-`apply_chat_template` on Qwen3.5-4B rejects any message list without a `role="user"` entry
-with "No user query found". VeRL's wrapper (`verl/utils/chat_template.py`) handles this by
-prepending a dummy empty user message and stripping it from the output. Our dump_rollouts.py
-now uses the same approach. This affects: any standalone `apply_chat_template` call that
-passes only system/tool messages.
-
-### ⚠️ CRITICAL: enable_thinking=True required for phase 1 (confirmed 2026-04-02)
-
-A/B smoke test (Qwen3.5-4B, ball-drop problem, dump_rollouts.py):
-- `enable_thinking=False`: model jumps straight to `<tool_call>`, ALL reasoning goes into Python code comments. Root cause: Qwen3.5's tool-call format has no plain-content slot in the assistant turn, so with thinking suppressed there is nowhere to reason except code comments.
-- `enable_thinking=True`: model reasons in `<think>...</think>` first, then calls the tool with clean minimal code. `</think>` closes before `<tool_call>` — no leakage.
-
-**Decision**: enable_thinking=True for phase 1 everywhere. Phase 2 injection keeps False.
-
-Token length caveat: thinking traces can be long on hard physics problems.
-Planned mitigations (not yet implemented):
-  - Token-budget checkpoint: inject remaining-token count into system prompt for self-regulation
-  - Stop-thinking injection: force `</think>` if phase 1 hits a token threshold
-  - Soft prompt: "think briefly" instruction in system prompt
-  - RL length penalty: token-count penalty term in GRPO reward (late ablation, λ>0)
-
-Files updated: prompts.py (THINKING MODE docstring), stage0_probe.py, grpo_train.sh, smoke_tir_qwen35.sh, dump_rollouts.py (default True), dump_rollouts.sbatch (default 1), CLAUDE.md
-
-### ⚠️ CRITICAL: Qwen3 vs Qwen3.5 use different tool-call formats (confirmed 2026-04-01)
-Discovered by adding prompt dump to dump_rollouts.py and inspecting the rendered phase 1 prompt.
-
-| Model family | Tool-call format | VeRL setting |
-|---|---|---|
-| Qwen3 (0.6B, 1.7B, 4B) | hermes/JSON: `{"name": "python", "arguments": {...}}` | `format=hermes` |
-| Qwen3.5 (0.8B, 4B) | Qwen XML: `<function=python><parameter=code>...</parameter></function>` | `format=qwen3_coder` |
-
-Both wrapped in `<tool_call>...</tool_call>` — stop token is the same.
-Wrong VeRL format → ToolAgentLoop fails to parse tool calls silently → zero reward on all rollouts.
-
-Fixed in:
-- `scripts/grpo_train.sh`: changed `format=hermes` → `format=qwen3_coder`
-- `src/phys_reasoner/tir/prompts.py`: TIR_SYSTEM_PROMPT example updated to XML format; FORMAT docstring explains both
-- `scripts/smoke_tir.sh`: header comment added (keeps `format=hermes`, validated for Qwen3-0.6B)
-- `scripts/smoke_tir_qwen35.sh`: NEW — copy of smoke_tir.sh with `format=qwen3_coder` for Qwen3.5-4B
-
----
-
-## VeRL TIR smoke test lessons (validated 2026-04-01)
-
-These were confirmed by getting `smoke_tir.sh` (Qwen3-0.6B, A40, 2 training steps) to pass end-to-end.
-
-### 1. `multi_turn.format=hermes` — not `qwen3_coder`
-VeRL's ToolAgentLoop template must be set to `hermes`. `qwen3_coder` caused parse failures.
-Applied in: `scripts/grpo_train.sh` TIR_ARGS and `scripts/smoke_tir.sh`.
-
-### 2. `max_user_turns=1` is required
-Without `actor_rollout_ref.rollout.multi_turn.max_user_turns=1`, the agent loop can run
-extra user turns unexpectedly. Was missing from `grpo_train.sh` TIR_ARGS; added 2026-04-01.
-
-### 3. `load_format=safetensors` (not `dummy`)
-`dummy` skips real weight loading — FSDP→vLLM weight sync fails silently, producing training
-runs that appear to work but use random weights. Default in `grpo_train.sh` changed to
-`safetensors`. Only use `dummy` for pure architecture smoke tests with no weight dependency.
-
-### 4. Slurm `--mem` must be large enough to avoid Ray OOM
-Ray's object store / worker init hits OOM with a cryptic hidden error when `--mem` is too small.
-Symptom: silent crash during Ray init, no GPU errors, no obvious Python traceback.
-Fix: request `--mem=64G` or more in sbatch/interactive sessions depending on model size.
-
----
-
-## ✅ RESOLVED: Ray worker teardown crash (investigated 2026-04-02)
-
-After both GRPO training steps complete successfully (job 1457563), the process exits with:
-
-```
-RuntimeError: DataLoader worker (pid 130357) is killed by signal: Killed. Exit code: 0
+# Step 2b: Score (CPU, reads URL from outputs/xverify_endpoints/current.url)
+sbatch --partition=day_amd \
+  --export=ALL,PROBE_INPUTS="outputs/probe_X_A/rollouts.parquet outputs/probe_X_B/rollouts.parquet",\
+PROBE_OUTPUT=outputs/probe_X_scored \
+  scripts/score_probe.sbatch
 ```
 
-**This is harmless — IGNORE IT.**
+Scoring runs at ~50-100 rollouts/sec → ~3-7 min for 20k rollouts. **Kill xVerify server after** (`scancel $JOB`).
 
-Confirmed:
-- Checkpoint at `global_step_2/actor/` is fully written (model + optim + extra_state + huggingface) BEFORE the crash fires
-- `.err` file has 0 errors — the traceback only appears in `.log` as a Ray actor sub-process message
-- "Exit code: 0" confirms the DataLoader worker died cleanly (normal exit, not OOM or SIGKILL from a real problem)
+Output: `rollouts_scored.parquet` (full rollouts + `score`/`score_raw`) + `score_summary.txt` (per-type/difficulty pass rates).
 
-Root cause: `verl/trainer/main_ppo.py` has no `ray.shutdown()` call after `trainer.fit()`. When Python exits, Ray kills all actor sub-processes with SIGKILL. Inside the `TaskRunner` actor, PyTorch's DataLoader SIGCHLD handler fires and raises `RuntimeError`. This is a VeRL upstream gap — not documented or fixed in the VeRL repo. Adding `ray.shutdown()` after line 100 of `main_ppo.py` would fix it, but it's not worth touching verl code for cosmetic teardown noise.
+### 3. How the probe subset was built (already done, 2026-04-11)
 
----
+The probe subset is a stratified sample of 2500 rows (2000 Dr. SCI + 500 corpus) from the train-only split. Full reproducibility chain from cleaned source data:
 
-## Backlog / Side Quests
+```bash
+# Step 1: build enriched training parquets (extra_info metadata, row filtering)
+python3 scripts/build_training_parquets.py
+# Inputs (defaults): data/processed/drsci_physics_clean.parquet,
+#                    data/processed/candidates_filtered.parquet
+# Outputs:           data/processed/drsci_train.parquet,
+#                    data/processed/corpus_train.parquet
 
-These are not on the Week 1–3 critical path but are worth pursuing in parallel when bandwidth allows.
+# Step 2: stratified train/dev/test split
+python3 scripts/split_train_dev_test.py --seed 42
+# Inputs (defaults): drsci_train.parquet, corpus_train.parquet
+# Outputs: {drsci,corpus}_{train_split,dev,test}.parquet
+# Splits: Dr. SCI 2k dev + 2k test; Corpus 200 dev + 200 test; rest = train
+# Stratification: (answer_type × from × difficulty_bin) for Dr. SCI,
+#                 (primary_answer_type × source) for Corpus
 
-### 1. Verifier: SCI-Verifier-4B/8B comparison (do in Week 2)
-- Models: `desimfj/SCI-Verifier-4B`, `desimfj/SCI-Verifier-8B` — claim to outperform xVerify-7B on physics
-- Paper uses CoT; check if non-CoT inference mode exists or measure latency under CoT
-- **What to measure**: FNR by answer type (numerical / expression / MCQ) + inference latency vs xVerify-3B-Ib
-- **Decision gate**: if FNR is lower AND latency is acceptable → swap before full GRPO run; update `training-decisions.md` verifier section
-- Run same rescore pipeline as `scripts/rescore_xverify.sbatch` on `data/results/rescore_7b_v3.parquet` as reference
+# Step 3: probe subsample from train splits
+python3 scripts/subsample_probe.py --seed 42
+# Inputs (defaults): drsci_train_split.parquet, corpus_train_split.parquet
+# Output:            data/processed/probe_subset.parquet  (2500 rows)
+# --n-drsci 2000 --n-corpus 500 --min-per-stratum 10 (defaults)
+# Add --report for stats-only dry run (no parquet written)
+```
 
-### 2. Evals: harder benchmarks + zero-shot baseline (set up in Week 2, run in Week 5)
-- Add **critpt** (critical physics thinking) and any other hard physics benchmarks alongside MATH-500 hard
-- Zero-shot numbers before training = free baselines, no extra cost later
-- Tasks: find eval set format, write a `scripts/eval_critpt.sbatch` template, run zero-shot Qwen3.5-4B
-- Week 5 already has OOD eval; just make sure critpt is added there alongside MATH-500 hard
-
-### 3. Data: facebook/principia-collection (Week 3+ if reward signal is non-sparse)
-- Filter by physics topic first; then do verifier round-trip on numerical vs math-object split
-- If math-object answers have high FNR (verifier can't reliably score them) → exclude that subset
-- Cleaning + dedup against existing `candidates_deduped.parquet` before adding
-- **Hold until Week 3**: only worth adding if reward signal is sparse on current 112k rows (unlikely)
-
----
-
-## Other pending items (lower priority)
-
-### Pre-training parameter sweep (do before scaled run)
-
-Before the full training run, do two sequential studies:
-
-**Study 1 — Throughput sweep** (1–2 jobs, metric: step time + p1_truncated rate):
-- `TRAIN_BATCH` × `ROLLOUT_N` (total gens/step): try 4×8, 8×8, 16×8
-- `GPU_MEM_UTIL`: 0.7, 0.8, 0.85 (vLLM KV cache vs FSDP headroom)
-- `MAX_RESPONSE_LEN`: 2048 vs 4096 (thinking traces dominate; check if 4096 is needed)
-
-**Study 2 — Hyperparameter sweep** (3–5 jobs, run 200–500 steps each, metric: reward on numerical subset):
-- `LR`: 1e-6 (current), 3e-6 (noted in script), 1e-5
-- `ROLLOUT_TEMP`: 0.7 (current) vs 1.0 (more diversity = more learning signal)
-- `KL_LOSS_COEF`: 0.001 (current) vs 0.01
-
-### gold-vs-gold FN rate on Dr. SCI (RQ2 baseline)
-`drsci_audit.py` already has `run_round_trip()`. Run on `drsci_physics_clean.parquet`.
-Was done on old 6.8k corpus; needs fresh run on Dr. SCI clean corpus.
-
-### Add `_train_weight` column (Goldilocks B strategy)
-Small script mapping `(source × answer_type)` → Goldilocks-rate-based weight.
-See lookup table in `docs/training-decisions.md`.
+All three scripts default to `seed=42` — deterministic given the same cleaned upstream data (`drsci_physics_clean.parquet`, `candidates_filtered.parquet`). Run inside apptainer with the overlay if dependencies aren't on the host.
 
 ---
 
-## Important file locations
+## Where things are
 
 | What | Path |
 |------|------|
-| **Dr. SCI training parquet** | `data/processed/drsci_train.parquet` (105,730 rows — use for training) |
-| **Corpus training parquet** | `data/processed/corpus_train.parquet` (6,866 rows — use for training) |
-| Dr. SCI clean parquet (intermediate) | `data/processed/drsci_physics_clean.parquet` |
-| Corpus deduped parquet (intermediate) | `data/processed/candidates_deduped.parquet` |
-| Training parquet build script | `scripts/build_training_parquets.py` |
-| Dr. SCI pass@k (xV-7B) | `data/results/zero_shot_drsci_sample_xv7b.parquet` |
-| Corpus pass@k (xV-7B) | `data/results/zero_shot_corpus_passk_xv7b.parquet` |
-| Authoritative corpus baseline | `data/results/rescore_7b_v3.parquet` |
-| Training strategy doc | `docs/training-decisions.md` |
-| Verifier experiments doc | `docs/verifier-zero-shot-experiments.md` |
-| PhysCode proposal | `docs/physcode_proposal_v5.md` |
-| PhysCode plan | `.claude/plans/physcode.md` |
-| Dr. SCI cleaning script | `scripts/drsci_clean.py` |
-| TIR prompt / tool schema | `src/phys_reasoner/tir/prompts.py` |
-| Smoke test readable outputs | `smoke_results_4b.txt`, `smoke_results_v3_nothink.txt` |
-
-## Sbatch templates
-| Job | Script |
-|-----|--------|
-| Stage 0 probe | `scripts/stage0_probe.sbatch` |
-| Dr. SCI pass@k | `scripts/zero_shot_drsci_sample.sbatch` |
-| Corpus pass@k | `scripts/zero_shot_corpus_passk.sbatch` |
-| xVerify rescore (any pass@k) | `scripts/rescore_passk_xverify.sbatch` |
+| Probe rollouts (shard A) | `outputs/probe_v5_A/rollouts.parquet` (10000 rollouts) |
+| Probe rollouts (shard B) | `outputs/probe_v5_B/rollouts.parquet` (10000 rollouts) |
+| Scored rollouts | `outputs/probe_v5_scored/rollouts_scored.parquet` |
+| Score summary | `outputs/probe_v5_scored/score_summary.txt` |
+| Probe source data | `data/processed/probe_subset.parquet` |
+| Old/diagnostic runs | `outputs/old/` (10+ exploratory probes from debugging) |
+| xVerify server rendezvous | `outputs/xverify_endpoints/current.url` |
 
 ---
 
-## Environment reminder
-- SIF: `verl_vllm017.latest.sif`
-- Overlay: `phys-reasoner-overlay-017b.img` (CURRENT — use for all sbatch jobs)
-  - Previous 017 overlay had hub 0.36.2 pinned; 017b has correct setup
-- Always: `export PYTHONNOUSERSITE=1` before apptainer calls
-- **PYTHONPATH=/opt/phys-extras/** must be set in all apptainer exec calls
-  - Contains: transformers==5.3.0, huggingface_hub==1.8.0, hf-xet==1.4.3, flash-linear-attention==0.4.2, fla-core==0.4.2
-  - This is the reliable way to upgrade packages above SIF baseline without OverlayFS whiteout issues
-- HF cache: `hf_cache/` — use HF model IDs directly (all nodes have internet); never hardcode snapshot paths
-- GPU partition: `gpu`, qos `qos_nmi`, gres `h200:1`
+## Code changes made this session
 
-## Session 4 work completed (2026-04-02)
+Modified (all committed to `git status`):
+- `docs/training-decisions.md` — corrected root cause diagnosis; documents the full debugging trail and B200 workaround
+- `scripts/dump_rollouts.py` — `enforce_eager=True`, `top_p=1.0` default, `<|im_end|>` prepend + `enable_thinking=True` in tool injection (matches VeRL ToolAgentLoop behavior exactly)
+- `scripts/dump_rollouts.sh` — default `TOP_P=1.0`
+- `scripts/dump_rollouts.sbatch` — forwards `VLLM_USE_TRTLLM_ATTENTION` env var to apptainer, default `TOP_P=1.0`
+- `scripts/train_async.sh` — B200 safety warning, rollout logging flags (`DUMP_VAL_ROLLOUTS=1` default), forwards `VLLM_USE_TRTLLM_ATTENTION`
+- `scripts/merge_probe_shards.py` — **new** utility to merge shards into one parquet (not used here since score_probe.sbatch accepts multiple inputs, but available)
 
-### ✅ Qwen3.5-4B GRPO smoke test with TIR: PASSING (job 1457563)
-
-End-to-end pipeline: vLLM rollout → tool call execution → FSDP training × 2 steps.
-
-Key stats (step 2):
-- `num_turns/mean: 2.75`, `tool_calls/max: 0.244s` — tool calls happening
-- `critic/score/mean: 0.125` — reward firing correctly  
-- `response_length/clip_ratio: 0.9375` — ⚠️ think traces hit 1536 limit (expected with thinking=True)
-- `perf/max_memory_allocated_gb: 51.56` — fits in H200
-
-### Environment changes (breaking old overlay, new 017b setup)
-
-**Problem chain**: 016.dev.qwen3_5 SIF has vllm `0.1.dev1` (incompatible with verl_repo requiring >= 0.7.0).
-
-**Solution**: vllm017.latest SIF (0.17.0 ≥ 0.7.0) + fresh overlay + `PYTHONPATH=/opt/phys-extras/`
-
-**PYTHONPATH approach** (instead of pip upgrade-in-place):
-- Root cause of repeated failures: OverlayFS whiteout for pip-uninstall of SIF packages does NOT work reliably on RHEL 8 compute nodes when overlay is mounted `:ro`
-- Compute nodes silently fall back to the SIF's old hub 0.36.2 even after pip "upgrade" into overlay
-- Fix: `pip install --no-deps --target /opt/phys-extras/` for the packages that need to be newer than the SIF; set `PYTHONPATH=/opt/phys-extras/` so Python finds them first
-- This is now the standard pattern — see `scripts/setup_overlay.sh` step 4
-
-**Flash attention crash** (Qwen3.5 FSDP actor):
-- Verl's Ulysses monkey patch patches `_flash_attention_forward` globally
-- Qwen3.5 hybrid attention (GDN layers + standard attention) + transformers 5.3.0 API change → CUDA illegal memory access
-- Fix: `'+actor_rollout_ref.model.override_config={attn_implementation:sdpa}'` in smoke script
-- With SDPA, verl correctly prints "Skipping monkey patch for Qwen3_5ForConditionalGeneration as use_fused_kernels is False"
-
-**OOM fix**: AdamW optimizer for 4.54B model needs ~36 GB GPU (2 moments × float32). With vLLM KV cache at 40 GB → 76 GB > H200's 80 GB headroom.
-- Fix: `actor_rollout_ref.actor.fsdp_config.optimizer_offload=True` (optimizer state on CPU)
-- `param_offload=False` stays (model weights on GPU for fast forward pass)
-
-### setup_overlay.sh now requires e2fsck after install
-- Added `e2fsck -fp $OVERLAY` at end of setup_overlay.sh
-- Without it, compute nodes may see "unchecked fs" and fail to mount overlay correctly
-- This was the root cause of the hub 0.36.2 mystery (compute node mounted stale overlay)
+**No VeRL training behavior changed** — only logging/safety flags added. All Hydra overrides for actor/rollout/PPO config are unchanged.
 
 ---
 
-## Remote xVerify service — status (2026-04-08)
+## TODO before the actual training run
 
-**Status**: WORKING on misha00. Moved from misha01 (unstable) to misha00.
-Full bench passed: N=300 THREADS=8, no crashes.
+From `docs/training-decisions.md`:
 
-### Inference mode: generate (not logprob) — DECIDED 2026-04-08
+1. **Update top_p in training scripts** (currently still at `0.9` from pre-bug-fix):
+   - `scripts/smoke_tir_qwen35.sh:207`
+   - `scripts/smoke_tir.sh:161`
+   - `scripts/train_async.sh:199` (or wherever the Hydra override is)
 
-Ran `JUDGE_MODE=compare N=200` bench. Results:
-- logprob: 39 ms/call (p50=38ms)
-- generate: 268 ms/call (p50=290ms) — **6.86x slower**
-- Agreement: **95.5%** (191/200)
-- Disagreements: logprob=correct & generate=incorrect: 0; generate=correct & logprob=incorrect: **9**
+   Change to `top_p=1.0` for raw on-policy RL sampling. Preserved as `0.9` for now so existing smoke test results remain reproducible.
 
-**Decision: use `generate` (default in `serve_xverify.py`).**
-Rationale: 95.5% agreement is below the 98% threshold for keeping logprob.
-The logprob FNR is strictly conservative (misses 9 real corrects, never false positives),
-but ~4.5% extra FNR on xVerify-fallback cases is real lost reward signal — not acceptable
-when reward is already sparse in early training. 6.86x speed cost is fine; verifier is
-not on the training critical path (GPU on misha00, not the training node).
+2. **If using B200 for training rollouts**: set `VLLM_USE_TRTLLM_ATTENTION=0` via `sbatch --export`.
 
-`serve_xverify.py`: `mode = req.get("mode", "generate")` — production client
-(`XVerifyHTTPClient`) never sends `mode`, falls through to this default.
-`--judge-mode compare` in `bench_xverify.py` still works for future re-checks.
+3. **Build Strategy B weights** from `probe_v5_scored` (Step 4 of data-pipeline.md).
 
-### Bench numbers (production baseline, misha00, 2026-04-08, generate mode)
-- Mode A sequential: 233.6 ms/sample, xVerify p50=293ms p95=313ms
-- Mode B 8-thread: 229.0 ms/sample, speedup **1.02x** — GPU fully saturated, concurrency useless
-- **Production path is Mode A** (VeRL reward is sequential per worker) — concurrency irrelevant
-- For reference: logprob was 39ms/call — generate is ~7x slower but ~4.5% fewer FNs
+---
 
-### Remaining TODOs
+## Environment state
 
-**(1) Simple client-side retry** in
-`src/phys_reasoner/verifier/xverify_client.py` — 2–3 retries on
-`ConnectionRefusedError` / `socket.timeout` / `RemoteDisconnected` with
-jittered 100–500ms backoff. Fail-closed after exhaustion. Log at WARNING per
-retry. Do **not** retry on 5xx.
+- vLLM 0.17, transformers 5.3.0 in overlay `phys-reasoner-overlay-017.img`
+- flash-attn 2.8.3 already in SIF (if we want to pin away from flashinfer TRTLLM, flag is `--attention-backend flash_attn`, but H200 path already works without)
+- Model cached under `$HF_HOME` — Qwen/Qwen3.5-4B, xVerify-7B-I
 
-**(2) Server-side request coalescing** — low priority; Mode B speedup 1.26x
-confirms GPU lock is the bottleneck but sequential is the production path.
-Revisit only if multiple VeRL workers start calling concurrently.
+## State of dump_rollouts.py (as of 2026-04-14)
 
-### Useful flags / files
+Faithfully mirrors VeRL `ToolAgentLoop` for Qwen3.5 qwen3_coder format:
+- Phase 1 (`enable_thinking=True`) → stop at `</tool_call>` → optional think-interrupt (phase 1b) → sandbox exec → phase 2 tool injection (`enable_thinking=True`, matching VeRL) → final answer
+- Engine: `LLM(enforce_eager=True, ...)` — matches VeRL RolloutConfig
+- Shard-aware (`--start_idx/--end_idx`), chunked parquet flush, resume-safe
+- Supports `--dump_txt` / `DUMP_TXT=1` for per-rollout human-readable txt files (off by default)
 
-- `scripts/bench_xverify.sh` — does a `/health` pre-flight, aborts loudly on
-  unreachable server. Use it instead of running `bench_xverify.py` directly.
-- `XVERIFY_DEBUG=1` on the server — per-request input length logging; cheap,
-  leave on while debugging.
-- `VERIFIER_DUMP_PATH=...` via `patches/verifier_dump.patch` (currently
-  unapplied) — full request/response records for trainer-side inspection.
-- `scripts/bench_xverify.py` is currently **untracked** — commit alongside
-  `bench_xverify.sh` when convenient.
+Parquet columns: `problem_idx, rollout_idx, gold_answer, answer_type, phase1_text, interrupted, phase1b_text, code, sandbox_stdout, sandbox_error, phase2_text, extra_info`. Scoring is a separate step — the parquet does NOT contain a parsed `\boxed{}` or a correctness label.
+
+---
+
+## Archived session 7 notes
+
+Previous sessions 1–7 notes (pre-debugging) are preserved in git history — the original content of this file is in the prior commit. Archiving was intentional: the old notes described the probe launch as an *upcoming* task; now it's done.
