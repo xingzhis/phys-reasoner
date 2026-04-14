@@ -123,7 +123,37 @@ if n_drsci > 0:
     print(f"Dr. SCI: sampled {len(drsci_sample)} rows — {type_counts}")
 
 sample = pd.concat(parts, ignore_index=True).sample(frac=1, random_state=seed).reset_index(drop=True)
+
+# Normalize extra_info schema across corpus + drsci sources so pyarrow can infer
+# a single struct type. Two known type conflicts:
+#   - `difficulty`: str in corpus (e.g. "Undergraduate/Postgraduate"), float in drsci
+#     → cast to str; non-string becomes its str() form (drsci floats become "0.5" etc.)
+#   - `tolerance`: numeric in most rows but can be "" in some
+#     → cast to float or None
+def _normalize_extra_info(ei):
+    if not isinstance(ei, dict):
+        return ei
+    out = dict(ei)
+    # difficulty → always str or None
+    if "difficulty" in out:
+        v = out["difficulty"]
+        out["difficulty"] = None if v is None or v == "" else str(v)
+    # tolerance → always float or None
+    if "tolerance" in out:
+        v = out["tolerance"]
+        try:
+            out["tolerance"] = float(v) if v not in (None, "") else None
+        except (TypeError, ValueError):
+            out["tolerance"] = None
+    return out
+
+sample["extra_info"] = sample["extra_info"].apply(_normalize_extra_info)
 sample.to_parquet(dst, index=False)
+
+# Schema sanity-check: re-read and confirm we can round-trip.
+_check = pd.read_parquet(dst)
+assert len(_check) == len(sample), f"round-trip row count mismatch: {len(_check)} vs {len(sample)}"
+print(f"[sanity] round-tripped {len(_check)} rows through parquet OK")
 
 print(f"\nWrote {len(sample)} rows → {dst}")
 print("\nRow summary:")

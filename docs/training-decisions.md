@@ -26,7 +26,32 @@ If < 15% → generate 2–5k TIR demonstrations via GPT-4o/Claude (auto-exec fil
 
 ---
 
-## Goldilocks Data Selection: Strategy B + D
+## Stage 1 data policy — Option A3 (2026-04-14, decided)
+
+**Decision:** For Stage 1, use the **full unfiltered training pool** (drsci_train_split + corpus_train_split, ~108k rows) with uniform sampling. Skip Strategy B offline weighting and skip hard-bank filtering. Compensate for zero-advantage groups with extra steps instead.
+
+**Why not the original Strategy B + DAPO-filter plan (Option A1/A2):**
+- VeRL has native DAPO-style `FilterGroupsConfig` (`verl/trainer/config/algorithm.py:43-56`, implementation `verl/recipe/dapo/dapo_ray_trainer.py:240-299`), but **it is NOT wired into the `fully_async_policy` trainer** we use. The async trainer's `_get_samples_from_queue` path ignores filter_groups flags. Porting filter_groups into async would require ~50 lines in `FullyAsyncTrainer._fit_compute_advantage` and interacts non-trivially with `require_batches` and parameter-sync timing.
+- Switching to the synchronous trainer would mean abandoning the 3+1 async hardware split.
+- Probe homogeneity analysis (Session 8) showed stratum membership explains only 29% (Dr. SCI) / 17% (corpus) of per-problem pass variance, so offline Strategy B weights would be noisy for ~70% of the variance anyway.
+- Debugging-cost budget (explicit user priority) favors "no code changes, pay extra rollout compute" over any patch path.
+
+**Mechanism:** Every problem is seen uniformly. GRPO groups where all rollouts are correct or all incorrect contribute exactly zero to the loss under the Dr. GRPO + DAPO-lite config (`use_kl_loss=False`, `kl_ctrl.kl_coef=0.0`) — fully equivalent to DAPO's dynamic-sampling filter, just with extra rollout cost. (Earlier draft of this section worried about KL amplification; that concern applied to conservative-GRPO with `kl_loss_coef=0.001` and is moot under the canonical Dr. GRPO/DAPO setup we're using.)
+
+**Step budget (see "Training step / batch / pool sizing" below):**
+- Start at **1500 steps**, measure per-batch zero-advantage-group fraction, extend to 2500–3000 only if plateau not reached. At 1500 steps we cover ~1.8 epochs of the full pool.
+- No warmup, no data complication — full 108k pool from step 0 (user preference, 2026-04-14).
+
+**Single-stage training (3-stage plan deprecated):** see "Multi-stage training structure" below for why — under A3 the data churn between stages stops serving a purpose.
+
+**Strategy B / D deferred to future work:**
+- Strategy B offline weighting postponed indefinitely; would only return if A3 shows unmanageable zero-advantage waste.
+- Strategy D rescoring kept only as an *offline analysis* tool — run on a mid-training checkpoint to produce curriculum-drift figures for the paper. Not used as a training-time mechanism.
+- Probe artifacts (`probe_per_problem.parquet`, `probe_summary.txt`) retained for the paper's analysis of initial-model stratification.
+
+---
+
+## Goldilocks Data Selection: Strategy B + D (original plan — deferred to Stage 2+)
 
 **Context:** Pass@k estimates from a small sample tell us per-stratum Goldilocks rates but not per-problem pass rates across 113k rows. Strategy B uses those stratum-level rates to initialize weighted sampling; Strategy D updates per-problem pass rates iteratively using training checkpoints.
 
@@ -67,15 +92,139 @@ GRPO already handles the degenerate cases without extra engineering: if all k ro
 
 Problems with pass_rate < 0.05 in the initial probe are placed in `data/processed/hard_bank.parquet` rather than discarded. They are re-evaluated at each stage rescore (Strategy D). Once a problem's pass rate rises above 0.05, it enters the active training pool. This is the primary mechanism for the Stage 2+ curriculum expansion.
 
-### Multi-stage training structure
+### Multi-stage training structure (deprecated 2026-04-14 under Option A3)
 
-| Stage | Data source | Curriculum | Steps |
-|---|---|---|---|
-| Stage 1 | Strategy B weights (probe-based) | Numerical-first | ~700 |
-| Stage 2 | Strategy D rescore of Stage 1 ckpt | Numerical + expression + MCQ | ~700 |
-| Stage 3 | Strategy D rescore of Stage 2 ckpt | Full mix + hard bank graduates | ~700 |
+**Superseded: single-stage training with optional warmup.** The three-stage design was justified by Strategy B+D's data churn between stages (weight rebuilds, hard-bank graduation). Under A3 neither mechanism is in play, so stage boundaries stop serving a purpose — the implicit policy-aware filtering from zero-advantage groups achieves Strategy D's goal automatically.
 
-See `.claude/plans/data-pipeline.md` for the full pipeline spec.
+**New plan: single stage of 1500–3000 steps on the full pool. No warmup, no data churn.**
+
+| Phase | Data | Steps |
+|---|---|---|
+| main | full 108k pool (drsci_train_split + corpus_train_split) | 1500–3000 |
+
+User decision (2026-04-14): skip the optional warmup to keep the data side as simple as possible. Rely on A3's implicit curriculum (zero-advantage filtering) alone. Dr. SCI's published curriculum benefit comes from their *dynamic* tracker (online reshuffling), not from starting on a medium band — a static 200-step warmup would capture only a fraction of that and isn't worth the parquet/sbatch complexity given no observed pathology.
+
+**For paper analysis only** (not needed for training): run an optional offline rescore on a mid-run checkpoint to produce "curriculum drift" figures — which strata's pass rates improved, which problems graduated from 0-advantage to informative. Doesn't affect training.
+
+### Curriculum — Dr. SCI mitigation strategy (2026-04-14)
+
+**Dr. SCI's method (MiniByte-666 fork):** dynamic difficulty tracker (`difficulty_tracker.py`) + dynamic dataset (`dynamic_difficulty_dataset.py`). Starts with problems in `[0.51, 0.99]` difficulty band; when a problem reaches ≥0.9 accuracy (mastered), replaces it with a random draw from `< 0.51` (harder) pending set. State persists via pickle.
+
+**Our decision:** do not port their tracker; do not do a static warmup either. Rely on A3's implicit policy-aware curriculum alone — problems self-activate when the policy can reach them.
+
+**Why not port the tracker:**
+- Active-set replacement requires persistent state threaded through VeRL's async dataloader; non-trivial glue.
+- Primary benefit is "don't waste compute on mastered problems"; we've deemed rollout compute cheap.
+
+**Why not even a static warmup:**
+- Dr. SCI's benefit is *dynamic* reshuffling; a fixed starting band captures only a small fraction.
+- Base model's 14% hit rate on hardest difficulty bucket shows no catastrophic failure mode for the warmup to solve.
+- Adds parquet + sbatch complexity without a demonstrated problem.
+
+**Fallback trigger:** if first ~100 smoke steps show high reward variance / unstable gradient on hard types, or dev-set accuracy plateaus early with persistently high zero-advantage fraction, revisit — either static warmup (cheap) or tracker port (expensive).
+
+---
+
+## Algorithm — Dr. GRPO + DAPO-lite (2026-04-14, decided)
+
+**Decision:** train with **Dr. GRPO** (length + std normalization removed) plus the async-compatible subset of DAPO: **clip-higher** (asymmetric PPO clip) and **token-level loss aggregation**, plus mild **overlong-response reward shaping**. Do **not** use DAPO's dynamic sampling (sync-only, already established). Do not adopt GSPO or CISPO for the paper's main method (too new, undervalidated).
+
+**Algorithm comparison:**
+
+| Algorithm | Idea | Async-compat | Maturity | Delta vs GRPO |
+|---|---|---|---|---|
+| GRPO | group-relative advantage | ✓ | high | baseline |
+| Dr. GRPO | remove length & std normalization (bias fixes) | ✓ | medium (2025) | small, principled |
+| DAPO full | clip-higher + token-level + dynamic-sampling + overlong shaping | **partial** (dyn-samp is sync-only) | high | large on AIME-style long CoT; we lose 1/4 components on async |
+| GSPO | sequence-level IS ratio | ✓ | low (too new) | unknown |
+| CISPO | clipped IS + REINFORCE | ✓ | low (MiniMax M1 only) | unknown |
+
+**Rationale for the chosen combination:**
+- Dr. GRPO fixes are orthogonal, cheap, and strictly improve GRPO statistical properties (no reason not to take them).
+- DAPO's clip-higher and token-level loss drove most of DAPO's accuracy gains in the paper — they're the highest-ROI components and are fully compatible with async.
+- Overlong shaping matters for our ~19k response budget with think-interrupt: we want to gently penalize rollouts that burn the budget without producing an answer, without discarding them.
+- GSPO/CISPO are both 2025-era and undervalidated; the paper's main contribution is TIR vs CoT-GRPO reward quality, not RL algorithm choice, so we don't want the method to draw reviewer attention.
+
+**Paper framing:** "Dr. GRPO with DAPO-style asymmetric clipping and token-level loss aggregation." Modern, defensible, uncontroversial.
+
+**VeRL flags (verified 2026-04-14 against `verl/recipe/dapo/run_dapo_*.sh` (~15 recipes) and `verl/docs/algo/grpo.md:53-62`):**
+```
+algorithm.kl_ctrl.kl_coef=0.0                         # DAPO canonical
+algorithm.norm_adv_by_std_in_grpo=False               # Dr. GRPO: no std norm
+actor_rollout_ref.actor.use_kl_loss=False             # DAPO + Dr. GRPO: KL off
+actor_rollout_ref.actor.kl_loss_coef=0.0              # DAPO canonical
+actor_rollout_ref.actor.loss_agg_mode=token-mean      # DAPO; VeRL best_practices.rst:184 says this matches Dr. GRPO too
+actor_rollout_ref.actor.clip_ratio_low=0.2            # DAPO canonical (all recipes)
+actor_rollout_ref.actor.clip_ratio_high=0.28          # DAPO: clip-higher
+actor_rollout_ref.actor.clip_ratio_c=10.0             # DAPO canonical
+```
+
+**Key correction (2026-04-14):** earlier plan retained `use_kl_loss=True, kl_loss_coef=0.001` from the existing train_async.sh. That was conservative-GRPO, not modern DAPO/Dr. GRPO. All canonical recipes set KL off entirely. With KL off, **zero-advantage groups contribute exactly zero to the loss** — not 90–95% equivalent to filtering, but fully equivalent. The "zero-advantage groups amplify KL regularization" concern from the earlier A3 discussion vanishes.
+
+**Loss aggregation choice (token-mean vs seq-mean-token-sum-norm):** VeRL's Dr. GRPO doc (`docs/algo/grpo.md:59`) prescribes `seq-mean-token-sum-norm` for strict paper faithfulness; `best_practices.rst:184` states `token-mean` matches both Dr. GRPO and DAPO. We use `token-mean` because it matches all DAPO recipes (~15) and the best-practices doc, and is the more common choice in recent long-CoT RL work (DeepSeek-R1, DAPO itself).
+
+**Overlong reward shaping:** add in `src/phys_reasoner/training/reward.py` — if `rollout_token_count > 0.9 * MAX_RESPONSE_LEN` and no `\boxed{}` found, return a small negative score (e.g., -0.3) instead of 0. Avoids encouraging truncation-at-budget behavior.
+
+See `.claude/plans/data-pipeline.md` for historical pipeline spec (Strategy B+D — no longer the active plan).
+
+### Training step / batch / pool sizing (updated 2026-04-14 for Option A3)
+
+**Terminology in VeRL (async GRPO):** one trainer *step* = one optimizer update. Per step the system consumes `ppo_mini_batch_size` prompts × `rollout.n` rollouts per prompt. The dataloader samples with repetition, so the training pool is revisited across epochs within a stage. `trainer.total_epochs=1` disables the epoch cap — step count, not epoch count, is the run budget.
+
+**Active pool for A3:** unfiltered train split — Dr. SCI (~101,729) + corpus (~6,466) = **~108,195 rows**. No offline weighting, no subsampling, multi-part and PHYBench included.
+
+**Data quantity per stage decoupled from step count.** Formula:
+```
+epochs per stage ≈ (TOTAL_STEPS × ppo_mini_batch_size) / |pool|
+```
+Target: **1.5–3 epochs per stage**. Large pool keeps per-problem revisit count low; zero-advantage groups cost extra compute but don't hurt coverage.
+
+**Settings for the 4×A100-80G (train) + async rollout layout:**
+
+| Knob | Value | Reason |
+|---|---|---|
+| `rollout.n` (G) | 8 | Matches probe; standard GRPO group size for small models (SimpleRL, POLARIS) |
+| `ppo_mini_batch_size` | 128 | 1024 rollouts/step → low-noise policy gradient |
+| `ppo_micro_batch_size_per_gpu` | 2 | Room on 80 GB cards with FSDP-4 + optimizer-offload + grad ckpt |
+| `TOTAL_STEPS` per stage | **1500 initial, extend to 3000 if needed** | 1500 ≈ 1.8 epochs. Decide to extend after measuring plateau / 0-adv fraction |
+| `save_freq` | 200 | ≥7 checkpoints per stage — generous 48h-job resume points |
+| `test_freq` | 100 | Dev-set eval cadence |
+| `use_kl_loss`, `kl_loss_coef` | **False, 0.0** | DAPO + Dr. GRPO canonical. Makes A3's zero-advantage groups mathematically equivalent to filtering. |
+
+Hardware is **not** the binding constraint for batch: 4B + FSDP-4 + CPU-offloaded AdamW + grad ckpt leaves plenty of headroom at 20k sequence length.
+
+### Runtime estimate and rollout-node sizing (2026-04-14, calibrated from probe v5)
+
+**Probe calibration (measured):** single-H200 = **~2,400 rollouts/hr** (shard A: 4h 7m for 10k rollouts; shard B matched).
+
+**H200 → A100-80G conversion** for 4B decode at ~20k ctx: ~0.45–0.55× per-GPU (memory-bandwidth ratio 2.4×). In async with per-step weight sync (`trigger_parameter_sync_step=1`), subtract another ~25% overhead.
+→ **Effective A100 80G throughput ≈ 800–1,100 rollouts/hr per GPU.**
+
+**Trainer step ceiling (4B + 20k ctx + batch 128 on 4×A100 80G, FSDP-4 + CPU-offload + grad ckpt, micro_bs=2):** estimate 50–80 s/step → 45–70 steps/hr. **Measure in first smoke run before locking rollout-node count.**
+
+**Stage 1 wall-time projections:**
+
+| Rollout nodes | A100s | rollout/hr | Rollout-bound wall time (1500 / 3000 steps) | Trainer-bound floor |
+|---|---|---|---|---|
+| 3 | 12 | ~11k | ~140 h / ~280 h | — |
+| 4 | 16 | ~15k | ~100 h / ~205 h | — |
+| **5** | **20** | **~19k** | **~80 h / ~160 h** | ~25 / ~50 h |
+| 6 | 24 | ~23k | ~67 h / ~135 h | ~25 / ~50 h |
+
+At ≥5 rollout nodes the trainer becomes the ceiling; adding more rollout nodes past 5 saturates. **Target: 5 rollout nodes.**
+
+**Perlmutter 48h job cap:** Stage 1 at 1500 steps ≈ 2×48h jobs with 5 rollout nodes; 3000 steps ≈ 3–4×48h jobs. Use VeRL's `trainer.resume_mode=auto` to stitch jobs automatically.
+
+**First-run plan:** short (~50-step) smoke on 4×A100 + 1 rollout node to (a) confirm no pathology with zero-advantage groups, (b) measure actual trainer step time, (c) measure actual async rollout throughput on A100. Size the production run from real numbers.
+
+**Reference anchors (published GRPO runs for context):**
+
+| Project | Model | `ppo_mini_batch` | G | Rollouts/step |
+|---|---|---|---|---|
+| SimpleRL-Zoo | 7B | 128 | 8 | 1024 |
+| POLARIS | 4B | 128 | 8 | 1024 |
+| DAPO | 32B | 512 | 16 | 8192 |
+| DeepSeek-R1-Zero | 7B | 1024 | 64 | 65536 |
 
 ---
 

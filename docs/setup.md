@@ -20,8 +20,9 @@ Edit `.env`:
 export SBATCH_PARTITION=gpu      # GPU partition name
 export SBATCH_QOS=               # QOS if required, else leave blank
 export SBATCH_ACCOUNT=           # account if required, else leave blank
+export HF_TOKEN=hf_...           # required for step 5 (private dataset) and gated models
+export WANDB_API_KEY=...         # required for training logs (LOGGERS=console,wandb)
 # export HF_HOME=/path/to/hf_cache   # default: $ROOT/hf_cache
-# export WANDB_API_KEY=xxxx
 ```
 
 Source before every session:
@@ -62,12 +63,20 @@ This installs everything the project needs in one shot:
 
 Re-runnable. If you change `pyproject.toml` deps, just run it again.
 
-## 5. Prepare datasets
+## 5. Fetch dataset
+
+The merged train / validation / test parquets live on the HF Hub at
+[`xingzhi0/phys-tir`](https://huggingface.co/datasets/xingzhi0/phys-tir)
 
 ```bash
-bash scripts/prepare_data.sh     # 6.8k curated corpus → data/processed/corpus_train.parquet
-bash scripts/prepare_drsci.sh    # Dr. SCI ~108k      → data/processed/drsci_train.parquet
+export HF_TOKEN=hf_...   # your HF token (read access to the repo is sufficient)
+python scripts/fetch_dataset.py --repo-id xingzhi0/phys-tir --out-dir data/processed_hf
 ```
+
+This writes `data/processed_hf/data/{train,validation,test}.parquet`. The defaults
+in `scripts/train_async.sh` already point at these paths. See the dataset README
+on the Hub for schema (union `extra_info` struct, `pool` column for provenance)
+and source attribution.
 
 ## 6. Run tests
 
