@@ -60,7 +60,8 @@ Short document — read top-to-bottom the first time, treat as a reference after
 
 ## Stop conditions for the production run
 
-Watch wandb. Stop resubmitting (or reduce remaining budget) when any TWO of these trigger:
+`TOTAL_STEPS=3000` is the sbatch **ceiling** (~3 epochs on the 108k pool), not a target.
+Stop resubmitting when any TWO of these trigger:
 
 1. **Val plateau** — `val/score/mean` flat within ±0.5% for ≥3 consecutive eval points (≥300 steps)
 2. **Zero-advantage fraction** — `actor/zero_advantage_group_fraction` > 0.70
@@ -68,7 +69,8 @@ Watch wandb. Stop resubmitting (or reduce remaining budget) when any TWO of thes
 3. **Response length drop** — `actor/response_length/clip_ratio` near 0 AND reward ceiling-bound
    (model no longer using budget; capability ceiling for the current setup)
 
-Extend past 1500 steps only if NONE of the above fire and val is still climbing.
+A run that plateaus at 1500 and gets scancelled is **a successful run** — it's not
+abandoned compute. Don't chase the 3000 step count for its own sake.
 
 ---
 

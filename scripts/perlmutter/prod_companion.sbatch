@@ -80,14 +80,20 @@ trap cleanup_outer EXIT
 
 # -----------------------------------------------------------------------------
 # Resolve node roles. First node = trainer (Ray head). Others = rollout workers.
+# Accept >= 6 nodes so collaborator can scale rollout via --nodes=7/8/... at
+# submit time without editing this file.
 # -----------------------------------------------------------------------------
 NODES=( $(scontrol show hostnames "$SLURM_JOB_NODELIST") )
-(( ${#NODES[@]} == 6 )) || { echo "ERROR: expected 6 nodes, got ${#NODES[@]}" >&2; exit 1; }
+(( ${#NODES[@]} >= 6 )) || { echo "ERROR: expected >=6 nodes, got ${#NODES[@]}" >&2; exit 1; }
+echo "[topo] allocated ${#NODES[@]} nodes; using 1 trainer + $((${#NODES[@]} - 1)) rollout"
 HEAD_NODE="${NODES[0]}"
 WORKER_NODES=( "${NODES[@]:1}" )
 export HEAD_NODE WORKER_NODES
 
-export N_GPUS_TRAIN=4 N_GPUS_ROLLOUT=4
+export N_GPUS_TRAIN="${N_GPUS_TRAIN:-4}"
+export N_GPUS_ROLLOUT="${N_GPUS_ROLLOUT:-4}"
+export NNODES_TRAIN="${NNODES_TRAIN:-1}"
+export NNODES_ROLLOUT="${NNODES_ROLLOUT:-$(( ${#NODES[@]} - 1 ))}"
 export HET_SRUN_HEAD="" HET_SRUN_WORKER=""
 source "$ROOT/scripts/perlmutter/_ray_bringup.sh"
 
@@ -112,14 +118,13 @@ done
 export XVERIFY_URL
 echo "[xverify] URL=$XVERIFY_URL"
 
-# ----- production knobs (identical to prod_het.sbatch) -----
+# ----- production knobs (resource knobs already exported above) -----
 export MODEL="${MODEL:-Qwen/Qwen3.5-4B}"
-export N_GPUS_ROLLOUT=4 N_GPUS_TRAIN=4 NNODES_ROLLOUT=5 NNODES_TRAIN=1
 export TRAIN_BATCH="${TRAIN_BATCH:-128}"
 export ROLLOUT_N="${ROLLOUT_N:-8}"
-export TOTAL_STEPS="${TOTAL_STEPS:-1500}"
-export SAVE_FREQ="${SAVE_FREQ:-200}"
-export TEST_FREQ="${TEST_FREQ:-100}"
+export TOTAL_STEPS="${TOTAL_STEPS:-3000}"           # ~3 epochs over 108k pool
+export SAVE_FREQ="${SAVE_FREQ:-200}"                # 15 checkpoints across the run
+export TEST_FREQ="${TEST_FREQ:-100}"                # 30 eval points across the run
 export THINKING_BUDGET="${THINKING_BUDGET:-12288}"
 export TOOL_CALL_BUDGET="${TOOL_CALL_BUDGET:-2048}"
 export ANSWER_BUDGET="${ANSWER_BUDGET:-4096}"

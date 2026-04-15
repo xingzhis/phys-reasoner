@@ -131,20 +131,26 @@ XVERIFY_PID=$!
 
 # -----------------------------------------------------------------------------
 # Ray cluster bring-up (trainer = head, rollout = workers).
+# These defaults MUST match the #SBATCH --gpus-per-node / -N directives above —
+# if you override one via --export=ALL,N_GPUS_ROLLOUT=2 you must ALSO edit the
+# SBATCH header, otherwise Ray sees a different GPU count than Slurm allocated.
 # -----------------------------------------------------------------------------
-export N_GPUS_TRAIN=4
-export N_GPUS_ROLLOUT=4
+export N_GPUS_TRAIN="${N_GPUS_TRAIN:-4}"
+export N_GPUS_ROLLOUT="${N_GPUS_ROLLOUT:-4}"
+export NNODES_TRAIN="${NNODES_TRAIN:-1}"
+export NNODES_ROLLOUT="${NNODES_ROLLOUT:-5}"
 export HET_SRUN_HEAD="--het-group=0"
 export HET_SRUN_WORKER="--het-group=1"
 source "$ROOT/scripts/perlmutter/_ray_bringup.sh"
 
 # -----------------------------------------------------------------------------
-# Cleanup trap.
+# Cleanup trap. Guarded — ray_teardown is only defined by _ray_bringup.sh after
+# a successful source; if bring-up failed early this trap fires with it undefined.
 # -----------------------------------------------------------------------------
 cleanup() {
     local rc=$?
     echo "[cleanup] exit=$rc — tearing down Ray + xVerify"
-    ray_teardown
+    type ray_teardown &>/dev/null && ray_teardown || true
     kill "$XVERIFY_PID" 2>/dev/null || true
     return $rc
 }
@@ -154,7 +160,9 @@ trap cleanup EXIT
 # Poll for xVerify URL (server takes ~1-3 min to load the 7B model).
 # -----------------------------------------------------------------------------
 URL_FILE="$ROOT/outputs/xverify_endpoints/current.url"
-XVERIFY_WAIT_SECS="${XVERIFY_WAIT_SECS:-600}"
+# 900s covers cold HF cache + xVerify-7B load on a fresh node; het-group 2 starts
+# simultaneously with the others so there's no queue time to absorb.
+XVERIFY_WAIT_SECS="${XVERIFY_WAIT_SECS:-900}"
 echo "[xverify] polling $URL_FILE (timeout ${XVERIFY_WAIT_SECS}s) ..."
 deadline=$(( $(date +%s) + XVERIFY_WAIT_SECS ))
 while (( $(date +%s) < deadline )); do
@@ -174,18 +182,16 @@ export XVERIFY_URL
 
 # -----------------------------------------------------------------------------
 # Production knobs — override via sbatch --export=ALL,KEY=VAL to tweak.
+# N_GPUS_* / NNODES_* are already exported above (before Ray bring-up) so that
+# both Ray and verl see the same values; do NOT re-assign them here.
 # -----------------------------------------------------------------------------
 export MODEL="${MODEL:-Qwen/Qwen3.5-4B}"
-export N_GPUS_ROLLOUT=4
-export N_GPUS_TRAIN=4
-export NNODES_ROLLOUT=5
-export NNODES_TRAIN=1
 
 export TRAIN_BATCH="${TRAIN_BATCH:-128}"            # ppo_mini_batch_size
 export ROLLOUT_N="${ROLLOUT_N:-8}"                  # GRPO group size
-export TOTAL_STEPS="${TOTAL_STEPS:-1500}"           # start 1500, extend via resume if needed
-export SAVE_FREQ="${SAVE_FREQ:-200}"
-export TEST_FREQ="${TEST_FREQ:-100}"
+export TOTAL_STEPS="${TOTAL_STEPS:-3000}"           # ~3 epochs over 108k pool
+export SAVE_FREQ="${SAVE_FREQ:-200}"                # 15 checkpoints across the run
+export TEST_FREQ="${TEST_FREQ:-100}"                # 30 eval points across the run
 
 # Sequence budgets (match probe).
 export THINKING_BUDGET="${THINKING_BUDGET:-12288}"

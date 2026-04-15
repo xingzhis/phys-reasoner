@@ -89,7 +89,7 @@ for i in range(120):
         print('[ray-probe] READY', flush=True); sys.exit(0)
     time.sleep(2)
 sys.exit(1)
-" || { echo "ERROR: ray cluster bootstrap failed" >&2; return 1; }
+" || { echo "ERROR: ray cluster bootstrap failed" >&2; exit 1; }
 
 # Handy teardown helper callers can invoke in a trap.
 ray_teardown() {

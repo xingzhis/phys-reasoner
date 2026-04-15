@@ -76,24 +76,29 @@ fi
 
 # --- 3. data parquets ---
 step "3  data parquets"
-# Default paths produced by scripts/fetch_dataset.py --out-dir data/processed_hf
+# FETCH_OUT_DIR must match the --out-dir passed to scripts/fetch_dataset.py.
+# Default tracks fetch_dataset.py's own default (data/processed_hf).
+FETCH_OUT_DIR="${FETCH_OUT_DIR:-data/processed_hf}"
 need=(
-    "data/processed_hf/data/train.parquet"
-    "data/processed_hf/data/validation.parquet"
-    "data/processed_hf/data/test.parquet"
+    "$FETCH_OUT_DIR/data/train.parquet"
+    "$FETCH_OUT_DIR/data/validation.parquet"
+    "$FETCH_OUT_DIR/data/test.parquet"
 )
 missing=()
 for f in "${need[@]}"; do
     [[ -f "$ROOT/$f" ]] || missing+=("$f")
 done
 if (( ${#missing[@]} )); then
-    echo "  MISSING:"
+    echo "  MISSING (looked under $FETCH_OUT_DIR):"
     for f in "${missing[@]}"; do echo "    - $f"; done
     echo
-    echo "  Fetch them: HF_TOKEN=hf_... python3 scripts/fetch_dataset.py --repo-id <user>/phys-tir"
+    echo "  Fetch them inside apptainer (see docs/setup.md):"
+    echo "    HF_TOKEN=hf_... APT python3 scripts/fetch_dataset.py --repo-id <user>/phys-tir \\"
+    echo "                                                         --out-dir $FETCH_OUT_DIR"
+    echo "  Or override the check path: FETCH_OUT_DIR=<your-dir> bash scripts/perlmutter/bootstrap.sh"
     fail "parquets missing"
 fi
-echo "  all required parquets present"
+echo "  all required parquets present under $FETCH_OUT_DIR"
 
 echo
 echo "=== bootstrap PASSED ==="
