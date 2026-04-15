@@ -69,8 +69,17 @@ The merged train / validation / test parquets live on the HF Hub at
 [`xingzhi0/phys-tir`](https://huggingface.co/datasets/xingzhi0/phys-tir)
 
 ```bash
-export HF_TOKEN=hf_...   # your HF token (read access to the repo is sufficient)
-python scripts/fetch_dataset.py --repo-id xingzhi0/phys-tir --out-dir data/processed_hf
+source env.sh
+# rememebr to edit this in .env: export HF_TOKEN=hf_...   # your HF token (read access to the repo is sufficient)
+
+PYTHONNOUSERSITE=1 apptainer exec \
+  --overlay "$OVERLAY:ro" --bind /etc/pki:/etc/pki \
+  --env "PYTHONNOUSERSITE=1" \
+  --env "PYTHONPATH=/opt/phys-extras/" \
+  --env "HF_TOKEN=$HF_TOKEN" \
+  --env "HF_HOME=$HF_HOME" \
+  "$SIF" \
+  python3 scripts/fetch_dataset.py --repo-id xingzhi0/phys-tir --out-dir data/processed_hf
 ```
 
 This writes `data/processed_hf/data/{train,validation,test}.parquet`. The defaults

@@ -43,11 +43,13 @@ echo "  OVERLAY: $OVERLAY"
 # Configurable params — override via env vars
 # ---------------------------------------------------------------------------
 MODEL="${MODEL:-Qwen/Qwen3.5-4B}"
-# Defaults are the production-correct split outputs (Step 0b in
-# .claude/plans/data-pipeline.md). Smoke / rehearsal sbatch scripts override
+# Defaults point at the merged parquets fetched from the HF dataset
+# `xingzhi0/phys-tir` via scripts/fetch_dataset.py (docs/setup.md step 5).
+# Each split is a union of the curated + Dr. SCI pools; rows carry a `pool`
+# column for provenance. Smoke / rehearsal sbatch scripts override
 # TRAIN_FILES to data/processed/probe_subset.parquet for speed.
-TRAIN_FILES="${TRAIN_FILES:-$ROOT/data/processed/drsci_train_split.parquet}"
-VAL_FILES="${VAL_FILES:-$ROOT/data/processed/drsci_dev.parquet}"
+TRAIN_FILES="${TRAIN_FILES:-$ROOT/data/processed_hf/data/train.parquet}"
+VAL_FILES="${VAL_FILES:-$ROOT/data/processed_hf/data/validation.parquet}"
 
 # Resource split: rollout and trainer live on disjoint GPUs on this node.
 N_GPUS_ROLLOUT="${N_GPUS_ROLLOUT:-1}"
@@ -84,6 +86,16 @@ TEST_FREQ="${TEST_FREQ:--1}"            # -1 = never validate during smoke runs
 LR="${LR:-1e-6}"
 # Rollout GPU is dedicated in async mode → higher vLLM mem util is safe.
 VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-0.8}"
+
+# Rollout vLLM enforce_eager — disables CUDA graph capture in the rollout engine.
+# Default False (CUDA graphs on) — A100 40G confirmed clean with Qwen3.5
+# 0.8B end-to-end async smoke (2026-04-14). Recovers ~5-15% decode throughput
+# vs enforce_eager=True. Override to True only if you see output degeneration
+# (!!!) or hangs — note that the Roberts H200 sample_tokens hang we debugged
+# on 2026-04-14 was NOT fixed by enforce_eager=True, so the dump_rollouts.py:300
+# comment about GDN + CUDA graphs is not causal for that hang (likely a
+# Hopper-specific vLLM v1 multiproc-executor issue).
+ROLLOUT_ENFORCE_EAGER="${ROLLOUT_ENFORCE_EAGER:-False}"
 
 # Wandb
 WANDB_PROJECT="${WANDB_PROJECT:-physcode_tir}"
@@ -184,6 +196,12 @@ PYTHONNOUSERSITE=1 apptainer exec --nv \
   python3 -m verl.experimental.fully_async_policy.fully_async_main \
     algorithm.adv_estimator=grpo \
     algorithm.use_kl_in_reward=False \
+    algorithm.kl_ctrl.kl_coef=0.0 \
+    algorithm.norm_adv_by_std_in_grpo=False \
+    actor_rollout_ref.actor.loss_agg_mode=token-mean \
+    actor_rollout_ref.actor.clip_ratio_low=0.2 \
+    actor_rollout_ref.actor.clip_ratio_high=0.28 \
+    actor_rollout_ref.actor.clip_ratio_c=10.0 \
     data.train_files="$TRAIN_FILES" \
     data.val_files="$VAL_FILES" \
     data.train_batch_size=0 \
@@ -204,9 +222,8 @@ PYTHONNOUSERSITE=1 apptainer exec --nv \
     actor_rollout_ref.actor.ppo_mini_batch_size=$PPO_MINI_BATCH \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=$PPO_MICRO_BS_PER_GPU \
     actor_rollout_ref.actor.ppo_epochs=1 \
-    actor_rollout_ref.actor.use_kl_loss=True \
-    actor_rollout_ref.actor.kl_loss_coef=0.001 \
-    actor_rollout_ref.actor.kl_loss_type=low_var_kl \
+    actor_rollout_ref.actor.use_kl_loss=False \
+    actor_rollout_ref.actor.kl_loss_coef=0.0 \
     actor_rollout_ref.actor.entropy_coeff=0 \
     actor_rollout_ref.actor.use_rollout_log_probs=True \
     actor_rollout_ref.actor.fsdp_config.strategy=fsdp \
@@ -228,6 +245,7 @@ PYTHONNOUSERSITE=1 apptainer exec --nv \
     actor_rollout_ref.rollout.load_format=safetensors \
     actor_rollout_ref.rollout.enable_prefix_caching=True \
     actor_rollout_ref.rollout.enable_chunked_prefill=True \
+    actor_rollout_ref.rollout.enforce_eager=$ROLLOUT_ENFORCE_EAGER \
     actor_rollout_ref.rollout.tensor_model_parallel_size=$N_GPUS_ROLLOUT \
     actor_rollout_ref.rollout.calculate_log_probs=True \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=$LOG_PROB_MICRO_BS_PER_GPU \
