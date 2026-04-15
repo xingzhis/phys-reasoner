@@ -63,12 +63,16 @@ cleanup_outer() {
 trap cleanup_outer EXIT
 
 NODES=( $(scontrol show hostnames "$SLURM_JOB_NODELIST") )
-(( ${#NODES[@]} == 6 )) || { echo "ERROR: need 6 nodes, got ${#NODES[@]}" >&2; exit 1; }
+(( ${#NODES[@]} >= 6 )) || { echo "ERROR: need >=6 nodes, got ${#NODES[@]}" >&2; exit 1; }
+echo "[topo] allocated ${#NODES[@]} nodes; using 1 trainer + $((${#NODES[@]} - 1)) rollout"
 HEAD_NODE="${NODES[0]}"
 WORKER_NODES=( "${NODES[@]:1}" )
 export HEAD_NODE WORKER_NODES
 
-export N_GPUS_TRAIN=4 N_GPUS_ROLLOUT=4
+export N_GPUS_TRAIN="${N_GPUS_TRAIN:-4}"
+export N_GPUS_ROLLOUT="${N_GPUS_ROLLOUT:-4}"
+export NNODES_TRAIN="${NNODES_TRAIN:-1}"
+export NNODES_ROLLOUT="${NNODES_ROLLOUT:-$(( ${#NODES[@]} - 1 ))}"
 export HET_SRUN_HEAD="" HET_SRUN_WORKER=""
 source "$ROOT/scripts/perlmutter/_ray_bringup.sh"
 
@@ -82,9 +86,8 @@ done
 export XVERIFY_URL
 echo "[xverify] URL=$XVERIFY_URL"
 
-# ----- smoke knobs -----
+# ----- smoke knobs (resource knobs already exported above) -----
 export MODEL="${MODEL:-Qwen/Qwen3.5-4B}"
-export N_GPUS_ROLLOUT=4 N_GPUS_TRAIN=4 NNODES_ROLLOUT=5 NNODES_TRAIN=1
 export TRAIN_BATCH="${TRAIN_BATCH:-128}"
 export ROLLOUT_N="${ROLLOUT_N:-8}"
 export TOTAL_STEPS="${TOTAL_STEPS:-10}"

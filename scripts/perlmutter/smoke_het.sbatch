@@ -91,20 +91,26 @@ srun --het-group=2 --nodes=1 --ntasks=1 \
      bash "$ROOT/scripts/serve_xverify.sh" &
 XVERIFY_PID=$!
 
-export N_GPUS_TRAIN=4 N_GPUS_ROLLOUT=4
+# Resource knobs MUST match the #SBATCH directives above; env overrides must
+# also edit the SBATCH header or Ray/Slurm will disagree on allocated GPUs.
+export N_GPUS_TRAIN="${N_GPUS_TRAIN:-4}"
+export N_GPUS_ROLLOUT="${N_GPUS_ROLLOUT:-4}"
+export NNODES_TRAIN="${NNODES_TRAIN:-1}"
+export NNODES_ROLLOUT="${NNODES_ROLLOUT:-5}"
 export HET_SRUN_HEAD="--het-group=0" HET_SRUN_WORKER="--het-group=1"
 source "$ROOT/scripts/perlmutter/_ray_bringup.sh"
 
 cleanup() {
     local rc=$?
-    ray_teardown
+    type ray_teardown &>/dev/null && ray_teardown || true
     kill "$XVERIFY_PID" 2>/dev/null || true
     return $rc
 }
 trap cleanup EXIT
 
 URL_FILE="$ROOT/outputs/xverify_endpoints/current.url"
-deadline=$(( $(date +%s) + 600 ))
+XVERIFY_WAIT_SECS="${XVERIFY_WAIT_SECS:-900}"
+deadline=$(( $(date +%s) + XVERIFY_WAIT_SECS ))
 while (( $(date +%s) < deadline )); do
     [[ -f "$URL_FILE" ]] && { XVERIFY_URL=$(head -n1 "$URL_FILE"); break; }
     sleep 10
@@ -113,9 +119,8 @@ done
 export XVERIFY_URL
 echo "[xverify] URL=$XVERIFY_URL"
 
-# ----- smoke overrides -----
+# ----- smoke overrides (resource knobs already exported above) -----
 export MODEL="${MODEL:-Qwen/Qwen3.5-4B}"
-export N_GPUS_ROLLOUT=4 N_GPUS_TRAIN=4 NNODES_ROLLOUT=5 NNODES_TRAIN=1
 export TRAIN_BATCH="${TRAIN_BATCH:-128}"
 export ROLLOUT_N="${ROLLOUT_N:-8}"
 export TOTAL_STEPS="${TOTAL_STEPS:-10}"
