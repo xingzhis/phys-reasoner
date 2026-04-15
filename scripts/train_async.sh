@@ -135,8 +135,24 @@ fi
 PPO_MINI_BATCH=$TRAIN_BATCH
 # Per-GPU micro batch on the trainer side. Default to 1 on the async path
 # because the trainer GPU is typically the memory-constrained one in smoke runs.
+# When USE_DYNAMIC_BSZ=1, these are ignored — verl autoscales micro-batches to
+# fit ppo_max_token_len_per_gpu instead (preferred for long thinking rollouts).
 PPO_MICRO_BS_PER_GPU="${PPO_MICRO_BS_PER_GPU:-1}"
 LOG_PROB_MICRO_BS_PER_GPU="${LOG_PROB_MICRO_BS_PER_GPU:-$PPO_MICRO_BS_PER_GPU}"
+
+# Dynamic batch-size autosizing (recommended for long-thinking TIR rollouts).
+# When USE_DYNAMIC_BSZ=1, micro-batches pack up to ppo_max_token_len_per_gpu
+# tokens regardless of sequence count — no more OOMs on tail-long responses.
+# ref + rollout log_prob max token len default to this same value via oc.select.
+USE_DYNAMIC_BSZ="${USE_DYNAMIC_BSZ:-0}"
+PPO_MAX_TOKEN_LEN_PER_GPU="${PPO_MAX_TOKEN_LEN_PER_GPU:-24576}"
+
+# LR schedule. Defaults match DAPO / SimpleRL canonical recipes:
+#   constant LR with 20-step linear warmup. Set LR_SCHEDULER_TYPE=cosine and
+#   LR_MIN_RATIO=0.1 for a cosine decay from LR → LR*0.1 over the full run.
+LR_SCHEDULER_TYPE="${LR_SCHEDULER_TYPE:-constant}"
+LR_WARMUP_STEPS="${LR_WARMUP_STEPS:-20}"
+LR_MIN_RATIO="${LR_MIN_RATIO:-}"
 
 TIMESTAMP=$(date +%Y%m%d.%H%M%S)
 # EXPERIMENT can be pinned via env so resume runs land in the same default_local_dir.
@@ -219,7 +235,12 @@ PYTHONNOUSERSITE=1 apptainer exec --nv \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
     '+actor_rollout_ref.model.override_config={attn_implementation:sdpa}' \
     actor_rollout_ref.actor.optim.lr=$LR \
+    actor_rollout_ref.actor.optim.lr_scheduler_type=$LR_SCHEDULER_TYPE \
+    actor_rollout_ref.actor.optim.lr_warmup_steps=$LR_WARMUP_STEPS \
+    ${LR_MIN_RATIO:+actor_rollout_ref.actor.optim.min_lr_ratio=$LR_MIN_RATIO} \
     actor_rollout_ref.actor.ppo_mini_batch_size=$PPO_MINI_BATCH \
+    actor_rollout_ref.actor.use_dynamic_bsz=$([[ "$USE_DYNAMIC_BSZ" == "1" ]] && echo True || echo False) \
+    actor_rollout_ref.actor.ppo_max_token_len_per_gpu=$PPO_MAX_TOKEN_LEN_PER_GPU \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=$PPO_MICRO_BS_PER_GPU \
     actor_rollout_ref.actor.ppo_epochs=1 \
     actor_rollout_ref.actor.use_kl_loss=False \
