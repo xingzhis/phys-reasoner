@@ -79,11 +79,21 @@ step "3  data parquets"
 # FETCH_OUT_DIR must match the --out-dir passed to scripts/fetch_dataset.py.
 # Default tracks fetch_dataset.py's own default (data/processed_hf).
 FETCH_OUT_DIR="${FETCH_OUT_DIR:-data/processed_hf}"
+# Second path only needed if the CoT baseline run (prod_cot.sbatch) will be submitted.
+# Set FETCH_COT_OUT_DIR="" or pass SKIP_COT_CHECK=1 to bypass if you only need TIR.
+FETCH_COT_OUT_DIR="${FETCH_COT_OUT_DIR:-data/processed_cot}"
 need=(
     "$FETCH_OUT_DIR/data/train.parquet"
     "$FETCH_OUT_DIR/data/validation.parquet"
     "$FETCH_OUT_DIR/data/test.parquet"
 )
+if [[ "${SKIP_COT_CHECK:-0}" != "1" && -n "$FETCH_COT_OUT_DIR" ]]; then
+    need+=(
+        "$FETCH_COT_OUT_DIR/data/train.parquet"
+        "$FETCH_COT_OUT_DIR/data/validation.parquet"
+        "$FETCH_COT_OUT_DIR/data/test.parquet"
+    )
+fi
 missing=()
 for f in "${need[@]}"; do
     [[ -f "$ROOT/$f" ]] || missing+=("$f")

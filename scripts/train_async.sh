@@ -87,6 +87,14 @@ LR="${LR:-1e-6}"
 # Rollout GPU is dedicated in async mode → higher vLLM mem util is safe.
 VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-0.8}"
 
+# CoT baseline mode — disable tool use entirely. Paper-grade comparison against
+# the TIR-GRPO main run. Flips verl's agent loop to single_turn and turns off
+# multi-turn parsing so the rollout is one pure completion. The system prompt
+# in the parquet still mentions the Python tool; for a fully prompt-clean CoT
+# baseline, also pre-process the parquet with a CoT system prompt (see
+# scripts/perlmutter/prod_cot.sbatch for the wrapper).
+COT_BASELINE="${COT_BASELINE:-0}"
+
 # Rollout vLLM enforce_eager — disables CUDA graph capture in the rollout engine.
 # Default False (CUDA graphs on) — A100 40G confirmed clean with Qwen3.5
 # 0.8B end-to-end async smoke (2026-04-14). Recovers ~5-15% decode throughput
@@ -162,8 +170,17 @@ EXPERIMENT="${EXPERIMENT:-grpo_async_${TIMESTAMP}}"
 TRAIN_DIR="$ROOT/outputs/$WANDB_PROJECT/$EXPERIMENT"
 mkdir -p "$TRAIN_DIR" "$ROOT/logs"
 
+if [[ "$COT_BASELINE" == "1" ]]; then
+    AGENT_LOOP="single_turn_agent"
+    MULTI_TURN_ENABLE="false"
+else
+    AGENT_LOOP="tool_agent"
+    MULTI_TURN_ENABLE="true"
+fi
+
 echo "=== train_async.sh: PhysCode GRPO TIR training (fully_async_policy) ==="
 echo "  model       : $MODEL"
+echo "  mode        : $([ "$COT_BASELINE" == "1" ] && echo 'CoT baseline (no tool)' || echo 'TIR (tool enabled)')"
 echo "  train       : $TRAIN_FILES"
 echo "  val         : $VAL_FILES"
 echo "  resource    : rollout ${NNODES_ROLLOUT}n x ${N_GPUS_ROLLOUT}g | train ${NNODES_TRAIN}n x ${N_GPUS_TRAIN}g"
@@ -271,8 +288,8 @@ PYTHONNOUSERSITE=1 apptainer exec --nv \
     actor_rollout_ref.rollout.calculate_log_probs=True \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=$LOG_PROB_MICRO_BS_PER_GPU \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=$LOG_PROB_MICRO_BS_PER_GPU \
-    actor_rollout_ref.rollout.agent.default_agent_loop=tool_agent \
-    actor_rollout_ref.rollout.multi_turn.enable=true \
+    actor_rollout_ref.rollout.agent.default_agent_loop=$AGENT_LOOP \
+    actor_rollout_ref.rollout.multi_turn.enable=$MULTI_TURN_ENABLE \
     actor_rollout_ref.rollout.multi_turn.format=qwen3_coder \
     actor_rollout_ref.rollout.multi_turn.tool_config_path="$ROOT/scripts/physcode_tools.yaml" \
     actor_rollout_ref.rollout.multi_turn.max_assistant_turns=$((MAX_TOOL_TURNS * 2)) \

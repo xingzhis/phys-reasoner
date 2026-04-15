@@ -10,8 +10,9 @@ Concise. See [`checklist.md`](checklist.md) for pass criteria and troubleshootin
 | `probe_xverify.py` | Standalone xVerify health + correctness check |
 | `smoke_het.sbatch` | 3-group het smoke (5+1+1), 10 steps, dumps on |
 | `smoke_companion.sbatch` | Fallback smoke: 6-node alloc + separate xverify sbatch |
-| `prod_het.sbatch` | 3-group het production, 3000 steps |
-| `prod_companion.sbatch` | Fallback production, 3000 steps, separate xverify |
+| `prod_het.sbatch` | 3-group het production (TIR, tool-enabled), 3000 steps |
+| `prod_companion.sbatch` | Fallback production (TIR), 3000 steps, separate xverify |
+| `prod_cot.sbatch` | CoT baseline ablation — same hparams, tool disabled |
 | `serve_xverify_perlmutter.sbatch` | xVerify server for the companion variants |
 | `_ray_bringup.sh` | Shared Ray head/worker logic (sourced, not executed) |
 | `checklist.md` | Pre-submit checklist, pass criteria, stop conditions |
@@ -42,16 +43,19 @@ sbatch pull_docker.sbatch
 bash   scripts/setup_overlay.sh
 
 # Fetch the training parquets — MUST run inside the container (see docs/setup.md §5).
-# Put HF_TOKEN in .env first (read access to xingzhi0/phys-tir is sufficient).
+# Two datasets: phys-tir (TIR training + validation) and phys-cot (CoT baseline
+# ablation — same rows, system prompt swapped so the model isn't primed to call
+# tools). Put HF_TOKEN in .env first (read access is sufficient).
 source env.sh
-PYTHONNOUSERSITE=1 apptainer exec \
-  --overlay "$OVERLAY:ro" --bind /etc/pki:/etc/pki \
-  --env "PYTHONNOUSERSITE=1" \
-  --env "PYTHONPATH=/opt/phys-extras/" \
-  --env "HF_TOKEN=$HF_TOKEN" \
-  --env "HF_HOME=$HF_HOME" \
-  "$SIF" \
-  python3 scripts/fetch_dataset.py --repo-id xingzhi0/phys-tir --out-dir data/processed_hf
+APT() {
+  PYTHONNOUSERSITE=1 apptainer exec \
+    --overlay "$OVERLAY:ro" --bind /etc/pki:/etc/pki \
+    --env "PYTHONNOUSERSITE=1" --env "PYTHONPATH=/opt/phys-extras/" \
+    --env "HF_TOKEN=$HF_TOKEN" --env "HF_HOME=$HF_HOME" \
+    "$SIF" "$@"
+}
+APT python3 scripts/fetch_dataset.py --repo-id xingzhi0/phys-tir --out-dir data/processed_hf
+APT python3 scripts/fetch_dataset.py --repo-id xingzhi0/phys-cot --out-dir data/processed_cot
 
 # Verify env (login node, CPU-only, idempotent)
 bash scripts/perlmutter/bootstrap.sh
@@ -86,8 +90,9 @@ sbatch --export=ALL,TOTAL_STEPS=20,SAVE_FREQ=5 scripts/perlmutter/smoke_het.sbat
 sbatch --export=ALL,EXPERIMENT=<prev>,TOTAL_STEPS=20 scripts/perlmutter/smoke_het.sbatch
 
 # Production — 3000 steps. Resubmit with same EXPERIMENT to extend across 48h caps.
-sbatch scripts/perlmutter/prod_het.sbatch
-sbatch --export=ALL,EXPERIMENT=<prev> scripts/perlmutter/prod_het.sbatch
+sbatch scripts/perlmutter/prod_het.sbatch                           # TIR (main method)
+sbatch --export=ALL,EXPERIMENT=<prev> scripts/perlmutter/prod_het.sbatch  # resume
+sbatch scripts/perlmutter/prod_cot.sbatch                           # CoT baseline
 ```
 
 ## 5. GPU class (40G default, 80G supported)
