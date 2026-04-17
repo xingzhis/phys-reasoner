@@ -89,11 +89,19 @@ bash scripts/perlmutter/bootstrap.sh
 
 ## 2. Fill cluster-specific TODOs
 
+Only three things are cluster-specific — data paths are already baked into the sbatch files.
+
 ```bash
 grep -n 'TODO(collab)' scripts/perlmutter/*.sbatch
 ```
 
-At minimum: `-A <account>_g`, `-C gpu` (or `-C gpu&a100_80gb` for 80G), `-q regular`.
+| Field | What to change | Where |
+|---|---|---|
+| `#SBATCH -A` | Replace `TODO_ACCOUNT_g` with your NERSC GPU account (e.g. `m1234_g`) | Every `#SBATCH -A` line in every sbatch |
+| `#SBATCH -C` | `-C gpu` = A100-40G (default). For 80G use `-C 'gpu&a100_80gb'` (confirm feature name on your cluster) | Every het-group and companion script |
+| `#SBATCH -q` | `-q regular` is the 48h default. For xVerify: `-q shared` with `--gpus-per-task=1` if your cluster supports fractional allocation, otherwise use the `*_companion.sbatch` variants | xVerify group in `prod_tir_het.sbatch` / `smoke_tir_het.sbatch` / `prod_cot_het.sbatch` |
+
+Fastest path: run `sed -i 's/TODO_ACCOUNT_g/<your-account>_g/g' scripts/perlmutter/*.sbatch`, then decide on GPU class (40G or 80G) and QoS policy.
 
 ## 3. Flow
 

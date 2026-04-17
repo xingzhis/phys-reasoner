@@ -132,7 +132,6 @@ export VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-0.85}"
 export USE_DYNAMIC_BSZ="${USE_DYNAMIC_BSZ:-1}"
 export PPO_MAX_TOKEN_LEN_PER_GPU="${PPO_MAX_TOKEN_LEN_PER_GPU:-24576}"
 export ACTOR_OPT_OFFLOAD="${ACTOR_OPT_OFFLOAD:-True}"
-# TODO(collab): data paths from fetch_dataset.py
 export TRAIN_FILES="${TRAIN_FILES:-$ROOT/data/processed_tir/data/train.parquet}"
 export VAL_FILES="${VAL_FILES:-$ROOT/data/processed_tir/data/validation.parquet}"
 export WANDB_PROJECT="${WANDB_PROJECT:-physcode_tir}"

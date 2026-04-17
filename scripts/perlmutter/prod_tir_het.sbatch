@@ -207,8 +207,7 @@ export USE_DYNAMIC_BSZ="${USE_DYNAMIC_BSZ:-1}"
 export PPO_MAX_TOKEN_LEN_PER_GPU="${PPO_MAX_TOKEN_LEN_PER_GPU:-24576}"
 export ACTOR_OPT_OFFLOAD="${ACTOR_OPT_OFFLOAD:-True}"
 
-# Data — collaborator will set these from fetch_dataset.py output.
-# TODO(collab): point TRAIN_FILES and VAL_FILES at the Perlmutter-local paths.
+# Data defaults resolve to the local HF-download path (fetch_dataset.py output).
 export TRAIN_FILES="${TRAIN_FILES:-$ROOT/data/processed_tir/data/train.parquet}"
 export VAL_FILES="${VAL_FILES:-$ROOT/data/processed_tir/data/validation.parquet}"
 
