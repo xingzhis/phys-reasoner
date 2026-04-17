@@ -491,7 +491,3 @@ def test_xverify_rule_override(xverify):
     assert xv_result is True
 
 
-@pytest.mark.slow
-def test_xverify_logprob_in_range(xverify):
-    score = xverify.get_logprob_score("3.14", "3.14159")
-    assert 0.0 <= score <= 1.0

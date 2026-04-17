@@ -23,7 +23,6 @@ logger = logging.getLogger("xverify_server")
 
 _JUDGE = None
 _JUDGE_LOCK = threading.Lock()
-_THRESHOLD = 0.5  # P("Correct") cutoff for the soft-score path
 _DEBUG = False    # set from XVERIFY_DEBUG=1 in main()
 
 
@@ -67,11 +66,10 @@ class _Handler(BaseHTTPRequestHandler):
         pred = req.get("pred", "") or ""
         gold = req.get("gold", "") or ""
         problem = req.get("problem", "") or ""
-        mode = req.get("mode", "generate")
         if _DEBUG:
             logger.info(
-                "judge req lens pred=%d gold=%d problem=%d mode=%s",
-                len(pred), len(gold), len(problem), mode,
+                "judge req lens pred=%d gold=%d problem=%d",
+                len(pred), len(gold), len(problem),
             )
         if _JUDGE is None:
             self._send_json(503, {"error": "judge not ready"})
@@ -79,13 +77,8 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             with _JUDGE_LOCK:
                 try:
-                    if mode == "generate":
-                        # autoregressive decode path (original __call__)
-                        correct = _JUDGE(pred, gold, problem)
-                        score = 1.0 if correct else 0.0
-                    else:
-                        # logprob path: one forward pass, no autoregressive decode
-                        score = _JUDGE.get_logprob_score(pred, gold, problem)
+                    correct = _JUDGE(pred, gold, problem)
+                    score = 1.0 if correct else 0.0
                 except Exception:
                     # Best-effort GPU recovery so one bad request doesn't poison
                     # subsequent calls. Re-raise so the outer except logs it.
@@ -95,7 +88,7 @@ class _Handler(BaseHTTPRequestHandler):
                     except Exception:
                         pass
                     raise
-            self._send_json(200, {"correct": score >= _THRESHOLD, "score": score})
+            self._send_json(200, {"correct": bool(score), "score": score})
         except Exception as e:  # noqa: BLE001
             logger.exception("judge error: %s", e)
             self._send_json(500, {"error": str(e)})
@@ -116,7 +109,6 @@ def main():
     ap.add_argument("--port", type=int, default=int(os.environ.get("XVERIFY_PORT", "8765")))
     ap.add_argument("--model", default=os.environ.get("XVERIFY_MODEL", "IAAR-Shanghai/xVerify-7B-I"))
     ap.add_argument("--device", default=os.environ.get("XVERIFY_DEVICE", "cuda"))
-    ap.add_argument("--threshold", type=float, default=0.5)
     args = ap.parse_args()
 
     logging.basicConfig(
@@ -124,14 +116,13 @@ def main():
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    global _JUDGE, _THRESHOLD, _DEBUG
-    _THRESHOLD = args.threshold
+    global _JUDGE, _DEBUG
     _DEBUG = os.environ.get("XVERIFY_DEBUG", "").strip() not in ("", "0", "false", "False")
     if _DEBUG:
         logger.info("XVERIFY_DEBUG enabled — per-request length logging on")
     logger.info("loading %s on %s ...", args.model, args.device)
     _JUDGE = _load_judge(args.model, args.device)
-    logger.info("ready: serving on %s:%d (threshold=%.2f)", args.host, args.port, _THRESHOLD)
+    logger.info("ready: serving on %s:%d", args.host, args.port)
 
     server = ThreadingHTTPServer((args.host, args.port), _Handler)
     try:

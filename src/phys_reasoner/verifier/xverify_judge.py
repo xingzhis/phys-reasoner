@@ -40,9 +40,6 @@ class XVerifyJudge:
         )
         self.model.eval()
         self._device = device
-        # Cache token IDs for "Correct"/"Incorrect" — constant for a given tokenizer
-        self._correct_id = self.tokenizer.encode("Correct", add_special_tokens=False)[0]
-        self._incorrect_id = self.tokenizer.encode("Incorrect", add_special_tokens=False)[0]
 
     def _build_prompt(self, pred_str: str, gold_str: str, problem_str: str) -> str:
         return _XVERIFY_PROMPT.format(
@@ -67,18 +64,3 @@ class XVerifyJudge:
         new_tokens = out[0][inputs["input_ids"].shape[1]:]
         response = self.tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
         return response.lower().startswith("correct")
-
-    def get_logprob_score(self, pred_str: str, gold_str: str, problem_str: str = "") -> float:
-        """Return P("Correct") from the first token logits (soft score in [0, 1])."""
-        import torch
-        import torch.nn.functional as F
-
-        prompt = self._build_prompt(pred_str, gold_str, problem_str)
-        inputs = self.tokenizer(prompt, return_tensors="pt").to(self._device)
-
-        with torch.no_grad():
-            logits = self.model(**inputs).logits[0, -1, :]  # last token logits
-
-        pair_logits = logits[[self._correct_id, self._incorrect_id]]
-        probs = F.softmax(pair_logits, dim=0)
-        return probs[0].item()

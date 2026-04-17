@@ -15,27 +15,20 @@ and per-call latency percentiles. The delta A vs B tells you whether the
 server's GPU lock is the bottleneck (no speedup => yes; speedup => the
 server can already absorb concurrency and batching would help further).
 
---judge-mode compare (default) runs both logprob and generate sequentially
-on the same workload and prints latency + agreement stats so you can decide
-whether the logprob shortcut is worth keeping.
-
 Usage:
   XVERIFY_URL=http://misha00:8765/judge \\
     python3 scripts/bench_xverify.py \\
       --parquet data/processed/drsci_physics_clean.parquet \\
-      --n 300 --threads 8 --judge-mode compare
+      --n 300 --threads 8
 """
 
 from __future__ import annotations
 
 import argparse
-import http.client
-import json
 import os
 import random
 import time
 from concurrent.futures import ThreadPoolExecutor
-from urllib.parse import urlparse
 
 import pandas as pd
 
@@ -197,138 +190,37 @@ def _print_report(name: str, r: dict) -> None:
         print(f"  compute_score : p50={_pct(cs_lat,50):.0f}  p95={_pct(cs_lat,95):.0f}  max={max(cs_lat):.0f}")
 
 
-class _ModeClient:
-    """Minimal HTTP client that sends a specific judge mode to the server.
-
-    Exists only for benchmarking — production code uses XVerifyHTTPClient
-    which sends no mode field (server uses its configured default). Quacks
-    like XVerifyJudge: callable as (pred, gold, problem).
-    """
-
-    def __init__(self, url: str, mode: str, timeout: float = 30.0):
-        parsed = urlparse(url)
-        self._host = parsed.hostname
-        self._port = parsed.port or 80
-        self._path = parsed.path or "/judge"
-        self._mode = mode
-        self._timeout = timeout
-
-    def __call__(self, pred_str: str, gold_str: str, problem_str: str = "") -> bool:
-        body = json.dumps(
-            {"pred": pred_str, "gold": gold_str, "problem": problem_str, "mode": self._mode}
-        ).encode("utf-8")
-        conn = http.client.HTTPConnection(self._host, self._port, timeout=self._timeout)
-        try:
-            conn.request("POST", self._path, body=body,
-                         headers={"Content-Type": "application/json"})
-            resp = conn.getresponse()
-            payload = json.loads(resp.read().decode("utf-8"))
-            return bool(payload.get("correct", False))
-        finally:
-            conn.close()
-
-
-def run_compare(workload: list[dict], url: str) -> None:
-    """Run the same workload with logprob and generate, print agreement + latency."""
-    modes = ("logprob", "generate")
-    results = {}
-
-    for mode in modes:
-        client = _ModeClient(url, mode=mode)
-        # warm-up
-        client("\\boxed{1}", "1", "")
-
-        latencies_ms: list[float] = []
-        verdicts: list[bool] = []
-        t_start = time.perf_counter()
-        for w in workload:
-            t0 = time.perf_counter()
-            v = client(w["pred"], w["gold"], w.get("extra_info", {}).get("problem", ""))
-            latencies_ms.append((time.perf_counter() - t0) * 1000)
-            verdicts.append(v)
-        wall = time.perf_counter() - t_start
-
-        results[mode] = {"wall_s": wall, "latencies_ms": latencies_ms, "verdicts": verdicts}
-        print(f"\n=== {mode} ===")
-        print(f"  wall          : {wall:.2f} s   ({wall/len(workload)*1000:.1f} ms/call)")
-        print(f"  p50/p95/max   : {_pct(latencies_ms,50):.0f} / {_pct(latencies_ms,95):.0f} / {max(latencies_ms):.0f} ms")
-        print(f"  verdicts      : correct={sum(verdicts)}  incorrect={sum(1 for v in verdicts if not v)}")
-
-    lp = results["logprob"]["verdicts"]
-    gn = results["generate"]["verdicts"]
-    agree = sum(a == b for a, b in zip(lp, gn))
-    n = len(lp)
-    disagree_lp_yes = sum(1 for a, b in zip(lp, gn) if a and not b)
-    disagree_gn_yes = sum(1 for a, b in zip(lp, gn) if not a and b)
-    speedup = results["generate"]["wall_s"] / results["logprob"]["wall_s"]
-
-    print(f"\n=== logprob vs generate ===")
-    print(f"  n samples     : {n}")
-    print(f"  agreement     : {agree}/{n} ({agree/n*100:.1f}%)")
-    print(f"  disagreements : logprob=correct & generate=incorrect: {disagree_lp_yes}")
-    print(f"                  generate=correct & logprob=incorrect: {disagree_gn_yes}")
-    print(f"  speedup       : logprob is {speedup:.2f}x faster than generate")
-    print()
-    if speedup > 2.0 and agree / n >= 0.98:
-        print("  VERDICT: keep logprob — >2x faster, ≥98% agreement")
-    elif speedup < 1.5:
-        print("  VERDICT: marginal speedup (<1.5x) — revert to generate for safety")
-    else:
-        print(f"  VERDICT: borderline ({speedup:.2f}x speedup, {agree/n*100:.1f}% agreement) — review disagreements")
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--parquet", required=True)
     ap.add_argument("--n", type=int, default=300)
     ap.add_argument("--threads", type=int, default=8)
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument(
-        "--judge-mode",
-        choices=["logprob", "generate", "compare"],
-        default="logprob",
-        help="logprob: production path (default); generate: original __call__; "
-             "compare: run both and print agreement + speedup",
-    )
     args = ap.parse_args()
 
     if not os.environ.get("XVERIFY_URL"):
         raise SystemExit("XVERIFY_URL must be set, e.g. http://misha00:8765/judge")
-
-    xverify_url = os.environ["XVERIFY_URL"]
 
     print(f"loading workload from {args.parquet} (n={args.n}) ...")
     workload = build_workload(args.parquet, args.n, args.seed)
     print(f"  built {len(workload)} samples; flavor mix: "
           f"{ {f: sum(1 for w in workload if w['_flavor']==f) for f in ['correct','perturb','wrong']} }")
 
-    if args.judge_mode == "compare":
-        print(f"\n--- logprob vs generate comparison (sequential, n={len(workload)}) ---")
-        run_compare(workload, xverify_url)
-        return
-
-    # Single-mode path: throughput bench (Mode A sequential + Mode B concurrent)
-    if args.judge_mode == "generate":
-        judge = _ModeClient(xverify_url, mode="generate")
-        mode_label = "generate"
-    else:
-        # Production client: sends no mode field, server uses its configured default.
-        judge = _get_xverify_judge()
-        if judge is None:
-            raise SystemExit("xverify judge could not be initialized — is XVERIFY_URL reachable?")
-        mode_label = "server-default"
+    judge = _get_xverify_judge()
+    if judge is None:
+        raise SystemExit("xverify judge could not be initialized — is XVERIFY_URL reachable?")
 
     # Warm-up: one call so the server's first-prompt overhead doesn't pollute Mode A.
     print("warm-up call ...")
     judge("\\boxed{1}", "1", "")
 
-    print(f"\n--- Mode A: 1 thread (sequential) [{mode_label}] ---")
+    print(f"\n--- Mode A: 1 thread (sequential) ---")
     rA = run_mode(workload, threads=1, base_judge=judge)
-    _print_report(f"Mode A — sequential [{mode_label}]", rA)
+    _print_report("Mode A — sequential", rA)
 
-    print(f"\n--- Mode B: {args.threads} threads (concurrent) [{mode_label}] ---")
+    print(f"\n--- Mode B: {args.threads} threads (concurrent) ---")
     rB = run_mode(workload, threads=args.threads, base_judge=judge)
-    _print_report(f"Mode B — {args.threads} threads [{mode_label}]", rB)
+    _print_report(f"Mode B — {args.threads} threads", rB)
 
     speedup = rA["wall_s"] / rB["wall_s"] if rB["wall_s"] > 0 else float("nan")
     print(f"\n--- A vs B speedup: {speedup:.2f}x ---")

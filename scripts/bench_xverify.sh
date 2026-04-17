@@ -16,9 +16,6 @@
 #   N             number of samples to bench                      (default: 300)
 #   THREADS       Mode B concurrency                              (default: 8)
 #   SEED          workload sampling seed                          (default: 0)
-#   JUDGE_MODE    logprob | generate | compare                    (default: logprob)
-#                 compare: runs both and prints agreement + speedup — restart
-#                 the server first so it picks up the mode= field support
 #   PARQUET       training parquet to draw golds from
 #                 (default: data/processed/drsci_physics_clean.parquet)
 #
@@ -36,7 +33,6 @@ PORT="${PORT:-8765}"
 N="${N:-300}"
 THREADS="${THREADS:-8}"
 SEED="${SEED:-0}"
-JUDGE_MODE="${JUDGE_MODE:-logprob}"
 PARQUET="${PARQUET:-$ROOT/data/processed/drsci_physics_clean.parquet}"
 
 XVERIFY_URL="http://${XVERIFY_HOST}:${PORT}/judge"
@@ -45,7 +41,7 @@ HEALTH_URL="http://${XVERIFY_HOST}:${PORT}/health"
 echo "=== bench_xverify.sh ==="
 echo "  server  : $XVERIFY_URL"
 echo "  parquet : $PARQUET"
-echo "  n       : $N    threads: $THREADS    seed: $SEED    judge-mode: $JUDGE_MODE"
+echo "  n       : $N    threads: $THREADS    seed: $SEED"
 
 # Pre-flight: server reachable?
 if ! curl -fsS --max-time 5 "$HEALTH_URL" >/dev/null 2>&1; then
@@ -67,5 +63,4 @@ PYTHONNOUSERSITE=1 apptainer exec \
     --parquet "$PARQUET" \
     --n "$N" \
     --threads "$THREADS" \
-    --seed "$SEED" \
-    --judge-mode "$JUDGE_MODE"
+    --seed "$SEED"
