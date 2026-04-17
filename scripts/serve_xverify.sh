@@ -22,10 +22,42 @@ PORT="${PORT:-8765}"
 HOST_BIND="${HOST_BIND:-0.0.0.0}"
 XVERIFY_MODEL="${XVERIFY_MODEL:-IAAR-Shanghai/xVerify-7B-I}"
 
+# Rendezvous: trainer discovers this server by reading current.url. Both the
+# het sbatches (which run this script directly under srun) and the companion
+# sbatch wrappers depend on this file existing; writing from here is the one
+# place that covers both paths.
+HOST=$(hostname)
+URL="http://${HOST}:${PORT}/judge"
+URL_FILE="$ROOT/outputs/xverify_endpoints/current.url"
+mkdir -p "$(dirname "$URL_FILE")"
+
 echo "=== serve_xverify.sh ==="
 echo "  bind  : $HOST_BIND:$PORT"
 echo "  model : $XVERIFY_MODEL"
+echo "  URL   : $URL"
+echo "  write : $URL_FILE"
 echo "  HF_HOME=$HF_HOME"
+
+TMP="$URL_FILE.tmp.$$"
+{
+    echo "$URL"
+    echo "# host=$HOST"
+    echo "# port=$PORT"
+    echo "# model=$XVERIFY_MODEL"
+    echo "# written_at=$(date -Iseconds)"
+    [[ -n "${SLURM_JOB_ID:-}" ]] && echo "# job_id=$SLURM_JOB_ID"
+} > "$TMP"
+mv "$TMP" "$URL_FILE"
+
+# Only remove the rendezvous file if it still points at us — avoids clobbering
+# a replacement server that raced in after we wrote.
+cleanup_url() {
+    if [[ -f "$URL_FILE" ]] && [[ "$(head -n1 "$URL_FILE" 2>/dev/null)" == "$URL" ]]; then
+        rm -f "$URL_FILE"
+        echo "[xverify] URL file cleaned"
+    fi
+}
+trap cleanup_url EXIT
 
 PYTHONNOUSERSITE=1 apptainer exec --nv \
   --overlay "$OVERLAY:ro" --no-home \
