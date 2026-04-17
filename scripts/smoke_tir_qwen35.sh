@@ -93,7 +93,7 @@ MAX_PROMPT_LEN="${MAX_PROMPT_LEN:-1024}"
 THINKING_BUDGET="${THINKING_BUDGET:-}"       # required when think-interrupt is enabled
 TOOL_CALL_BUDGET="${TOOL_CALL_BUDGET:-}"     # required when think-interrupt is enabled
 INTERRUPT_LEN=17                             # exact for Qwen3.5 family (4B/0.8B)
-MAX_TOOL_RESPONSE_LEN=512                    # must match multi_turn.max_tool_response_length below
+MAX_TOOL_RESPONSE_LEN=1024                   # must match multi_turn.max_tool_response_length below. Char-unit cap; at 512 ~10% of rollouts clipped (probe_v5), 1024 drops to ~4%.
 ANSWER_BUDGET="${ANSWER_BUDGET:-}"           # required when think-interrupt is enabled
 
 # Derive MAX_RESPONSE_LEN from budgets when think-interrupt is enabled; otherwise use override.

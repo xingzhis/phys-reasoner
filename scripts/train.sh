@@ -50,7 +50,9 @@ TOOL_CALL_BUDGET="${TOOL_CALL_BUDGET:-}"
 #     from verl.experimental.agent_loop.tool_agent_loop import THINK_INTERRUPT_PHRASE; \
 #     print(len(AutoTokenizer.from_pretrained('<MODEL>').encode(THINK_INTERRUPT_PHRASE, add_special_tokens=False)))"
 INTERRUPT_LEN=17
-MAX_TOOL_RESPONSE_LEN=512
+# Char-unit cap on injected tool output (VeRL tool_agent_loop truncates by chars,
+# not tokens). probe_v5 analysis: 512→~10% of rollouts clipped, 1024→~4%.
+MAX_TOOL_RESPONSE_LEN=1024
 ANSWER_BUDGET="${ANSWER_BUDGET:-}"
 
 if [[ -n "$THINKING_BUDGET" && -n "$TOOL_CALL_BUDGET" && -n "$ANSWER_BUDGET" ]]; then

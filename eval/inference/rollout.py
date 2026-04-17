@@ -200,7 +200,7 @@ def run_dump(
     tool_call_budget: int | None = None,
     answer_budget: int | None = None,
     max_prompt_len: int = 1024,
-    max_tool_response_len: int = 512,
+    max_tool_response_len: int = 1024,
     dump_txt: bool = False,
     start_idx: int | None = None,
     end_idx: int | None = None,
@@ -609,7 +609,7 @@ def main() -> None:
                    help="Phase 2 token cap for final answer")
     p.add_argument("--max_prompt_len", type=int, default=1024,
                    help="Prompt length budget for max_model_len (matches VeRL)")
-    p.add_argument("--max_tool_response_len", type=int, default=512,
+    p.add_argument("--max_tool_response_len", type=int, default=1024,
                    help="Tool response text cap in chars (matches VeRL)")
     p.add_argument("--dump_txt", action="store_true", default=False,
                    help="Also write per-rollout human-readable txt files (slow; parquet is always written)")
