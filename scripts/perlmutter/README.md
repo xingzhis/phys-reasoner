@@ -2,22 +2,41 @@
 
 Concise. See [`checklist.md`](checklist.md) for pass criteria and troubleshooting.
 
+## The two experiments
+
+| Name | Purpose | Dataset | Script family |
+|---|---|---|---|
+| **TIR** (main) | Single-block tool-integrated reasoning: model reasons, emits one Python/SymPy block, sees output, reasons to `\boxed{}` | `xingzhi0/phys-tir` → `data/processed_tir/` | `*_tir_*.sbatch` |
+| **CoT** (baseline) | Pure chain-of-thought, no tool — same rows, same hparams, only the system prompt is swapped | `xingzhi0/phys-cot` → `data/processed_cot/` | `*_cot_*.sbatch` |
+
+The CoT run flips two verl flags (`COT_BASELINE=1` → `default_agent_loop=single_turn_agent`, `multi_turn.enable=false`) and points at the CoT-prompted parquets. Every other hparam is identical so the comparison isolates the tool contribution.
+
 ## Files
+
+Naming: `{stage}_{variant}_{topology}.sbatch` where
+stage ∈ {smoke, prod}, variant ∈ {tir, cot}, topology ∈ {het, companion}.
 
 | File | Purpose |
 |---|---|
 | `bootstrap.sh` | Login-node env + import + HF prefetch + parquet sanity |
 | `probe_xverify.py` | Standalone xVerify health + correctness check |
 | `_ray_bringup.sh` | Shared Ray head/worker logic (sourced, not executed) |
-| `smoke_het.sbatch` / `smoke_companion.sbatch` | Full-topology smoke (10 steps, dumps on) |
-| `prod_het.sbatch` / `prod_companion.sbatch` | TIR production (3000-step ceiling) |
-| `prod_cot.sbatch` | CoT baseline ablation (same hparams, tool disabled) |
+| `smoke_tir_het.sbatch` / `smoke_tir_companion.sbatch` | TIR smoke (10 steps, dumps on) |
+| `prod_tir_het.sbatch` / `prod_tir_companion.sbatch` | TIR production (3000-step ceiling) |
+| `prod_cot_het.sbatch` / `prod_cot_companion.sbatch` | CoT baseline production (same hparams, tool disabled) |
 | `serve_xverify_perlmutter.sbatch` | xVerify server for the `*_companion` variants |
 | `checklist.md` | Pre-submit checklist, pass criteria, stop conditions |
 
-**`*_het` vs `*_companion`:** prefer the het variants (single sbatch, 3 het-groups, dies
-together). Fall back to companion (one 6-node allocation + a separate xverify sbatch)
-if the cluster doesn't allow 3-group heterogeneous jobs.
+**No CoT smoke script on purpose** — smoke tests validate the infrastructure (Ray, xVerify, checkpoints, resume), not the variant. The TIR smoke is enough. If you *need* to smoke-test the CoT path (e.g. after changing `build_cot_parquets.py`), submit `smoke_tir_het.sbatch` with overrides:
+
+```bash
+sbatch --export=ALL,COT_BASELINE=1,\
+TRAIN_FILES=$ROOT/data/processed_cot/data/train.parquet,\
+VAL_FILES=$ROOT/data/processed_cot/data/validation.parquet \
+  scripts/perlmutter/smoke_tir_het.sbatch
+```
+
+**`*_het` vs `*_companion`:** prefer the het variants (single sbatch, 3 het-groups, dies together). Fall back to companion (one 6-node allocation + a separate xverify sbatch) if the cluster doesn't allow 3-group heterogeneous jobs.
 
 ## Defaults (all overridable via `sbatch --export=ALL,KEY=VAL,...`)
 
@@ -32,6 +51,8 @@ if the cluster doesn't allow 3-group heterogeneous jobs.
 | `USE_DYNAMIC_BSZ` / `PPO_MAX_TOKEN_LEN_PER_GPU` | `1` / `24576` | Tokens/GPU; raise to `36864` on 80G |
 | `VLLM_GPU_MEM_UTIL` | `0.85` | Raise to `0.90` on 80G |
 | `ACTOR_OPT_OFFLOAD` | `True` | CPU AdamW — safe default, ~1–2% end-to-end overhead |
+| `EXPERIMENT` (TIR default) | `grpo_tir_<timestamp>` | wandb run name + checkpoint dir |
+| `EXPERIMENT` (CoT default) | `grpo_cot_<timestamp>` | separate namespace from TIR |
 | Resource | 1 trainer + 5 rollout + 1 verifier GPU | 4 × A100 per node |
 
 ## 1. One-time setup per cluster
@@ -57,7 +78,7 @@ APT() {
     "$SIF" "$@"
 }
 
-# Fetch both datasets: phys-tir (main TIR run) and phys-cot (CoT baseline —
+# Fetch both datasets: phys-tir (main run) and phys-cot (baseline —
 # same rows, only system prompt swapped so the model isn't primed to call tools).
 APT python3 scripts/fetch_dataset.py --repo-id xingzhi0/phys-tir --out-dir data/processed_tir
 APT python3 scripts/fetch_dataset.py --repo-id xingzhi0/phys-cot --out-dir data/processed_cot
@@ -76,51 +97,58 @@ At minimum: `-A <account>_g`, `-C gpu` (or `-C gpu&a100_80gb` for 80G), `-q regu
 
 ## 3. Flow
 
+### 3a. Smoke (infrastructure validation — TIR only)
+
 ```bash
-# Smoke (full topology, 10 steps, dumps JSONL rollouts).
-sbatch scripts/perlmutter/smoke_het.sbatch
+sbatch scripts/perlmutter/smoke_tir_het.sbatch
 
 # After smoke: check checklist.md pass criteria, probe xverify.
 APT python3 scripts/perlmutter/probe_xverify.py
 
-# Resume rehearsal — scancel mid-run, resubmit with same EXPERIMENT,
-# confirm verl auto-resumes from the latest checkpoint.
-sbatch --export=ALL,TOTAL_STEPS=20,SAVE_FREQ=5 scripts/perlmutter/smoke_het.sbatch
+# Resume rehearsal — scancel mid-run, resubmit with same EXPERIMENT.
+sbatch --export=ALL,TOTAL_STEPS=20,SAVE_FREQ=5 scripts/perlmutter/smoke_tir_het.sbatch
 # ... when log shows global_step=6, scancel; then:
-sbatch --export=ALL,EXPERIMENT=<prev>,TOTAL_STEPS=20 scripts/perlmutter/smoke_het.sbatch
-
-# Production — 3000-step ceiling. Resubmit with the SAME EXPERIMENT across 48h caps.
-sbatch scripts/perlmutter/prod_het.sbatch                                # TIR (main)
-sbatch --export=ALL,EXPERIMENT=<prev> scripts/perlmutter/prod_het.sbatch # resume
-sbatch scripts/perlmutter/prod_cot.sbatch                                # CoT baseline
-
-# 80G override — no sbatch edits needed:
-sbatch --constraint='gpu&a100_80gb' \
-       --export=ALL,PPO_MAX_TOKEN_LEN_PER_GPU=36864,VLLM_GPU_MEM_UTIL=0.90 \
-       scripts/perlmutter/prod_het.sbatch
+sbatch --export=ALL,EXPERIMENT=<prev>,TOTAL_STEPS=20 scripts/perlmutter/smoke_tir_het.sbatch
 ```
 
-**About `<prev>`:** `EXPERIMENT` is set inside each `prod_*.sbatch` as
-`export EXPERIMENT="${EXPERIMENT:-grpo_prod_$(date +%Y%m%d.%H%M%S)}"` — if you don't
-override it, the sbatch auto-generates `grpo_prod_<timestamp>` (or `grpo_cot_...`) at
-launch. That string is then the wandb run name AND the checkpoint directory under
-`outputs/physcode_tir/<EXPERIMENT>/`. To find the value of a previous run, check:
+### 3b. Production — TIR (main) + CoT (baseline)
 
-- the sbatch log banner (`[driver] launching ... (EXPERIMENT=grpo_prod_...)`) in `logs/`
+Both runs use a 3000-step ceiling. Resubmit with the SAME `EXPERIMENT` across 48h caps.
+
+```bash
+# TIR (main run)
+sbatch scripts/perlmutter/prod_tir_het.sbatch
+sbatch --export=ALL,EXPERIMENT=<prev> scripts/perlmutter/prod_tir_het.sbatch     # resume
+
+# CoT (baseline, run in parallel — same hparams, no tool)
+sbatch scripts/perlmutter/prod_cot_het.sbatch
+sbatch --export=ALL,EXPERIMENT=<prev> scripts/perlmutter/prod_cot_het.sbatch     # resume
+
+# 80G override (no sbatch edits needed):
+sbatch --constraint='gpu&a100_80gb' \
+       --export=ALL,PPO_MAX_TOKEN_LEN_PER_GPU=36864,VLLM_GPU_MEM_UTIL=0.90 \
+       scripts/perlmutter/prod_tir_het.sbatch
+```
+
+If the cluster doesn't allow 3-group het jobs, use the `_companion` variants instead (one 6-node allocation + a separate xverify sbatch kicked off by the script). Same flags.
+
+**About `<prev>`:** `EXPERIMENT` defaults to `grpo_tir_<timestamp>` (TIR) or `grpo_cot_<timestamp>` (CoT) — if you don't override it, the sbatch auto-generates one at launch. That string is the wandb run name AND the checkpoint directory under `outputs/physcode_tir/<EXPERIMENT>/`. To find a previous run's value, check:
+
+- the sbatch log banner (`[driver] launching ... (EXPERIMENT=grpo_tir_...)`) in `logs/`
 - `ls -t outputs/physcode_tir/ | head -3`
 - the wandb run name
 
-Pass that string as `EXPERIMENT=<prev>` to resume — verl's `resume_mode=auto` picks up
-the latest checkpoint in that dir automatically.
+Pass that string as `EXPERIMENT=<prev>` to resume — verl's `resume_mode=auto` picks up the latest checkpoint in that dir automatically.
 
 ## 4. When to stop
 
-`TOTAL_STEPS=3000` is a **ceiling, not a target**. Stop resubmitting once any two of
-these wandb signals fire:
+`TOTAL_STEPS=3000` is a **ceiling, not a target**. Stop resubmitting once any two of these wandb signals fire:
 
 - `val/score/mean` plateau (±0.5% for ≥3 consecutive eval points)
 - `actor/zero_advantage_group_fraction > 0.7`
 - `response_length/clip_ratio` near 0 with reward ceiling-bound
+
+Apply to TIR and CoT independently — they may converge at different step counts.
 
 Full criteria in [`checklist.md` §Stop conditions](checklist.md).
 

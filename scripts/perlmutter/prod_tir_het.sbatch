@@ -1,5 +1,5 @@
 #!/bin/bash
-# prod_het.sbatch — Production GRPO on Perlmutter, 3-group heterogeneous job.
+# prod_tir_het.sbatch — Production GRPO on Perlmutter, 3-group heterogeneous job.
 #
 # Topology (dies together; any preemption tears the whole job down):
 #   het-group 0  TRAINER   1 node × 4 A100   Ray head + FSDP actor/ref
@@ -7,14 +7,14 @@
 #   het-group 2  XVERIFY   1 × 1 A100       reward server (shared-QoS)
 #
 # Submit:
-#   sbatch scripts/perlmutter/prod_het.sbatch
+#   sbatch scripts/perlmutter/prod_tir_het.sbatch
 # Resume (same EXPERIMENT → verl auto-resumes from latest checkpoint):
-#   sbatch --export=ALL,EXPERIMENT=<prev> scripts/perlmutter/prod_het.sbatch
+#   sbatch --export=ALL,EXPERIMENT=<prev> scripts/perlmutter/prod_tir_het.sbatch
 #
 # All 'TODO(collab)' markers are cluster-specific values the collaborator must fill.
 # Grep '^# TODO(collab)' to find every one.
 
-#SBATCH --job-name=physcode_prod_het
+#SBATCH --job-name=physcode_prod_tir_het
 #SBATCH --output=logs/%x_%j.log
 #SBATCH --error=logs/%x_%j.err
 
@@ -58,7 +58,7 @@
 #SBATCH -C gpu
 # TODO(collab): Perlmutter shared-GPU QoS. NERSC typically supports '-q shared' with
 #               --gpus-per-task=1 for fractional-node allocation. CONFIRM before submit —
-#               if not available, use the companion variant (prod_companion.sbatch).
+#               if not available, use the companion variant (prod_tir_companion.sbatch).
 #SBATCH -q shared
 #SBATCH -t 48:00:00
 #SBATCH -N 1
@@ -77,7 +77,7 @@ source "$ROOT/env.sh"
 [[ -f "$SIF" ]]     || { echo "ERROR: SIF not found: $SIF" >&2; exit 1; }
 [[ -f "$OVERLAY" ]] || { echo "ERROR: OVERLAY not found: $OVERLAY" >&2; exit 1; }
 
-echo "=== prod_het.sbatch ==="
+echo "=== prod_tir_het.sbatch ==="
 echo "  Job       : $SLURM_JOB_ID"
 echo "  Trainer   : $SLURM_JOB_NODELIST_HET_GROUP_0"
 echo "  Rollout   : $SLURM_JOB_NODELIST_HET_GROUP_1"
@@ -215,7 +215,7 @@ export VAL_FILES="${VAL_FILES:-$ROOT/data/processed_tir/data/validation.parquet}
 # Logging.
 export WANDB_PROJECT="${WANDB_PROJECT:-physcode_tir}"
 export LOGGERS="${LOGGERS:-console,wandb}"
-export EXPERIMENT="${EXPERIMENT:-grpo_prod_$(date +%Y%m%d.%H%M%S)}"
+export EXPERIMENT="${EXPERIMENT:-grpo_tir_$(date +%Y%m%d.%H%M%S)}"
 
 # -----------------------------------------------------------------------------
 # Launch driver on trainer node. --overlap shares the HEAD task slot with the

@@ -92,7 +92,7 @@ VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-0.8}"
 # multi-turn parsing so the rollout is one pure completion. The system prompt
 # in the parquet still mentions the Python tool; for a fully prompt-clean CoT
 # baseline, also pre-process the parquet with a CoT system prompt (see
-# scripts/perlmutter/prod_cot.sbatch for the wrapper).
+# scripts/perlmutter/prod_cot_het.sbatch for the wrapper).
 COT_BASELINE="${COT_BASELINE:-0}"
 
 # Rollout vLLM enforce_eager — disables CUDA graph capture in the rollout engine.

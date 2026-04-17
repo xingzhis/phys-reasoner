@@ -13,7 +13,7 @@
 #   4. Verifies training parquets are present
 #
 # The GPU smoke is intentionally NOT part of bootstrap — use
-# scripts/perlmutter/smoke_het.sbatch (or smoke_companion.sbatch) instead.
+# scripts/perlmutter/smoke_tir_het.sbatch (or smoke_tir_companion.sbatch) instead.
 
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd -P)"
@@ -79,7 +79,7 @@ step "3  data parquets"
 # FETCH_OUT_DIR must match the --out-dir passed to scripts/fetch_dataset.py.
 # Default tracks fetch_dataset.py's own default (data/processed_tir).
 FETCH_OUT_DIR="${FETCH_OUT_DIR:-data/processed_tir}"
-# Second path only needed if the CoT baseline run (prod_cot.sbatch) will be submitted.
+# Second path only needed if the CoT baseline run (prod_cot_het.sbatch / prod_cot_companion.sbatch) will be submitted.
 # Set FETCH_COT_OUT_DIR="" or pass SKIP_COT_CHECK=1 to bypass if you only need TIR.
 FETCH_COT_OUT_DIR="${FETCH_COT_OUT_DIR:-data/processed_cot}"
 need=(
@@ -114,4 +114,4 @@ echo
 echo "=== bootstrap PASSED ==="
 echo "  Next:"
 echo "    1. (optional) python3 scripts/perlmutter/probe_xverify.py --url <server>"
-echo "    2. sbatch scripts/perlmutter/smoke_het.sbatch   # or smoke_companion.sbatch"
+echo "    2. sbatch scripts/perlmutter/smoke_tir_het.sbatch   # or smoke_tir_companion.sbatch"

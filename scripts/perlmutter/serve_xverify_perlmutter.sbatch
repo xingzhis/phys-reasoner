@@ -1,7 +1,7 @@
 #!/bin/bash
 # serve_xverify_perlmutter.sbatch — xVerify reward server for Perlmutter.
 #
-# Used by prod_companion.sbatch / smoke_companion.sbatch when 3-group hetjobs
+# Used by prod_tir_companion.sbatch / smoke_tir_companion.sbatch / prod_cot_companion.sbatch when 3-group hetjobs
 # aren't available. Writes URL to outputs/xverify_endpoints/current.url for
 # cross-job rendezvous.
 #

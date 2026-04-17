@@ -12,12 +12,12 @@ Short document — read top-to-bottom the first time, treat as a reference after
 - [ ] `.env` has `SBATCH_ACCOUNT=<...>_g` if you want to avoid editing the sbatch file
 - [ ] All `TODO(collab)` markers in the sbatch you're about to submit are resolved
   ```
-  grep -n 'TODO(collab)' scripts/perlmutter/smoke_het.sbatch
+  grep -n 'TODO(collab)' scripts/perlmutter/smoke_tir_het.sbatch
   ```
 
 ## Submit & observe (during smoke)
 
-- [ ] `sbatch scripts/perlmutter/smoke_het.sbatch` returns a job ID
+- [ ] `sbatch scripts/perlmutter/smoke_tir_het.sbatch` returns a job ID
 - [ ] Within 3 min: `outputs/xverify_endpoints/current.url` contains a reachable URL
 - [ ] From a login shell: `python3 scripts/perlmutter/probe_xverify.py` exits 0
 - [ ] `ray status` (via `srun --overlap --het-group=0 -w <head> "${APT[@]}" ray status`)

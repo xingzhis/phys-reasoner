@@ -1,5 +1,5 @@
 #!/bin/bash
-# prod_companion.sbatch — Production GRPO on Perlmutter, FALLBACK variant.
+# prod_tir_companion.sbatch — Production GRPO on Perlmutter, FALLBACK variant.
 #
 # Use this if 3-group het jobs are not supported on your allocation. It runs:
 #   - one 6-node A100 allocation (trainer + rollout live together, Ray splits pools)
@@ -10,15 +10,15 @@
 # job will loudly fail (PHYS_REQUIRE_XVERIFY=1). See checklist.md for diagnostics.
 #
 # Submit:
-#   sbatch scripts/perlmutter/prod_companion.sbatch
+#   sbatch scripts/perlmutter/prod_tir_companion.sbatch
 # Resume:
-#   sbatch --export=ALL,EXPERIMENT=<prev> scripts/perlmutter/prod_companion.sbatch
+#   sbatch --export=ALL,EXPERIMENT=<prev> scripts/perlmutter/prod_tir_companion.sbatch
 
-#SBATCH --job-name=physcode_prod_companion
+#SBATCH --job-name=physcode_prod_tir_companion
 #SBATCH --output=logs/%x_%j.log
 #SBATCH --error=logs/%x_%j.err
 
-# TODO(collab): fill these four fields — identical to prod_het.sbatch group 0
+# TODO(collab): fill these four fields — identical to prod_tir_het.sbatch group 0
 #SBATCH -A TODO_ACCOUNT_g
 #SBATCH -C gpu
 #SBATCH -q regular
@@ -38,7 +38,7 @@ unset SIF OVERLAY
 source "$ROOT/env.sh"
 [[ -f "$SIF" && -f "$OVERLAY" ]] || { echo "ERROR: SIF/OVERLAY missing" >&2; exit 1; }
 
-echo "=== prod_companion.sbatch ==="
+echo "=== prod_tir_companion.sbatch ==="
 echo "  Job       : $SLURM_JOB_ID"
 echo "  Nodelist  : $SLURM_JOB_NODELIST"
 
@@ -137,7 +137,7 @@ export TRAIN_FILES="${TRAIN_FILES:-$ROOT/data/processed_tir/data/train.parquet}"
 export VAL_FILES="${VAL_FILES:-$ROOT/data/processed_tir/data/validation.parquet}"
 export WANDB_PROJECT="${WANDB_PROJECT:-physcode_tir}"
 export LOGGERS="${LOGGERS:-console,wandb}"
-export EXPERIMENT="${EXPERIMENT:-grpo_prod_$(date +%Y%m%d.%H%M%S)}"
+export EXPERIMENT="${EXPERIMENT:-grpo_tir_$(date +%Y%m%d.%H%M%S)}"
 
 echo "[driver] launching train_async.sh on $HEAD_NODE (EXPERIMENT=$EXPERIMENT)"
 srun --overlap --nodes=1 --ntasks=1 -w "$HEAD_NODE" \

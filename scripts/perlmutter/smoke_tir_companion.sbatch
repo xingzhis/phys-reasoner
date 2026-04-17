@@ -1,17 +1,17 @@
 #!/bin/bash
-# smoke_companion.sbatch — Full-topology smoke, FALLBACK variant (no het jobs).
+# smoke_tir_companion.sbatch — Full-topology smoke, FALLBACK variant (no het jobs).
 #
-# Mirrors prod_companion.sbatch but with short step budget and dumps enabled.
+# Mirrors prod_tir_companion.sbatch but with short step budget and dumps enabled.
 # Pass criteria: see scripts/perlmutter/checklist.md.
 #
 # Submit:
-#   sbatch scripts/perlmutter/smoke_companion.sbatch
+#   sbatch scripts/perlmutter/smoke_tir_companion.sbatch
 
-#SBATCH --job-name=physcode_smoke_companion
+#SBATCH --job-name=physcode_smoke_tir_companion
 #SBATCH --output=logs/%x_%j.log
 #SBATCH --error=logs/%x_%j.err
 
-# TODO(collab): fill — same as prod_companion.sbatch
+# TODO(collab): fill — same as prod_tir_companion.sbatch
 #SBATCH -A TODO_ACCOUNT_g
 #SBATCH -C gpu
 #SBATCH -q regular
@@ -29,7 +29,7 @@ mkdir -p logs outputs/xverify_endpoints
 unset SIF OVERLAY
 source "$ROOT/env.sh"
 
-echo "=== smoke_companion.sbatch ==="
+echo "=== smoke_tir_companion.sbatch ==="
 echo "  Nodelist : $SLURM_JOB_NODELIST"
 
 APT_CMD=(
@@ -109,7 +109,7 @@ export VAL_FILES="${VAL_FILES:-$ROOT/data/processed_tir/data/validation.parquet}
 
 export WANDB_PROJECT="${WANDB_PROJECT:-physcode_tir_smoke}"
 export LOGGERS="${LOGGERS:-console,wandb}"
-export EXPERIMENT="${EXPERIMENT:-smoke_companion_$(date +%Y%m%d.%H%M%S)}"
+export EXPERIMENT="${EXPERIMENT:-smoke_tir_companion_$(date +%Y%m%d.%H%M%S)}"
 
 echo "[driver] launching train_async.sh (EXPERIMENT=$EXPERIMENT)"
 srun --overlap --nodes=1 --ntasks=1 -w "$HEAD_NODE" \
