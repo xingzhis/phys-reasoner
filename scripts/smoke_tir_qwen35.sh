@@ -83,14 +83,16 @@ VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-0.5}"
 #                   + TOOL_CALL_BUDGET + MAX_TOOL_RESPONSE_LEN
 #                   + ANSWER_BUDGET
 #
-# INTERRUPT_LEN: exact token count of THINK_INTERRUPT_PHRASE for Qwen3.5-4B.
-# To recompute for a different model:
-#   python3 -c "from transformers import AutoTokenizer; t=AutoTokenizer.from_pretrained('<model>', local_files_only=True); \
-#     print(len(t.encode('\nOkay, time is up. Let me stop thinking and formulate a final answer\n</think>\n', add_special_tokens=False)))"
+# INTERRUPT_LEN: exact token count of THINK_INTERRUPT_PHRASE. The agent loop
+# asserts this against the real tokenized length at startup, so any drift
+# (e.g. phrase edits) fails loudly. To recompute for a new model/phrase:
+#   python3 -c "from transformers import AutoTokenizer; \
+#     from verl.experimental.agent_loop.tool_agent_loop import THINK_INTERRUPT_PHRASE; \
+#     print(len(AutoTokenizer.from_pretrained('<MODEL>').encode(THINK_INTERRUPT_PHRASE, add_special_tokens=False)))"
 MAX_PROMPT_LEN="${MAX_PROMPT_LEN:-1024}"
 THINKING_BUDGET="${THINKING_BUDGET:-}"       # required when think-interrupt is enabled
 TOOL_CALL_BUDGET="${TOOL_CALL_BUDGET:-}"     # required when think-interrupt is enabled
-INTERRUPT_LEN=15                             # exact for Qwen3.5-4B
+INTERRUPT_LEN=17                             # exact for Qwen3.5 family (4B/0.8B)
 MAX_TOOL_RESPONSE_LEN=512                    # must match multi_turn.max_tool_response_length below
 ANSWER_BUDGET="${ANSWER_BUDGET:-}"           # required when think-interrupt is enabled
 
@@ -168,6 +170,7 @@ PYTHONNOUSERSITE=1 apptainer exec --nv \
   --env "PYTHONPATH=/opt/phys-extras/" \
   --env "HF_HOME=$HF_HOME" \
   --env "HF_DATASETS_OFFLINE=1" \
+  --env "INTERRUPT_LEN=$INTERRUPT_LEN" \
   --env "VERL_DUMP_DIR=${VERL_DUMP_DIR:-}" \
   "$SIF" \
   python3 -m verl.trainer.main_ppo \

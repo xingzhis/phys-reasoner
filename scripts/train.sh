@@ -42,7 +42,14 @@ MAX_TOOL_TURNS="${MAX_TOOL_TURNS:-1}"
 # Think-interrupt budget (see smoke_tir_qwen35.sh for full explanation).
 THINKING_BUDGET="${THINKING_BUDGET:-}"
 TOOL_CALL_BUDGET="${TOOL_CALL_BUDGET:-}"
-INTERRUPT_LEN=15
+# INTERRUPT_LEN: exact token count of THINK_INTERRUPT_PHRASE. Must match
+# tokenizer.encode(phrase, add_special_tokens=False). The agent loop asserts
+# this against the real tokenized length at startup, so any drift fails loudly.
+# Recompute for a new model:
+#   python3 -c "from transformers import AutoTokenizer; \
+#     from verl.experimental.agent_loop.tool_agent_loop import THINK_INTERRUPT_PHRASE; \
+#     print(len(AutoTokenizer.from_pretrained('<MODEL>').encode(THINK_INTERRUPT_PHRASE, add_special_tokens=False)))"
+INTERRUPT_LEN=17
 MAX_TOOL_RESPONSE_LEN=512
 ANSWER_BUDGET="${ANSWER_BUDGET:-}"
 
@@ -60,6 +67,12 @@ TEST_FREQ="${TEST_FREQ:--1}"
 
 LR="${LR:-1e-6}"
 VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-0.5}"
+
+# CoT baseline mode — disable tool use entirely. Mirrors train_async.sh.
+# Flips verl's agent loop to single_turn_agent (which now also honours
+# thinking_budget via the in-place interrupt change, matching TIR semantics)
+# and disables multi-turn parsing.
+COT_BASELINE="${COT_BASELINE:-0}"
 
 # Wandb
 WANDB_PROJECT="${WANDB_PROJECT:-physcode_tir}"
@@ -80,8 +93,17 @@ EXPERIMENT="grpo_qwen35_4b_${TIMESTAMP}"
 TRAIN_DIR="$ROOT/outputs/$WANDB_PROJECT/$EXPERIMENT"
 mkdir -p "$TRAIN_DIR" "$ROOT/logs"
 
+if [[ "$COT_BASELINE" == "1" ]]; then
+    AGENT_LOOP="single_turn_agent"
+    MULTI_TURN_ENABLE="false"
+else
+    AGENT_LOOP="tool_agent"
+    MULTI_TURN_ENABLE="true"
+fi
+
 echo "=== train.sh: PhysCode GRPO TIR training ==="
 echo "  model     : $MODEL"
+echo "  mode      : $([ "$COT_BASELINE" == "1" ] && echo 'CoT baseline (no tool)' || echo 'TIR (tool enabled)')"
 echo "  train     : $TRAIN_FILES"
 echo "  val       : $VAL_FILES"
 echo "  batch     : $TRAIN_BATCH x rollout_n=$ROLLOUT_N = $ROLLOUT_MAX_NUM_SEQS gens/step"
@@ -121,6 +143,7 @@ PYTHONNOUSERSITE=1 apptainer exec --nv \
   --env "PYTHONPATH=/opt/phys-extras/" \
   --env "HF_HOME=$HF_HOME" \
   --env "HF_DATASETS_OFFLINE=1" \
+  --env "INTERRUPT_LEN=$INTERRUPT_LEN" \
   --env "WANDB_API_KEY=${WANDB_API_KEY:-}" \
   --env "WANDB_PROJECT=$WANDB_PROJECT" \
   --env "WANDB_RUN_ID=$EXPERIMENT" \
@@ -170,8 +193,8 @@ PYTHONNOUSERSITE=1 apptainer exec --nv \
     actor_rollout_ref.rollout.tensor_model_parallel_size=$N_GPUS \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=$REF_MICRO_BATCH \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=$REF_MICRO_BATCH \
-    actor_rollout_ref.rollout.agent.default_agent_loop=tool_agent \
-    actor_rollout_ref.rollout.multi_turn.enable=true \
+    actor_rollout_ref.rollout.agent.default_agent_loop=$AGENT_LOOP \
+    actor_rollout_ref.rollout.multi_turn.enable=$MULTI_TURN_ENABLE \
     actor_rollout_ref.rollout.multi_turn.format=qwen3_coder \
     actor_rollout_ref.rollout.multi_turn.tool_config_path="$ROOT/scripts/physcode_tools.yaml" \
     actor_rollout_ref.rollout.multi_turn.max_assistant_turns=$((MAX_TOOL_TURNS * 2)) \

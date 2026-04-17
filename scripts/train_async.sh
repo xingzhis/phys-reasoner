@@ -65,7 +65,14 @@ MAX_TOOL_TURNS="${MAX_TOOL_TURNS:-1}"
 # Think-interrupt budget. Same formula and defaults semantics as train.sh.
 THINKING_BUDGET="${THINKING_BUDGET:-}"
 TOOL_CALL_BUDGET="${TOOL_CALL_BUDGET:-}"
-INTERRUPT_LEN=15
+# INTERRUPT_LEN: exact token count of THINK_INTERRUPT_PHRASE. Must match
+# tokenizer.encode(phrase, add_special_tokens=False). The agent loop asserts
+# this against the real tokenized length at startup, so any drift fails loudly.
+# Recompute for a new model:
+#   python3 -c "from transformers import AutoTokenizer; \
+#     from verl.experimental.agent_loop.tool_agent_loop import THINK_INTERRUPT_PHRASE; \
+#     print(len(AutoTokenizer.from_pretrained('<MODEL>').encode(THINK_INTERRUPT_PHRASE, add_special_tokens=False)))"
+INTERRUPT_LEN=17
 MAX_TOOL_RESPONSE_LEN=512
 ANSWER_BUDGET="${ANSWER_BUDGET:-}"
 
@@ -216,6 +223,7 @@ PYTHONNOUSERSITE=1 apptainer exec --nv \
   --env "HF_HOME=$HF_HOME" \
   --env "HF_DATASETS_OFFLINE=0" \
   --env "VLLM_USE_V1=1" \
+  --env "INTERRUPT_LEN=$INTERRUPT_LEN" \
   --env "WANDB_API_KEY=${WANDB_API_KEY:-}" \
   --env "WANDB_PROJECT=$WANDB_PROJECT" \
   --env "WANDB_RUN_ID=$EXPERIMENT" \
