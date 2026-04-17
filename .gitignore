@@ -18,7 +18,8 @@ htmlcov/
 # Data (large files — track metadata only)
 data/raw/
 data/processed/
-data/processed_hf/
+data/processed_tir/
+data/processed_cot/
 checkpoints/
 outputs/
 *.parquet

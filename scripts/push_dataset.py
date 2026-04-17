@@ -19,7 +19,7 @@ from huggingface_hub import HfApi, create_repo
 
 SPLITS = ["train", "validation", "test"]
 
-README_TEMPLATE = """\
+README_FRONTMATTER = """\
 ---
 license: other
 configs:
@@ -33,17 +33,40 @@ configs:
     path: data/test.parquet
 ---
 
+"""
+
+README_HEADER_TIR = """\
 # phys-tir
 
 Physics problem dataset for tool-integrated reasoning (TIR) RLVR training.
-Pre-split train / validation / test, each a union of two pools:
+Pre-split train / validation / test, each a union of two pools.
 
-| Pool | Train | Validation | Test |
-|---|---|---|---|
-| `curated` (5 public physics benchmarks) | 6,817 | 200 | 200 |
-| `drsci` (Dr. SCI physics subset)        | 102,563 | 2,000 | 2,000 |
-| **total**                                | **109,380** | **2,200** | **2,200** |
+Every row's `prompt` uses the TIR system prompt (Python/SymPy sandbox tool
+available). See `phys-cot` for the matched CoT-only baseline variant.
 
+External physics benchmarks (OlympiadBench, SciBench-RL, PHYBench, desimfj/PHYSICS,
+ABench, CritPt) are **not** included in this dataset — they are held out for
+contamination-free evaluation.
+
+"""
+
+README_HEADER_COT = """\
+# phys-cot
+
+Physics problem dataset for chain-of-thought (CoT) RLVR training. Matched
+CoT-only baseline variant of `phys-tir`: identical rows, identical splits,
+identical user messages and ground truths. The only difference is the system
+prompt — CoT mentions no tools/Python/code. Used for the TIR-vs-CoT ablation.
+
+Pre-split train / validation / test, each a union of two pools.
+
+External physics benchmarks (OlympiadBench, SciBench-RL, PHYBench, desimfj/PHYSICS,
+ABench, CritPt) are **not** included in this dataset — they are held out for
+contamination-free evaluation.
+
+"""
+
+README_POOLS = """
 Each row carries a top-level `pool` column (`"curated"` / `"drsci"`) so the
 two sources can be separated for ablations.
 
@@ -75,17 +98,15 @@ difficulty is stringified, preserving the numeric value).
 
 ## Pools
 
-### `curated` — five public physics benchmarks
-Filtered to rule-verifiable answer types (numerical, expression, equation, MCQ,
-true/false) and deduped across sources:
+### `curated` — UGPhysics (EN)
+Undergraduate physics problems from UGPhysics
+([YangLabHKUST/UGPhysics](https://huggingface.co/datasets/UGPhysics/ugphysics)),
+English subset only. Filtered to rule-verifiable answer types (NV / EX / EQ /
+MC / TF), dirty answer-type labels cleaned, deduped.
 
-| Source | Rows (approx) | Notes |
-|---|---|---|
-| UGPhysics (EN) | ~5,520 | NV / EX / EQ / MC / TF, dirty answer-type labels cleaned |
-| desimfj/PHYSICS | ~1,500 | non-Open-end only, Chinese + multi-alternative rows dropped |
-| OlympiadBench OE_TO_physics_en_COMP | 236 | text-only EN competition |
-| SciBench-RL (physics subset) | 427 | fund / thermo / quan / calculus; chem excluded |
-| PHYBench (filtered) | ~700 | simple algebraic subset; prose answers dropped |
+Other public physics benchmarks (OlympiadBench, SciBench-RL, PHYBench,
+desimfj/PHYSICS) were excluded from training so they remain clean external
+eval targets.
 
 ### `drsci` — Dr. SCI physics
 Sourced from the unofficial release at
@@ -108,6 +129,47 @@ path = snapshot_download("<user>/phys-tir", repo_type="dataset",
 
 See `scripts/fetch_dataset.py` for the full wiring.
 """
+
+
+def _detect_variant(data_dir: Path) -> str:
+    """Return 'tir' or 'cot' by inspecting the system prompt in a sample row."""
+    import pandas as pd
+    df = pd.read_parquet(data_dir / "train.parquet")
+    sys_msg = df["prompt"].iloc[0][0]["content"].lower()
+    if "tool" in sys_msg or "python" in sys_msg or "code" in sys_msg:
+        return "tir"
+    return "cot"
+
+
+def _build_readme(data_dir: Path) -> str:
+    """Build README dynamically from actual parquet row counts + detected variant."""
+    import pandas as pd
+
+    def _counts(split: str) -> tuple[int, int, int]:
+        p = data_dir / f"{split}.parquet"
+        df = pd.read_parquet(p)
+        if "pool" in df.columns:
+            cur = int((df["pool"] == "curated").sum())
+            drs = int((df["pool"] == "drsci").sum())
+        else:
+            cur = drs = 0
+        return cur, drs, len(df)
+
+    tr_c, tr_d, tr_t = _counts("train")
+    va_c, va_d, va_t = _counts("validation")
+    te_c, te_d, te_t = _counts("test")
+
+    table = (
+        "| Pool | Train | Validation | Test |\n"
+        "|---|---|---|---|\n"
+        f"| `curated` (UGPhysics EN)          | {tr_c:,} | {va_c:,} | {te_c:,} |\n"
+        f"| `drsci` (Dr. SCI physics subset)  | {tr_d:,} | {va_d:,} | {te_d:,} |\n"
+        f"| **total**                         | **{tr_t:,}** | **{va_t:,}** | **{te_t:,}** |\n"
+    )
+
+    variant = _detect_variant(data_dir)
+    header = README_HEADER_TIR if variant == "tir" else README_HEADER_COT
+    return README_FRONTMATTER + header + table + README_POOLS
 
 
 def main():
@@ -136,7 +198,7 @@ def main():
         print(f"uploaded {path.name}")
 
     readme_path = Path("/tmp/phys_tir_README.md")
-    readme_path.write_text(README_TEMPLATE)
+    readme_path.write_text(_build_readme(data_dir))
     api.upload_file(
         path_or_fileobj=str(readme_path),
         path_in_repo="README.md",

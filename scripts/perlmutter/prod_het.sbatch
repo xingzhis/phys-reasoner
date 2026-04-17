@@ -209,8 +209,8 @@ export ACTOR_OPT_OFFLOAD="${ACTOR_OPT_OFFLOAD:-True}"
 
 # Data — collaborator will set these from fetch_dataset.py output.
 # TODO(collab): point TRAIN_FILES and VAL_FILES at the Perlmutter-local paths.
-export TRAIN_FILES="${TRAIN_FILES:-$ROOT/data/processed_hf/data/train.parquet}"
-export VAL_FILES="${VAL_FILES:-$ROOT/data/processed_hf/data/validation.parquet}"
+export TRAIN_FILES="${TRAIN_FILES:-$ROOT/data/processed_tir/data/train.parquet}"
+export VAL_FILES="${VAL_FILES:-$ROOT/data/processed_tir/data/validation.parquet}"
 
 # Logging.
 export WANDB_PROJECT="${WANDB_PROJECT:-physcode_tir}"

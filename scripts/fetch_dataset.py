@@ -3,7 +3,7 @@
 Usage:
   HF_TOKEN=hf_xxx python scripts/fetch_dataset.py \
     --repo-id <user>/phys-tir \
-    --out-dir data/processed_hf
+    --out-dir data/processed_tir
 
 Prints the three absolute parquet paths so the training launcher can
 pick them up. Files are bit-identical to the originals; pointing VeRL
@@ -21,7 +21,7 @@ SPLIT_FILES = ["train.parquet", "validation.parquet", "test.parquet"]
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo-id", required=True)
-    ap.add_argument("--out-dir", default="data/processed_hf")
+    ap.add_argument("--out-dir", default="data/processed_tir")
     ap.add_argument("--revision", default="main")
     args = ap.parse_args()
 

@@ -30,8 +30,8 @@ echo "  OVERLAY: $OVERLAY"
 MODEL="${MODEL:-Qwen/Qwen3.5-4B}"
 # Defaults point at the merged parquets fetched from `xingzhi0/phys-tir`
 # (see docs/setup.md step 5 and scripts/fetch_dataset.py).
-TRAIN_FILES="${TRAIN_FILES:-$ROOT/data/processed_hf/data/train.parquet}"
-VAL_FILES="${VAL_FILES:-$ROOT/data/processed_hf/data/validation.parquet}"
+TRAIN_FILES="${TRAIN_FILES:-$ROOT/data/processed_tir/data/train.parquet}"
+VAL_FILES="${VAL_FILES:-$ROOT/data/processed_tir/data/validation.parquet}"
 
 N_GPUS="${N_GPUS:-1}"
 TRAIN_BATCH="${TRAIN_BATCH:-128}"

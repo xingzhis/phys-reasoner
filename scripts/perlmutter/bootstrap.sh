@@ -77,8 +77,8 @@ fi
 # --- 3. data parquets ---
 step "3  data parquets"
 # FETCH_OUT_DIR must match the --out-dir passed to scripts/fetch_dataset.py.
-# Default tracks fetch_dataset.py's own default (data/processed_hf).
-FETCH_OUT_DIR="${FETCH_OUT_DIR:-data/processed_hf}"
+# Default tracks fetch_dataset.py's own default (data/processed_tir).
+FETCH_OUT_DIR="${FETCH_OUT_DIR:-data/processed_tir}"
 # Second path only needed if the CoT baseline run (prod_cot.sbatch) will be submitted.
 # Set FETCH_COT_OUT_DIR="" or pass SKIP_COT_CHECK=1 to bypass if you only need TIR.
 FETCH_COT_OUT_DIR="${FETCH_COT_OUT_DIR:-data/processed_cot}"

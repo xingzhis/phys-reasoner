@@ -308,8 +308,16 @@ class TestEnrichedParquets:
 
     def test_corpus_data_source_is_actual_source(self):
         df = pd.read_parquet("data/processed/corpus_train.parquet")
-        valid = {"UGPhysics", "PHYSICS", "SciBench_RL", "OlympiadBench", "PHYBench"}
+        valid = {"UGPhysics"}
         assert set(df["data_source"].unique()) <= valid
+
+    def test_corpus_no_dropped_benchmark_sources(self):
+        """External benchmark sources must not appear in training corpus."""
+        df = pd.read_parquet("data/processed/corpus_train.parquet")
+        dropped = {"PHYSICS", "OlympiadBench", "SciBench_RL", "PHYBench"}
+        sources = set(df["extra_info"].apply(lambda x: x["source"]).unique())
+        leaked = sources & dropped
+        assert not leaked, f"Contamination: {leaked} found in corpus_train"
 
 
 @pytest.mark.slow
@@ -328,7 +336,16 @@ class TestSplits:
         test = pd.read_parquet("data/processed/corpus_test.parquet")
         assert len(dev) == 200
         assert len(test) == 200
-        assert len(train) + len(dev) + len(test) == 6_817
+        assert len(train) + len(dev) + len(test) == 5_414  # UGPhysics only
+
+    def test_no_contamination_in_any_split(self):
+        """Dropped benchmarks must not leak into any split."""
+        dropped = {"PHYSICS", "OlympiadBench", "SciBench_RL", "PHYBench"}
+        for name in ["corpus_train_split", "corpus_dev", "corpus_test"]:
+            df = pd.read_parquet(f"data/processed/{name}.parquet")
+            sources = set(df["extra_info"].apply(lambda x: x.get("source")).dropna().unique())
+            leaked = sources & dropped
+            assert not leaked, f"{name}: contamination {leaked}"
 
 
 @pytest.mark.slow

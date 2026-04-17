@@ -104,8 +104,8 @@ export DUMP_TRAIN_ROLLOUTS=1
 export DUMP_VAL_ROLLOUTS=1
 
 # TODO(collab): data paths
-export TRAIN_FILES="${TRAIN_FILES:-$ROOT/data/processed_hf/data/train.parquet}"
-export VAL_FILES="${VAL_FILES:-$ROOT/data/processed_hf/data/validation.parquet}"
+export TRAIN_FILES="${TRAIN_FILES:-$ROOT/data/processed_tir/data/train.parquet}"
+export VAL_FILES="${VAL_FILES:-$ROOT/data/processed_tir/data/validation.parquet}"
 
 export WANDB_PROJECT="${WANDB_PROJECT:-physcode_tir_smoke}"
 export LOGGERS="${LOGGERS:-console,wandb}"

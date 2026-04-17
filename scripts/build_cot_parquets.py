@@ -1,13 +1,13 @@
 """Rewrite TIR training parquets into a CoT (no-tool) variant for the baseline ablation.
 
-Reads an input dir (default: `data/processed_hf/data/`) containing
+Reads an input dir (default: `data/processed_tir/data/`) containing
 `{train,validation,test}.parquet`, replaces every row's system message with a
 CoT-only prompt (no mention of Python/tools/code), and writes a matching
 parquet triple to the output dir. Every other column is byte-preserved.
 
 Usage:
     python3 scripts/build_cot_parquets.py \
-        --in-dir  data/processed_hf/data \
+        --in-dir  data/processed_tir/data \
         --out-dir data/processed_cot/data
 
 Then push to HF (same pattern as phys-tir):
@@ -167,7 +167,7 @@ def rewrite_one(src: Path, dst: Path) -> tuple[int, list[str]]:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--in-dir", default="data/processed_hf/data",
+    ap.add_argument("--in-dir", default="data/processed_tir/data",
                     help="dir containing {train,validation,test}.parquet (TIR variant)")
     ap.add_argument("--out-dir", default="data/processed_cot/data",
                     help="dir to write the CoT variant; created if missing")

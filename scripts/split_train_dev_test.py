@@ -198,27 +198,35 @@ def split_drsci(input_path: str, output_dir: str, n_dev: int, n_test: int,
 
 
 def split_corpus(input_path: str, output_dir: str, n_dev: int, n_test: int,
-                 seed: int, report: bool) -> pd.DataFrame | None:
+                 seed: int, report: bool, stratum_key: str = "source") -> pd.DataFrame | None:
     print(f"\n=== Corpus Split ===")
     df = pd.read_parquet(input_path)
     print(f"  Loaded {len(df):,} rows from {input_path}")
 
     # Build stratum key
     df["_primary_answer_type"] = df["extra_info"].apply(lambda x: x["primary_answer_type"])
-    df["_source"] = df["extra_info"].apply(lambda x: x["source"])
-    df["_stratum"] = df["_primary_answer_type"] + "|" + df["_source"]
+    if stratum_key == "source":
+        df["_secondary"] = df["extra_info"].apply(lambda x: x["source"])
+        stratum_label = "primary_answer_type × source"
+        report_cols = ["_primary_answer_type", "_secondary"]
+    elif stratum_key == "domain_coarse":
+        df["_secondary"] = df["extra_info"].apply(lambda x: x.get("domain_coarse", "other"))
+        stratum_label = "primary_answer_type × domain_coarse"
+        report_cols = ["_primary_answer_type", "_secondary"]
+    else:
+        raise ValueError(f"Unknown stratum_key: {stratum_key!r} (use 'source' or 'domain_coarse')")
+    df["_stratum"] = df["_primary_answer_type"] + "|" + df["_secondary"]
 
     n_strata = df["_stratum"].nunique()
-    print(f"  {n_strata} strata (primary_answer_type × source)")
+    print(f"  {n_strata} strata ({stratum_label})")
 
     train, dev, test = stratified_split(df, "_stratum", n_dev, n_test, seed)
 
     print(f"  Split sizes: train={len(train):,}  dev={len(dev):,}  test={len(test):,}")
-    _print_stratum_report_direct(df, train, dev, test,
-                                 ["_primary_answer_type", "_source"])
+    _print_stratum_report_direct(df, train, dev, test, report_cols)
 
     # Drop temporary columns
-    tmp_cols = ["_primary_answer_type", "_source", "_stratum"]
+    tmp_cols = ["_primary_answer_type", "_secondary", "_stratum"]
     for split_df in (train, dev, test):
         split_df.drop(columns=tmp_cols, inplace=True)
 
@@ -281,6 +289,11 @@ def main() -> None:
     parser.add_argument("--report", action="store_true", help="Print stats only, no save")
     parser.add_argument("--drsci-only", action="store_true")
     parser.add_argument("--corpus-only", action="store_true")
+    parser.add_argument("--corpus-stratum", choices=["source", "domain_coarse"],
+                        default="source",
+                        help="Corpus stratification key. 'source' (default, legacy) stratifies by "
+                             "(primary_answer_type × source). 'domain_coarse' stratifies by "
+                             "(primary_answer_type × domain_coarse) — use when corpus is single-source.")
     args = parser.parse_args()
 
     if not args.corpus_only:
@@ -288,7 +301,8 @@ def main() -> None:
                     args.drsci_dev, args.drsci_test, args.seed, args.report)
     if not args.drsci_only:
         split_corpus(args.corpus_input, args.output_dir,
-                     args.corpus_dev, args.corpus_test, args.seed, args.report)
+                     args.corpus_dev, args.corpus_test, args.seed, args.report,
+                     stratum_key=args.corpus_stratum)
 
     print("\nDone.")
     if args.report:

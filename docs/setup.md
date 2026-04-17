@@ -79,10 +79,10 @@ PYTHONNOUSERSITE=1 apptainer exec \
   --env "HF_TOKEN=$HF_TOKEN" \
   --env "HF_HOME=$HF_HOME" \
   "$SIF" \
-  python3 scripts/fetch_dataset.py --repo-id xingzhi0/phys-tir --out-dir data/processed_hf
+  python3 scripts/fetch_dataset.py --repo-id xingzhi0/phys-tir --out-dir data/processed_tir
 ```
 
-This writes `data/processed_hf/data/{train,validation,test}.parquet`. The defaults
+This writes `data/processed_tir/data/{train,validation,test}.parquet`. The defaults
 in `scripts/train_async.sh` already point at these paths. See the dataset README
 on the Hub for schema (union `extra_info` struct, `pool` column for provenance)
 and source attribution.

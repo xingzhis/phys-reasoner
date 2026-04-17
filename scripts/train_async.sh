@@ -48,8 +48,8 @@ MODEL="${MODEL:-Qwen/Qwen3.5-4B}"
 # Each split is a union of the curated + Dr. SCI pools; rows carry a `pool`
 # column for provenance. Smoke / rehearsal sbatch scripts override
 # TRAIN_FILES to data/processed/probe_subset.parquet for speed.
-TRAIN_FILES="${TRAIN_FILES:-$ROOT/data/processed_hf/data/train.parquet}"
-VAL_FILES="${VAL_FILES:-$ROOT/data/processed_hf/data/validation.parquet}"
+TRAIN_FILES="${TRAIN_FILES:-$ROOT/data/processed_tir/data/train.parquet}"
+VAL_FILES="${VAL_FILES:-$ROOT/data/processed_tir/data/validation.parquet}"
 
 # Resource split: rollout and trainer live on disjoint GPUs on this node.
 N_GPUS_ROLLOUT="${N_GPUS_ROLLOUT:-1}"

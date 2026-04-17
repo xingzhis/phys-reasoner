@@ -59,7 +59,7 @@ APT() {
 
 # Fetch both datasets: phys-tir (main TIR run) and phys-cot (CoT baseline —
 # same rows, only system prompt swapped so the model isn't primed to call tools).
-APT python3 scripts/fetch_dataset.py --repo-id xingzhi0/phys-tir --out-dir data/processed_hf
+APT python3 scripts/fetch_dataset.py --repo-id xingzhi0/phys-tir --out-dir data/processed_tir
 APT python3 scripts/fetch_dataset.py --repo-id xingzhi0/phys-cot --out-dir data/processed_cot
 
 # Verify env (login node, CPU-only, idempotent)
