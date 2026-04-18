@@ -228,20 +228,51 @@ At ≥5 rollout nodes the trainer becomes the ceiling; adding more rollout nodes
 
 ---
 
-## Dataset Sizes (as of 2026-04-10)
+## Dataset Sizes (pool v2, 2026-04-18)
 
-| Corpus | Training parquet | Rows | Split (train/dev/test) |
-|--------|-----------------|------|------------------------|
-| Corpus | `data/processed/corpus_train.parquet` | 6,866 | ~6,466 / 200 / 200 |
-| Dr. SCI | `data/processed/drsci_train.parquet` | 105,729 | ~101,729 / 2,000 / 2,000 |
+Pool v2 replaces the earlier 108k training pool with a compute-constrained,
+difficulty-filtered subsample. Built by `scripts/build_pool_v2.py`.
 
-**Combined training pool: ~108,195 problems (after split).**
+**Composition rule (one filter per source, then include):**
+- Dr.SCI physics filtered to `difficulty ≥ 0.5` (Qwen3-32B 8-rollout pass-rate
+  threshold; matches Dr.SCI's own dynamic-curriculum starting band floor of
+  0.51). Pre-filter figure/NaN/unknown-answer-type drops reduce 19,409 →
+  18,833 usable rows.
+- UGPhysics (EN) — no difficulty labels, no filter.
+- PHYSICS (desimfj, cleaned corpus) — no difficulty labels, no filter;
+  stratified 80/20 self-split (no public leaderboard to dilute).
+- SciBench-RL train — physics subset (excluding atkins/chemmc chemistry), no
+  filter. Paired with the official native test split (153 problems from
+  disjoint textbooks class/diff/matter) held out unchanged.
 
-Dr. SCI is ~15× larger; without weighting it will dominate. Strategy B weights handle this — corpus sources (SciBench_RL, PHYSICS, UGPhysics, OlympiadBench, PHYBench) are oversampled relative to their raw share via per-stratum weights.
+**Composition table (`data/processed/pool_v2/{tir,cot}/{train,validation,test}.parquet`):**
 
-**Metadata enrichment (as of data pipeline Step 0):**
-- Both train parquets will have enriched `extra_info` preserving: `from` (Dr. SCI), `domain_coarse` (corpus), `primary_answer_type` (corpus, normalizing 87 raw types to 7: numerical/expression/equation/mcq/true_false/interval/multi-part)
-- Splits are stratified by these fields; see `data-pipeline.md` for details.
+| Source | Train | Dev | Test |
+|--------|-------|-----|------|
+| Dr.SCI physics (≥0.5) | 17,827 | 503 | 503 |
+| UGPhysics | 4,980 | 217 | 217 |
+| PHYSICS | 502 | 100 | 191 |
+| SciBench-RL | 280 | 0 | 153 (native) |
+| **Total** | **23,589** | **820** | **1,064** |
+
+At `ppo_mini_batch_size=128` and 200 steps, this yields **1.06 epochs** of
+revisit — Rule-A composition (include-all-after-filter, epochs fall out).
+Extend to 2–3 epochs (~400–600 steps) if training-step time after the
+Qwen3-switch + infra improvements lands in the 5–8 min range.
+
+**Mirror on HF:** `xingzhi0/phys-tir` (TIR system prompt) and `xingzhi0/phys-cot`
+(matched CoT-only baseline). Schema: union `extra_info` struct + top-level
+`pool` column (`"drsci"` / `"curated"`).
+
+**Contamination check (verified during build):** pairwise MD5-normalized
+problem-text intersections across all sources = 0 (including SciBench train ∩
+native test = 0, since they're from disjoint textbooks).
+
+**Historical context:** The 2026-04-16 corpus rebuild (`scripts/rebuild_corpus_splits.py`)
+dropped PHYSICS/OlympiadBench/SciBench_RL/PHYBench from training to preserve
+them as clean external eval. Pool v2 partially reverses that for PHYSICS and
+SciBench-RL under the compute-constrained subsample regime; OlympiadBench and
+PHYBench remain fully held out. See `docs/eval_plan.md` for eval implications.
 
 ---
 

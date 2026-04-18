@@ -15,35 +15,37 @@ We're evaluating two trained checkpoints against one base model:
 
 Both trained runs are launched via `scripts/perlmutter/prod_tir_het.sbatch` and `prod_cot_het.sbatch`. See `scripts/perlmutter/README.md` for the training flow.
 
-**Training data after the corpus rebuild (2026-04-16):** Dr. SCI (~102k) + UGPhysics (~5.4k). Everything else was dropped from training specifically so it could serve as contamination-free eval. See `docs/training-decisions.md` + `.claude/plans/declarative-churning-ladybug.md` for that history.
+**Training data after pool v2 rebuild (2026-04-18):** ~23.6k training problems from Dr.SCI (difficulty ≥ 0.5, 17,827) + UGPhysics (4,980) + PHYSICS (502) + SciBench-RL native train (280). Under the compute-constrained subsample regime, PHYSICS and SciBench-RL are now partially included in training — OlympiadBench / PHYBench / ABench / CritPt remain fully held out. See `docs/training-decisions.md` + the pool rebuild script `scripts/build_pool_v2.py`.
 
 ---
 
 ## Eval Suite
 
-Two tiers: **in-distribution** (our own held-out splits) and **external** (public benchmarks). Drop external benchmarks with known contamination; for benchmarks that started in our corpus and got removed, use the full benchmark as eval because we now see none of it during training.
+Two tiers: **in-distribution** (our own held-out splits of training-pool sources) and **external** (public benchmarks never in training). Drop external benchmarks with known contamination; use our own held-out test splits on sources that are partially in training.
 
-### In-distribution
+### In-distribution (held-out splits from pool v2)
 
 | Dataset | Size | Source | Scorer | Path |
 |---|---|---|---|---|
-| Dr. SCI test | 2,000 | Our stratified split (seed=42) | Our verifier | `data/processed/drsci_test.parquet` |
-| Corpus test (UGPhysics) | 200 | Our stratified split (answer_type × domain_coarse) | Our verifier | `data/processed/corpus_test.parquet` |
+| Dr.SCI test (≥0.5) | 503 | Our stratified split (seed=42) | Our verifier | `data/processed/pool_v2/tir/test.parquet` (filter `pool == 'drsci'`) |
+| UGPhysics test | 217 | Our stratified split by (domain × primary_answer_type) | Our verifier | `data/processed/pool_v2/tir/test.parquet` (filter `data_source == 'UGPhysics'`) |
+| PHYSICS test | 191 | Our stratified 80/20 self-split by primary_answer_type | Our verifier | `data/processed/pool_v2/tir/test.parquet` (filter `data_source == 'PHYSICS'`) |
+| SciBench-RL test | 153 | **Official native test split** (textbooks class/diff/matter, disjoint from train) | Our verifier | `data/processed/pool_v2/tir/test.parquet` (filter `data_source == 'SciBench_RL'`) |
 
-Both are mirrored to HF at `xingzhi0/phys-tir` (split=test) and `xingzhi0/phys-cot`.
+Combined pool v2 test = 1,064 rows. Mirrored to HF at `xingzhi0/phys-tir` (split=test) and `xingzhi0/phys-cot`.
 
 Our verifier is `src/phys_reasoner/verifier/router.py` — rule-first, xVerify-7B fallback on expression types. xVerify is launched as a separate server in eval (same pattern as training: see `scripts/perlmutter/serve_xverify_perlmutter.sbatch`).
 
-### External (planned — held out from training)
+### External (held out entirely from training)
 
 | Benchmark | Size | Type | HF / source | Official scorer | Our path | Notes |
 |---|---|---|---|---|---|---|
-| **PHYSICS** (desimfj) | 793 usable | Physics, text+MCQ | [`desimfj/PHYSICS`](https://huggingface.co/datasets/desimfj/PHYSICS) (2k total, HF split=test) | **None — use our verifier** | `data/hf_cache/` via loader | 793 = after loader filters (Chinese / multi-alt / Open-end dropped). Not a public leaderboard — our numbers aren't externally comparable, but fills the "textbook physics" eval tier. |
-| **OlympiadBench OE_TO physics** (EN, text-only competition) | 236 | Physics competition | [`Hothan/OlympiadBench`](https://huggingface.co/datasets/Hothan/OlympiadBench), config `OE_TO_physics_en_COMP` | [`eval/auto_scoring_judge.py`](https://github.com/OpenBMB/OlympiadBench) | `data/hf_cache/` via loader | Handles numerical (uses `error` field for tolerance) + expression. Multimodal subset (`OE_MM_*`) excluded — text-only model. |
-| **SciBench-RL test** | 153 | Textbook STEM | [`Sihangli/scibench-rl`](https://huggingface.co/datasets/Sihangli/scibench-rl) | Original SciBench has LLM-judge grader (needs OpenAI API) — our verifier is fine for numerical+unit | `data/hf_cache/` via loader | Only the 153-row official test split. 427-row train split was in our corpus → now dropped. |
-| **PHYBench** | 1,000 | Physics competition | [`Eureka-Lab/PHYBench`](https://huggingface.co/datasets/Eureka-Lab/PHYBench) | [EED scorer](https://github.com/phybench-official/phybench) — Expression Edit Distance on SymPy trees, gives 0-100 continuous score | `data/hf_cache/` via loader | 100 rows were in our corpus (filtered simple subset) → now dropped. Full 1k for eval is clean. Answers are raw LaTeX without `\boxed{}` — need wrapper. |
+| **OlympiadBench OE_TO physics** (EN, text-only competition) | 236 | Physics competition | [`Hothan/OlympiadBench`](https://huggingface.co/datasets/Hothan/OlympiadBench), config `OE_TO_physics_en_COMP` | [`eval/auto_scoring_judge.py`](https://github.com/OpenBMB/OlympiadBench) | `data/hf_cache/` via loader | Whole config held out (no native train/test divide). Handles numerical + expression. Multimodal subset (`OE_MM_*`) excluded — text-only model. |
+| **PHYBench** | 1,000 | Physics competition | [`Eureka-Lab/PHYBench`](https://huggingface.co/datasets/Eureka-Lab/PHYBench) | [EED scorer](https://github.com/phybench-official/phybench) — Expression Edit Distance on SymPy trees, gives 0-100 continuous score | `data/hf_cache/` via loader | Whole dataset held out. Answers are raw LaTeX without `\boxed{}` — need wrapper. |
 | **ABench Phy_A + Phy_B** | 400 + 400 | Physics grad/Olympiad; Phy_B is dynamic (parametric variants) | [`inclusionAI/ABench`](https://github.com/inclusionAI/ABench) — GitHub only, not on HF | Official `src/eval.py` — numerical, 1% tolerance. Phy_B needs ALL 4 variants of a base problem correct for credit | `data/raw/abench/Phy_A_fixed_400.csv`, `Phy_B_dynamic_100.csv` | Never in training. Phy_B is the dynamic-robustness check. |
 | **CritPt** | 70 | Frontier research-level physics | [`CritPt-Benchmark/CritPt`](https://huggingface.co/datasets/CritPt-Benchmark/CritPt) | Server-graded via `artificialanalysis.ai/api/v2/critpt/evaluate` (Python functions executed server-side) | `data/hf_cache/` via loader | **Rate limit: 10 full-benchmark submissions / 24h.** Each submission = all 70 problems. Answer format: `def solution(): return <value>` Python functions. Not `\boxed{}`. Requires format-wrapper work. **Stretch goal** — do it if time permits after the main eval is solid. |
+
+**PHYSICS and SciBench-RL move to in-distribution (2026-04-18):** Under compute-constrained subsampling, we accepted that these two benchmarks would partially enter training and report results only on our held-out splits (`pool_v2` test). Trade-off: lose cross-paper comparability on SciBench-RL and any would-be "textbook physics" eval on PHYSICS, gain ~780 curated training rows. OlympiadBench / PHYBench / ABench / CritPt remain clean external benchmarks.
 
 ### Explicitly NOT included (and why)
 

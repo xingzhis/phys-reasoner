@@ -110,14 +110,13 @@ PY
 fi
 
 # ---------------------------------------------------------------------------
-# 3. Data parquets
+# 3. Data parquets (pool v2 — fetched from HF via scripts/fetch_dataset.py)
 # ---------------------------------------------------------------------------
 step "3  data parquets"
 need=(
-    "data/processed/drsci_train.parquet"
-    "data/processed/drsci_dev.parquet"
-    "data/processed/corpus_train.parquet"
-    "data/processed/corpus_dev.parquet"
+    "data/processed_tir/data/train.parquet"
+    "data/processed_tir/data/validation.parquet"
+    "data/processed_tir/data/test.parquet"
 )
 missing=()
 for f in "${need[@]}"; do
@@ -127,12 +126,14 @@ if (( ${#missing[@]} )); then
     echo "  MISSING:"
     for f in "${missing[@]}"; do echo "    - $f"; done
     echo
-    echo "  Build pipeline (see .claude/plans/data-pipeline.md):"
-    echo "    bash scripts/prepare_drsci.sh"
-    echo "    APT python3 scripts/build_training_parquets.py"
-    echo "    APT python3 scripts/split_train_dev_test.py"
-    echo "    APT python3 scripts/subsample_probe.py"
-    fail "data parquets missing — build them then re-run this script"
+    echo "  Fetch pool v2 from HuggingFace (requires HF_TOKEN):"
+    echo "    source .env  # for HF_TOKEN"
+    echo "    APT python3 scripts/fetch_dataset.py \\"
+    echo "      --repo-id xingzhi0/phys-tir --out-dir data/processed_tir"
+    echo "  Optional CoT variant (for the TIR-vs-CoT ablation):"
+    echo "    APT python3 scripts/fetch_dataset.py \\"
+    echo "      --repo-id xingzhi0/phys-cot --out-dir data/processed_cot"
+    fail "data parquets missing — fetch from HF then re-run this script"
 fi
 echo "  all required parquets present"
 
@@ -174,8 +175,8 @@ LOGGERS=console \
 THINKING_BUDGET="${THINKING_BUDGET:-2048}" \
 TOOL_CALL_BUDGET="${TOOL_CALL_BUDGET:-512}" \
 ANSWER_BUDGET="${ANSWER_BUDGET:-512}" \
-TRAIN_FILES="$ROOT/data/processed/probe_subset.parquet" \
-VAL_FILES="$ROOT/data/processed/corpus_dev.parquet" \
+TRAIN_FILES="$ROOT/data/processed_tir/data/validation.parquet" \
+VAL_FILES="$ROOT/data/processed_tir/data/validation.parquet" \
 bash "$ROOT/scripts/train_async.sh"
 
 echo

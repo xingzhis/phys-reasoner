@@ -97,14 +97,21 @@ def run_probe(
     tokenizer = llm.get_tokenizer()
 
     # --- Build prompts ---
-    # Handle both column names: "problem" (corpus) and "extra_info.question" (Dr. SCI)
+    # Schema variants seen in practice:
+    #   (a) flat: row["problem"] directly
+    #   (b) flat-dotted: row["extra_info.question"]  (legacy)
+    #   (c) verl-style: row["extra_info"] is a dict with "problem" or "question"
     def get_problem_text(row):
         if "problem" in row and pd.notna(row["problem"]):
             return str(row["problem"])
-        elif "extra_info.question" in row and pd.notna(row["extra_info.question"]):
+        ei = row["extra_info"] if "extra_info" in row else None
+        if isinstance(ei, dict):
+            for k in ("problem", "question"):
+                if ei.get(k):
+                    return str(ei[k])
+        if "extra_info.question" in row and pd.notna(row["extra_info.question"]):
             return str(row["extra_info.question"])
-        else:
-            raise ValueError(f"No problem/question column found in row: {row.index}")
+        raise ValueError(f"No problem/question column found in row: {list(row.index)}")
 
     messages_list = [build_tir_prompt(get_problem_text(row)) for _, row in df.iterrows()]
     # enable_thinking=True: model reasons in <think>...</think> before the tool call.
@@ -207,6 +214,7 @@ def run_probe(
     wall_start = time.monotonic()
 
     for i, (_, row) in enumerate(df.iterrows()):
+        ei_row = row["extra_info"] if "extra_info" in row else None
         p2_out = phase2_outputs[i].outputs[0]
         p2_stop = p2_out.finish_reason or "unknown"
 
@@ -225,10 +233,19 @@ def run_probe(
         p1_truncated = p1_stop_reasons[i] != "stop"
         p2_truncated = p2_stop != "stop"
 
-        # Verify
-        answer = row.get("answer", row.get("gold_answer", ""))
-        answer_type = row.get("answer_type", row.get("inferred_answer_type", "numerical"))
-        unit = row.get("unit", row.get("gold_unit", ""))
+        # Verify — same schema variants as get_problem_text.
+        rm = row["reward_model"] if "reward_model" in row else None
+        ei = row["extra_info"] if "extra_info" in row else None
+        if isinstance(rm, dict) and rm.get("ground_truth"):
+            answer = rm["ground_truth"]
+        else:
+            answer = row.get("answer", row.get("gold_answer", ""))
+        if isinstance(ei, dict):
+            answer_type = ei.get("answer_type") or ei.get("primary_answer_type") or "numerical"
+            unit = ei.get("unit", "") or ei.get("gold_unit", "")
+        else:
+            answer_type = row.get("answer_type", row.get("inferred_answer_type", "numerical"))
+            unit = row.get("unit", row.get("gold_unit", ""))
 
         if boxed is not None:
             score = verify_answer(

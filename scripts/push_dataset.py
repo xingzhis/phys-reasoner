@@ -39,14 +39,26 @@ README_HEADER_TIR = """\
 # phys-tir
 
 Physics problem dataset for tool-integrated reasoning (TIR) RLVR training.
-Pre-split train / validation / test, each a union of two pools.
+Pre-split train / validation / test, each a union of two pools (`drsci` and
+`curated`).
 
 Every row's `prompt` uses the TIR system prompt (Python/SymPy sandbox tool
 available). See `phys-cot` for the matched CoT-only baseline variant.
 
-External physics benchmarks (OlympiadBench, SciBench-RL, PHYBench, desimfj/PHYSICS,
-ABench, CritPt) are **not** included in this dataset — they are held out for
-contamination-free evaluation.
+Composition rule (one filter per source, then include):
+- **Dr.SCI physics, difficulty ≥ 0.5** — retains the tractable band as labeled
+  by Qwen3-32B 8-rollout sampling (Dr.SCI's own difficulty proxy). This is the
+  floor of Dr.SCI's dynamic-curriculum starting band [0.51, 0.99]; Spearman
+  ρ=0.42 vs observed 4B TIR pass-rate on a 2k probe validates the filter.
+- **UGPhysics (EN)** — no per-problem difficulty labels, included as-is.
+- **PHYSICS (desimfj)** — no per-problem difficulty labels, stratified 80/20
+  self-split (no public leaderboard to dilute).
+- **SciBench-RL** — physics subset (excluding atkins/chemmc chemistry). Uses
+  the official native train/test split: native train is in training, native
+  test (153 problems from disjoint textbooks class/diff/matter) is held out.
+
+External benchmarks held out for contamination-free evaluation:
+OlympiadBench (236), PHYBench (1000), ABench (800), CritPt (70).
 
 """
 
@@ -58,11 +70,11 @@ CoT-only baseline variant of `phys-tir`: identical rows, identical splits,
 identical user messages and ground truths. The only difference is the system
 prompt — CoT mentions no tools/Python/code. Used for the TIR-vs-CoT ablation.
 
-Pre-split train / validation / test, each a union of two pools.
+Pre-split train / validation / test, each a union of two pools (`drsci` and
+`curated`). See `phys-tir` for the composition rule and source attribution.
 
-External physics benchmarks (OlympiadBench, SciBench-RL, PHYBench, desimfj/PHYSICS,
-ABench, CritPt) are **not** included in this dataset — they are held out for
-contamination-free evaluation.
+External benchmarks held out for contamination-free evaluation:
+OlympiadBench (236), PHYBench (1000), ABench (800), CritPt (70).
 
 """
 
@@ -98,23 +110,38 @@ difficulty is stringified, preserving the numeric value).
 
 ## Pools
 
-### `curated` — UGPhysics (EN)
-Undergraduate physics problems from UGPhysics
-([YangLabHKUST/UGPhysics](https://huggingface.co/datasets/UGPhysics/ugphysics)),
-English subset only. Filtered to rule-verifiable answer types (NV / EX / EQ /
-MC / TF), dirty answer-type labels cleaned, deduped.
+### `curated` — UGPhysics + PHYSICS + SciBench-RL (physics)
+Hand-curated physics sources, all rule-verifiable:
 
-Other public physics benchmarks (OlympiadBench, SciBench-RL, PHYBench,
-desimfj/PHYSICS) were excluded from training so they remain clean external
-eval targets.
+- **UGPhysics (EN)** — Undergraduate physics from
+  [UGPhysics/ugphysics](https://huggingface.co/datasets/UGPhysics/ugphysics),
+  English subset only. Filtered to rule-verifiable answer types (NV / EX / EQ
+  / MC / TF), dirty answer-type labels cleaned, deduped.
+- **PHYSICS (desimfj)** — Undergraduate textbook physics from
+  [desimfj/PHYSICS](https://huggingface.co/datasets/desimfj/PHYSICS). Chinese
+  rows dropped, multi-alternative answers excluded, open-ended items removed.
+  Stratified 80/20 train/eval self-split (no public leaderboard for this set).
+- **SciBench-RL** — Textbook STEM problems from
+  [Sihangli/scibench-rl](https://huggingface.co/datasets/Sihangli/scibench-rl),
+  physics sources only (excluding atkins/chemmc chemistry). Uses the official
+  native train/test divide: native train in training pool, native test (153
+  problems from disjoint textbooks class/diff/matter) held out.
 
-### `drsci` — Dr. SCI physics
+Other public physics benchmarks (OlympiadBench, PHYBench, ABench, CritPt) are
+excluded from training so they remain clean external eval targets.
+
+### `drsci` — Dr.SCI physics (difficulty ≥ 0.5)
 Sourced from the unofficial release at
 [MiniByte-666/Dr.SCI](https://huggingface.co/datasets/MiniByte-666/Dr.SCI),
-re-implementing the dataset described in the Dr. SCI paper
+re-implementing the dataset described in the Dr.SCI paper
 ([arXiv:2602.08321](https://arxiv.org/abs/2602.08321)). Filtered to physics
 problems with rule-verifiable answers (numerical / expression / equation /
-MCQ / true-false); non-verifiable or degenerate entries removed.
+MCQ / true-false).
+
+**Difficulty filter:** retains only problems with Dr.SCI's per-problem
+`difficulty ≥ 0.5` (= Qwen3-32B 8-rollout pass-rate ≥ 4/8). This matches the
+floor of Dr.SCI's dynamic-curriculum starting band [0.51, 0.99]. Validated
+against a 2,000-row 4B TIR probe: Spearman ρ = 0.42, p < 1e-80.
 
 
 ## Loading for VeRL
@@ -159,12 +186,37 @@ def _build_readme(data_dir: Path) -> str:
     va_c, va_d, va_t = _counts("validation")
     te_c, te_d, te_t = _counts("test")
 
+    # Break down the curated pool by source tag for a more informative table.
+    def _by_source(split: str) -> dict[str, int]:
+        p = data_dir / f"{split}.parquet"
+        df = pd.read_parquet(p)
+        if "pool" not in df.columns:
+            return {}
+        cur = df[df["pool"] == "curated"]
+        if len(cur) == 0:
+            return {}
+        return cur["data_source"].astype(str).value_counts().to_dict()
+
+    tr_cur_srcs = _by_source("train")
+    va_cur_srcs = _by_source("validation")
+    te_cur_srcs = _by_source("test")
+    all_cur_keys = set(tr_cur_srcs) | set(va_cur_srcs) | set(te_cur_srcs)
+
+    src_rows = ""
+    for k in ("UGPhysics", "PHYSICS", "SciBench_RL"):
+        if k in all_cur_keys:
+            src_rows += (
+                f"| &nbsp;&nbsp;↳ `{k}` | "
+                f"{tr_cur_srcs.get(k, 0):,} | {va_cur_srcs.get(k, 0):,} | {te_cur_srcs.get(k, 0):,} |\n"
+            )
+
     table = (
         "| Pool | Train | Validation | Test |\n"
         "|---|---|---|---|\n"
-        f"| `curated` (UGPhysics EN)          | {tr_c:,} | {va_c:,} | {te_c:,} |\n"
-        f"| `drsci` (Dr. SCI physics subset)  | {tr_d:,} | {va_d:,} | {te_d:,} |\n"
-        f"| **total**                         | **{tr_t:,}** | **{va_t:,}** | **{te_t:,}** |\n"
+        f"| `curated` (UGPhysics + PHYSICS + SciBench-RL) | {tr_c:,} | {va_c:,} | {te_c:,} |\n"
+        + src_rows
+        + f"| `drsci` (Dr.SCI physics, difficulty ≥ 0.5)   | {tr_d:,} | {va_d:,} | {te_d:,} |\n"
+        + f"| **total** | **{tr_t:,}** | **{va_t:,}** | **{te_t:,}** |\n"
     )
 
     variant = _detect_variant(data_dir)
