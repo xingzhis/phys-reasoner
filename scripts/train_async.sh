@@ -66,13 +66,17 @@ MAX_TOOL_TURNS="${MAX_TOOL_TURNS:-1}"
 THINKING_BUDGET="${THINKING_BUDGET:-}"
 TOOL_CALL_BUDGET="${TOOL_CALL_BUDGET:-}"
 # INTERRUPT_LEN: exact token count of THINK_INTERRUPT_PHRASE. Must match
-# tokenizer.encode(phrase, add_special_tokens=False). The agent loop asserts
-# this against the real tokenized length at startup, so any drift fails loudly.
-# Recompute for a new model:
+# tokenizer.encode(phrase, add_special_tokens=False). tool_agent_loop.py:143
+# asserts this against the real tokenized length at startup, so any drift
+# fails loudly. Known values (2026-04-18):
+#   Qwen/Qwen3-4B-Thinking-2507  -> 16
+#   Qwen/Qwen3-4B-Instruct-2507  -> 16
+#   Qwen/Qwen3.5-4B              -> 17
+# Override via env if switching tokenizer family. Recompute:
 #   python3 -c "from transformers import AutoTokenizer; \
 #     from verl.experimental.agent_loop.tool_agent_loop import THINK_INTERRUPT_PHRASE; \
 #     print(len(AutoTokenizer.from_pretrained('<MODEL>').encode(THINK_INTERRUPT_PHRASE, add_special_tokens=False)))"
-INTERRUPT_LEN=17
+INTERRUPT_LEN="${INTERRUPT_LEN:-16}"
 # Char-unit cap on injected tool output (VeRL tool_agent_loop truncates by chars,
 # not tokens). probe_v5 analysis: 512→~10% of rollouts clipped, 1024→~4%.
 MAX_TOOL_RESPONSE_LEN=1024
@@ -160,9 +164,23 @@ LOG_PROB_MICRO_BS_PER_GPU="${LOG_PROB_MICRO_BS_PER_GPU:-$PPO_MICRO_BS_PER_GPU}"
 # Dynamic batch-size autosizing (recommended for long-thinking TIR rollouts).
 # When USE_DYNAMIC_BSZ=1, micro-batches pack up to ppo_max_token_len_per_gpu
 # tokens regardless of sequence count — no more OOMs on tail-long responses.
-# ref + rollout log_prob max token len default to this same value via oc.select.
-USE_DYNAMIC_BSZ="${USE_DYNAMIC_BSZ:-0}"
+# Perlmutter prod default is 1; keep the same here so standalone invocations
+# and sbatch invocations pick up the same behaviour. VeRL asserts that
+# actor.use_dynamic_bsz == rollout.log_prob_use_dynamic_bsz (engine_workers.py:534),
+# so these three flags are derived from a single variable below to keep them
+# in lockstep — do not hardcode rollout/ref log_prob_use_dynamic_bsz.
+USE_DYNAMIC_BSZ="${USE_DYNAMIC_BSZ:-1}"
+if [[ "$USE_DYNAMIC_BSZ" == "1" ]]; then DYN_BSZ_FLAG=True; else DYN_BSZ_FLAG=False; fi
 PPO_MAX_TOKEN_LEN_PER_GPU="${PPO_MAX_TOKEN_LEN_PER_GPU:-20480}"
+
+# Qwen3-switch knobs — declared at top level (not `:-` shadowed inside the Hydra
+# flags) so the echo block below shows the effective value and so the sbatch's
+# `export VAR=...` flows through deterministically.
+TRAIN_SP="${TRAIN_SP:-2}"
+STALENESS="${STALENESS:-1}"
+REF_LOG_PROB_MAX_TOKEN_LEN="${REF_LOG_PROB_MAX_TOKEN_LEN:-81920}"
+ACTOR_PARAM_OFFLOAD="${ACTOR_PARAM_OFFLOAD:-False}"
+ACTOR_OPT_OFFLOAD="${ACTOR_OPT_OFFLOAD:-True}"
 
 # LR schedule. Defaults match DAPO / SimpleRL canonical recipes:
 #   constant LR with 20-step linear warmup. Set LR_SCHEDULER_TYPE=cosine and
@@ -198,6 +216,13 @@ echo "  seq lens    : prompt=$MAX_PROMPT_LEN  response=$MAX_RESPONSE_LEN"
 echo "  vLLM mem    : $VLLM_GPU_MEM_UTIL"
 echo "  output      : $TRAIN_DIR"
 echo "  wandb       : $WANDB_PROJECT / $EXPERIMENT"
+# Qwen3-switch audit block — verify sbatch exports actually took effect. Grep
+# the train log for '[knobs]' after a run to confirm.
+echo "[knobs] USE_DYNAMIC_BSZ=$USE_DYNAMIC_BSZ (DYN_BSZ_FLAG=$DYN_BSZ_FLAG)"
+echo "[knobs] TRAIN_SP=$TRAIN_SP STALENESS=$STALENESS"
+echo "[knobs] PPO_MAX_TOKEN_LEN_PER_GPU=$PPO_MAX_TOKEN_LEN_PER_GPU  REF_LOG_PROB_MAX_TOKEN_LEN=$REF_LOG_PROB_MAX_TOKEN_LEN"
+echo "[knobs] ACTOR_PARAM_OFFLOAD=$ACTOR_PARAM_OFFLOAD ACTOR_OPT_OFFLOAD=$ACTOR_OPT_OFFLOAD"
+echo "[knobs] THINKING_BUDGET=${THINKING_BUDGET:-<null>} TOOL_CALL_BUDGET=${TOOL_CALL_BUDGET:-<null>}"
 
 # Guards (same as train.sh).
 if [[ "${PYTORCH_CUDA_ALLOC_CONF:-}" == *"expandable_segments:True"* ]]; then
@@ -265,7 +290,7 @@ PYTHONNOUSERSITE=1 apptainer exec --nv \
     actor_rollout_ref.actor.optim.lr_warmup_steps=$LR_WARMUP_STEPS \
     ${LR_MIN_RATIO:+actor_rollout_ref.actor.optim.min_lr_ratio=$LR_MIN_RATIO} \
     actor_rollout_ref.actor.ppo_mini_batch_size=$PPO_MINI_BATCH \
-    actor_rollout_ref.actor.use_dynamic_bsz=$([[ "$USE_DYNAMIC_BSZ" == "1" ]] && echo True || echo False) \
+    actor_rollout_ref.actor.use_dynamic_bsz=$DYN_BSZ_FLAG \
     actor_rollout_ref.actor.ppo_max_token_len_per_gpu=$PPO_MAX_TOKEN_LEN_PER_GPU \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=$PPO_MICRO_BS_PER_GPU \
     actor_rollout_ref.actor.ppo_epochs=1 \
@@ -274,16 +299,16 @@ PYTHONNOUSERSITE=1 apptainer exec --nv \
     actor_rollout_ref.actor.entropy_coeff=0 \
     actor_rollout_ref.actor.use_rollout_log_probs=True \
     actor_rollout_ref.actor.fsdp_config.strategy=fsdp \
-    actor_rollout_ref.actor.fsdp_config.param_offload=${ACTOR_PARAM_OFFLOAD:-False} \
-    actor_rollout_ref.actor.fsdp_config.optimizer_offload=${ACTOR_OPT_OFFLOAD:-False} \
+    actor_rollout_ref.actor.fsdp_config.param_offload=$ACTOR_PARAM_OFFLOAD \
+    actor_rollout_ref.actor.fsdp_config.optimizer_offload=$ACTOR_OPT_OFFLOAD \
     actor_rollout_ref.actor.fsdp_config.model_dtype=bfloat16 \
-    actor_rollout_ref.actor.ulysses_sequence_parallel_size=${TRAIN_SP:-2} \
+    actor_rollout_ref.actor.ulysses_sequence_parallel_size=$TRAIN_SP \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     actor_rollout_ref.ref.fsdp_config.model_dtype=bfloat16 \
-    actor_rollout_ref.ref.ulysses_sequence_parallel_size=${TRAIN_SP:-2} \
-    actor_rollout_ref.ref.log_prob_use_dynamic_bsz=True \
-    actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=${REF_LOG_PROB_MAX_TOKEN_LEN:-81920} \
-    actor_rollout_ref.rollout.log_prob_use_dynamic_bsz=True \
+    actor_rollout_ref.ref.ulysses_sequence_parallel_size=$TRAIN_SP \
+    actor_rollout_ref.ref.log_prob_use_dynamic_bsz=$DYN_BSZ_FLAG \
+    actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=$REF_LOG_PROB_MAX_TOKEN_LEN \
+    actor_rollout_ref.rollout.log_prob_use_dynamic_bsz=$DYN_BSZ_FLAG \
     actor_rollout_ref.rollout.max_num_batched_tokens=$((MAX_PROMPT_LEN + MAX_RESPONSE_LEN)) \
     actor_rollout_ref.rollout.name=vllm \
     actor_rollout_ref.rollout.mode=async \
@@ -310,12 +335,12 @@ PYTHONNOUSERSITE=1 apptainer exec --nv \
     actor_rollout_ref.rollout.multi_turn.max_parallel_calls=1 \
     actor_rollout_ref.rollout.multi_turn.max_tool_response_length=$MAX_TOOL_RESPONSE_LEN \
     actor_rollout_ref.rollout.multi_turn.tool_response_truncate_side=right \
-    ${THINKING_BUDGET:++actor_rollout_ref.rollout.multi_turn.thinking_budget=$THINKING_BUDGET} \
-    ${TOOL_CALL_BUDGET:++actor_rollout_ref.rollout.multi_turn.tool_call_budget=$TOOL_CALL_BUDGET} \
+    +actor_rollout_ref.rollout.multi_turn.thinking_budget=${THINKING_BUDGET:-null} \
+    +actor_rollout_ref.rollout.multi_turn.tool_call_budget=${TOOL_CALL_BUDGET:-null} \
     algorithm.rollout_correction.bypass_mode=True \
     async_training.trigger_parameter_sync_step=1 \
     async_training.require_batches=1 \
-    async_training.staleness_threshold=${STALENESS:-0} \
+    async_training.staleness_threshold=$STALENESS \
     async_training.partial_rollout=False \
     async_training.use_trainer_do_validate=False \
     reward.custom_reward_function.path="$ROOT/src/phys_reasoner/training/reward.py" \
@@ -329,7 +354,8 @@ PYTHONNOUSERSITE=1 apptainer exec --nv \
     trainer.total_epochs=1 \
     trainer.save_freq=$SAVE_FREQ \
     trainer.test_freq=$TEST_FREQ \
-    trainer.val_before_train=false \
+    trainer.val_before_train=${VAL_BEFORE_TRAIN:-false} \
+    data.val_max_samples=${VAL_MAX_SAMPLES:--1} \
     trainer.project_name="$WANDB_PROJECT" \
     trainer.experiment_name="$EXPERIMENT" \
     trainer.default_local_dir="$TRAIN_DIR" \

@@ -118,10 +118,9 @@ git -C verl log --oneline --decorate -3
 ### 2.2 Sanity checks before `sbatch`
 
 ```bash
-# Apptainer images exist and match env.sh:
-ls $ROOT/verl_vllm017.latest.sif $ROOT/phys-reasoner-overlay-017b.img
-# If -017b.img does not exist but -017.img does, see FINDINGS §9 — this
-# drift is a known concern.
+# Apptainer images exist and match env.sh (env.sh is source of truth — defaults
+# to -017.img on Roberts; if Perlmutter ships -017b.img, override OVERLAY in .env):
+ls $ROOT/verl_vllm017.latest.sif "$OVERLAY"
 
 # Data files in place:
 ls $ROOT/data/processed_tir/data/{train,validation}.parquet
@@ -148,12 +147,12 @@ Qwen3-4B-Thinking-2507 is not pre-cached; download before submitting:
 
 ```bash
 ROOT=<perlmutter repo root>
-HF_HOME=$ROOT/hf_cache \
+source "$ROOT/env.sh"  # provides $SIF, $OVERLAY, $HF_HOME
 PYTHONNOUSERSITE=1 apptainer exec \
-  --overlay $ROOT/phys-reasoner-overlay-017b.img:ro --no-home \
+  --overlay "$OVERLAY:ro" --no-home \
   --bind /etc/pki:/etc/pki \
-  --env "PYTHONNOUSERSITE=1" --env "HF_HOME=$ROOT/hf_cache" \
-  $ROOT/verl_vllm017.latest.sif \
+  --env "PYTHONNOUSERSITE=1" --env "HF_HOME=$HF_HOME" \
+  "$SIF" \
   huggingface-cli download Qwen/Qwen3-4B-Thinking-2507
 
 # Verify:
@@ -167,10 +166,11 @@ Do the same for `Qwen/Qwen3-4B-Instruct-2507` if you want the option to swap
 ### 2.4 Chat template quick-check (verifies hermes format assumption)
 
 ```bash
+source "$ROOT/env.sh"  # provides $SIF, $OVERLAY, $HF_HOME
 PYTHONNOUSERSITE=1 apptainer exec \
-  --overlay $ROOT/phys-reasoner-overlay-017b.img:ro \
-  --env "PYTHONPATH=/opt/phys-extras/" --env "HF_HOME=$ROOT/hf_cache" \
-  $ROOT/verl_vllm017.latest.sif \
+  --overlay "$OVERLAY:ro" \
+  --env "PYTHONPATH=/opt/phys-extras/" --env "HF_HOME=$HF_HOME" \
+  "$SIF" \
   python3 -c "
 from transformers import AutoTokenizer
 t = AutoTokenizer.from_pretrained('Qwen/Qwen3-4B-Thinking-2507', local_files_only=True)
