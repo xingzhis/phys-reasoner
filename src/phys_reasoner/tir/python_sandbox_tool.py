@@ -41,6 +41,7 @@ class PythonSandboxTool(BaseTool):
     async def execute(
         self, instance_id: str, parameters: dict, **kwargs
     ) -> tuple[ToolResponse, float, dict]:
+        from phys_reasoner.tir.prompts import TOOL_ERROR_REMINDER  # noqa: PLC0415
         from phys_reasoner.tir.sandbox import execute_code  # noqa: PLC0415
 
         code = parameters.get("code", "")
@@ -50,7 +51,9 @@ class PythonSandboxTool(BaseTool):
         result = execute_code(code, timeout=timeout, max_output_bytes=max_output_bytes)
 
         if result.error:
-            text = f"(execution error)\n{result.stderr[:300]}"
+            # Append task-structure reminder so the model writes \boxed{} instead
+            # of attempting a second tool call (which our loop does not execute).
+            text = f"(execution error)\n{result.stderr[:300]}{TOOL_ERROR_REMINDER}"
         else:
             text = result.stdout or "(no output)"
 

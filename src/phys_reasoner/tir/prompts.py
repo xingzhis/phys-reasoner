@@ -92,6 +92,19 @@ TOOL_CALL_STOP = "</tool_call>"
 # Must match verl/verl/experimental/agent_loop/tool_agent_loop.py exactly.
 THINK_INTERRUPT_PHRASE = "\nOkay, I've thought enough. Time to write my response.\n</think>\n"
 
+# Task-structure reminder appended to the tool response ONLY on execution error.
+# Zero-shot Qwen3.5-4B ignores the "one tool call" instruction in TIR_SYSTEM_PROMPT
+# and tries to retry when it sees an error injection (~93% of sandbox-error
+# rollouts in a corpus_test pass emit a 2nd <tool_call>). Since our loop doesn't
+# execute second calls, this traps the model into format failure. The reminder
+# tells the model explicitly to give its best final answer now. Applied in both
+# training (python_sandbox_tool.py) and eval (rollout.py) so train/eval stay
+# consistent.
+TOOL_ERROR_REMINDER = (
+    "\n\n(Note: your single tool execution has been used. "
+    "Based on the error above, give your best final answer now as \\boxed{<value>}.)"
+)
+
 # ---------------------------------------------------------------------------
 # Allowed packages (must stay in sync with sandbox.py ALLOWED_PACKAGES)
 # ---------------------------------------------------------------------------

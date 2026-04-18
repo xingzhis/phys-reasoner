@@ -518,7 +518,10 @@ def run_dump(
                 if not sandbox_errors[i]:
                     output_text = sandbox_stdouts[i] or "(no output)"
                 else:
-                    output_text = f"(execution error)\n{sandbox_errs[i][:300]}"
+                    # Match python_sandbox_tool.py: append reminder on error so the
+                    # model writes \boxed{} instead of retrying with a 2nd tool call.
+                    from phys_reasoner.tir.prompts import TOOL_ERROR_REMINDER  # noqa: PLC0415
+                    output_text = f"(execution error)\n{sandbox_errs[i][:300]}{TOOL_ERROR_REMINDER}"
                 if len(output_text) > max_tool_response_len:
                     output_text = "(truncated)..." + output_text[-max_tool_response_len:]
                 injection = _make_tool_injection(output_text)
