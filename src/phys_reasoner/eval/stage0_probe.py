@@ -74,6 +74,11 @@ def run_probe(
     max_new_tokens: int = 8192,
     sandbox_timeout: float = 30.0,
     output_path: str | None = None,
+    enable_thinking: bool = True,
+    temperature: float = 0.7,
+    top_p: float = 0.8,
+    top_k: int = 20,
+    min_p: float = 0.0,
 ) -> pd.DataFrame:
     """Run TIR Stage 0 probe. Returns DataFrame with per-problem results + diagnostics."""
     from vllm import LLM, SamplingParams  # noqa: PLC0415
@@ -96,16 +101,23 @@ def run_probe(
     tokenizer = llm.get_tokenizer()
 
     # --- Build prompts ---
-    # Handle both column names: "problem" (corpus) and "extra_info.question" (Dr. SCI)
-    def get_problem_text(row):
+    # Handle three schemas:
+    #   (a) VeRL chat format: row["prompt"] is a list of {role, content} dicts
+    #   (b) flat "problem" column (corpus_*.parquet)
+    #   (c) flat "extra_info.question" column (legacy Dr. SCI)
+    def get_messages(row):
+        prompt = row.get("prompt", None)
+        # Treat ndarrays/lists as "has messages" — pd.notna on a list raises.
+        if prompt is not None and hasattr(prompt, "__iter__") and not isinstance(prompt, str):
+            msgs = [{"role": m["role"], "content": m["content"]} for m in prompt]
+            return msgs
         if "problem" in row and pd.notna(row["problem"]):
-            return str(row["problem"])
-        elif "extra_info.question" in row and pd.notna(row["extra_info.question"]):
-            return str(row["extra_info.question"])
-        else:
-            raise ValueError(f"No problem/question column found in row: {row.index}")
+            return build_tir_prompt(str(row["problem"]))
+        if "extra_info.question" in row and pd.notna(row["extra_info.question"]):
+            return build_tir_prompt(str(row["extra_info.question"]))
+        raise ValueError(f"No prompt/problem column found in row: {row.index}")
 
-    messages_list = [build_tir_prompt(get_problem_text(row)) for _, row in df.iterrows()]
+    messages_list = [get_messages(row) for _, row in df.iterrows()]
     # enable_thinking=True: model reasons in <think>...</think> before the tool call.
     # Without this, the tool-call format has no plain-content slot and the model
     # squeezes reasoning into Python code comments instead. See prompts.py for details.
@@ -117,7 +129,7 @@ def run_probe(
             tools=[PYTHON_TOOL_SCHEMA],
             tokenize=False,
             add_generation_prompt=True,
-            enable_thinking=True,
+            enable_thinking=enable_thinking,
         )
         for msgs in messages_list
     ]
@@ -127,9 +139,10 @@ def run_probe(
         max_tokens=max_new_tokens,
         stop=[TOOL_CALL_STOP],
         include_stop_str_in_output=True,
-        temperature=0.7,
-        top_p=0.8,
-        top_k=20,
+        temperature=temperature,
+        top_p=top_p,
+        top_k=top_k,
+        min_p=min_p,
     )
     phase1_outputs = llm.generate(phase1_prompts, phase1_params)
 
@@ -180,9 +193,10 @@ def run_probe(
     phase2_params_list = [
         SamplingParams(
             max_tokens=1 if already_answered_flags[i] else max(64, max_new_tokens - used),
-            temperature=0.7,
-            top_p=0.8,
-            top_k=20,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            min_p=min_p,
         )
         for i, used in enumerate(tokens_used_p1)
     ]
@@ -193,17 +207,19 @@ def run_probe(
     wall_start = time.monotonic()
 
     for i, (_, row) in enumerate(df.iterrows()):
-        p2_out = phase2_outputs[i].outputs[0]
-        p2_stop = p2_out.finish_reason or "unknown"
+        p2_out_obj = phase2_outputs[i].outputs[0]
+        p2_stop = p2_out_obj.finish_reason or "unknown"
+        p2_tokens_n = len(p2_out_obj.token_ids)
 
         if already_answered_flags[i]:
             # Model answered in phase 1 without tool call — use p1 text directly.
             p2_text = ""
             p2_stop = "skip"
+            p2_tokens_n = 0
             boxed = _extract_boxed(phase1_texts[i])
             format_ok = False  # no tool call, so format is not fully compliant
         else:
-            p2_text = p2_out.text
+            p2_text = p2_out_obj.text
             boxed = _extract_boxed(p2_text)
             format_ok = code_extracted_flags[i] and (boxed is not None)
 
@@ -211,10 +227,24 @@ def run_probe(
         p1_truncated = p1_stop_reasons[i] != "stop"
         p2_truncated = p2_stop != "stop"
 
-        # Verify
-        answer = row.get("answer", row.get("gold_answer", ""))
-        answer_type = row.get("answer_type", row.get("inferred_answer_type", "numerical"))
-        unit = row.get("unit", row.get("gold_unit", ""))
+        # Verify — handle VeRL schema (reward_model.ground_truth, extra_info dict) too.
+        rm = row.get("reward_model", None)
+        ei = row.get("extra_info", None)
+        ei_get = (lambda k, default="": (ei.get(k, default) if hasattr(ei, "get") else default))
+        answer = row.get(
+            "answer",
+            row.get(
+                "gold_answer",
+                (rm.get("ground_truth", "") if hasattr(rm, "get") else "") or ei_get("answer", ""),
+            ),
+        )
+        answer_type = row.get(
+            "answer_type",
+            row.get("inferred_answer_type", ei_get("answer_type", "numerical")),
+        )
+        unit = row.get("unit", row.get("gold_unit", ei_get("unit", "")))
+        source = row.get("source", row.get("data_source", ei_get("source", "")))
+        problem_id = row.get("problem_id", ei_get("problem_id", str(i)))
 
         if boxed is not None:
             score = verify_answer(
@@ -227,9 +257,9 @@ def run_probe(
             score = 0.0
 
         records.append({
-            "problem_id": row.get("problem_id", str(i)),
+            "problem_id": problem_id,
             "answer_type": answer_type,
-            "source": row.get("source", ""),
+            "source": source,
             "phase1_text": phase1_texts[i],
             "p1_stop_reason": p1_stop_reasons[i],
             "p1_tokens": tokens_used_p1[i],
@@ -239,8 +269,10 @@ def run_probe(
             "exec_stdout": exec_stdouts[i],
             "phase2_text": p2_text,
             "p2_stop_reason": p2_stop,
+            "p2_tokens": p2_tokens_n,
             "p2_truncated": p2_truncated,
             "boxed_answer": boxed,
+            "gold_answer": answer,
             "verifier_score": score,
             "format_ok": format_ok,
             "wall_time_s": time.monotonic() - wall_start,
@@ -264,6 +296,14 @@ def _print_summary(df: pd.DataFrame) -> None:
     print(f"\n=== Stage 0 Probe Summary (n={n_total}) ===")
     print(f"  Phase 1 truncated (no </tool_call>): {p1_trunc:.1%}")
     print(f"  Phase 2 truncated (no EOS):          {p2_trunc:.1%}")
+    # Lengths: p1_tokens includes thinking+tool_call; p2_tokens is the answer turn.
+    if "p1_tokens" in df.columns:
+        print(f"  p1_tokens mean/median/p95: {df['p1_tokens'].mean():.0f} / {df['p1_tokens'].median():.0f} / {df['p1_tokens'].quantile(0.95):.0f}")
+    if "p2_tokens" in df.columns:
+        print(f"  p2_tokens mean/median/p95: {df['p2_tokens'].mean():.0f} / {df['p2_tokens'].median():.0f} / {df['p2_tokens'].quantile(0.95):.0f}")
+    code_rate = df["code_extracted"].mean()
+    exec_rate_all = df["exec_success"].mean()
+    print(f"  tool_call extracted: {code_rate:.1%}   exec_success: {exec_rate_all:.1%}")
 
     for atype, grp in df.groupby("answer_type"):
         n = len(grp)
@@ -288,6 +328,12 @@ def _print_summary(df: pd.DataFrame) -> None:
         print(f"\nDecision gate (numerical hit_rate >= 0.15): {hit_num:.3f} → {gate}")
 
 
+def _str2bool(v: str) -> bool:
+    if isinstance(v, bool):
+        return v
+    return str(v).strip().lower() in {"1", "true", "t", "yes", "y"}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Stage 0 TIR probe")
     parser.add_argument("--model", required=True)
@@ -297,6 +343,11 @@ def main() -> None:
     parser.add_argument("--max_new_tokens", type=int, default=8192)
     parser.add_argument("--sandbox_timeout", type=float, default=30.0)
     parser.add_argument("--output", default=None)
+    parser.add_argument("--enable_thinking", type=_str2bool, default=True)
+    parser.add_argument("--temperature", type=float, default=0.7)
+    parser.add_argument("--top_p", type=float, default=0.8)
+    parser.add_argument("--top_k", type=int, default=20)
+    parser.add_argument("--min_p", type=float, default=0.0)
     args = parser.parse_args()
 
     run_probe(
@@ -307,6 +358,11 @@ def main() -> None:
         max_new_tokens=args.max_new_tokens,
         sandbox_timeout=args.sandbox_timeout,
         output_path=args.output,
+        enable_thinking=args.enable_thinking,
+        temperature=args.temperature,
+        top_p=args.top_p,
+        top_k=args.top_k,
+        min_p=args.min_p,
     )
 
 
