@@ -1,27 +1,44 @@
-"""Dump TIR rollouts to human-readable txt files and a structured parquet.
+"""Generate rollouts (TIR or CoT) and save raw traces to a parquet.
 
-Runs the same 2-phase vLLM loop as VeRL's ToolAgentLoop (qwen3_coder format,
-enable_thinking=True for phase 1 / False for phase 2, tool schema injected).
+Two modes share the same vLLM engine, tokenizer, chunking, and record schema;
+the mode switch only changes prompt construction, stop tokens, and post-phase-1
+handling.
 
-Supports think-interrupt: when --thinking_budget is set, phase 1 generation is
-capped at thinking_budget tokens. If the model exceeds the budget without emitting
-</think>, the interrupt phrase is injected and a second generation (phase 1b) runs
-with max_tokens=tool_call_budget. This exactly mirrors the logic in
-verl/verl/experimental/agent_loop/tool_agent_loop.py lines 294-333.
+TIR mode (--mode tir, default)
+    Same 2-phase loop as VeRL's ToolAgentLoop (qwen3_coder format,
+    enable_thinking=True for phase 1 / False for phase 2, tool schema injected
+    via `tools=[...]`). Mirrors
+    verl/experimental/agent_loop/tool_agent_loop.py lines 294-333.
+    Phase 1 stops on </tool_call>; sandbox runs extracted code; tool response
+    injected; phase 2 generates the final \\boxed{...}.
+
+CoT mode (--mode cot)
+    Mirrors VeRL's SingleTurnAgentLoop
+    (verl/experimental/agent_loop/single_turn_agent_loop.py). No tool schema,
+    no </tool_call> stop. Phase 1 runs up to thinking_budget. If interrupt
+    fires (budget hit AND </think> not emitted), phase 2 runs with
+    max_tokens = response_length - thinking_budget - interrupt_len, which
+    matches the TIR budget identity:
+        response_length = thinking + interrupt + tool_call + tool_response + answer
+    If interrupt does NOT fire, no phase 2. Total response length is therefore
+    identical between modes, making this a fair TIR-vs-CoT ablation.
 
 Output:
-  - Per-rollout txt files for human inspection
-  - rollouts.parquet with full trace and metadata (scoring is a separate step)
+  - rollouts.parquet with raw phase1/phase1b/phase2 text and metadata.
+    Answer extraction is deliberately NOT done here — scorers own it.
+  - Optional per-rollout txt files for human inspection (--dump_txt).
 
-Usage (via dump_rollouts.sh):
-    MODEL=Qwen/Qwen3.5-4B N=4 bash scripts/dump_rollouts.sh
+Usage (via rollout.sh):
+    MODE=tir MODEL=Qwen/Qwen3.5-4B N=4 bash eval/inference/rollout.sh
+    MODE=cot MODEL=Qwen/Qwen3.5-4B N=4 bash eval/inference/rollout.sh
 
-    # With think-interrupt:
+    # With think-interrupt (training-matched budgets):
     THINKING_BUDGET=12288 TOOL_CALL_BUDGET=2048 ANSWER_BUDGET=4096 \\
-        bash scripts/dump_rollouts.sh
+        bash eval/inference/rollout.sh
 
 Direct usage inside container:
-    python3 scripts/dump_rollouts.py \\
+    python3 eval/inference/rollout.py \\
+        --mode tir \\
         --model Qwen/Qwen3.5-4B \\
         --parquet data/processed/corpus_train.parquet \\
         --n 4 --n_rollouts 8 \\
@@ -194,6 +211,7 @@ def run_dump(
     top_p: float = 1.0,
     top_k: int = -1,
     presence_penalty: float = 0.0,
+    repetition_penalty: float = 1.0,
     enable_thinking: bool = True,
     max_tokens: int = 8192,
     thinking_budget: int | None = None,
@@ -205,11 +223,13 @@ def run_dump(
     start_idx: int | None = None,
     end_idx: int | None = None,
     chunk_size: int | None = None,
+    mode: str = "tir",
 ) -> None:
     from transformers import AutoTokenizer  # noqa: PLC0415
     from vllm import LLM, SamplingParams  # noqa: PLC0415
 
     from phys_reasoner.tir.prompts import (  # noqa: PLC0415
+        COT_SYSTEM_PROMPT,
         PYTHON_TOOL_SCHEMA,
         THINK_INTERRUPT_PHRASE,
         TOOL_CALL_STOP,
@@ -217,6 +237,10 @@ def run_dump(
         extract_tool_call_code,
     )
     from phys_reasoner.tir.sandbox import execute_code  # noqa: PLC0415
+
+    if mode not in ("tir", "cot"):
+        raise ValueError(f"--mode must be 'tir' or 'cot', got {mode!r}")
+    is_cot = mode == "cot"
 
     # --- Validate budgets ---
     interrupt_enabled = thinking_budget is not None
@@ -235,15 +259,24 @@ def run_dump(
         interrupt_ids = tokenizer.encode(THINK_INTERRUPT_PHRASE, add_special_tokens=False)
         think_end_id = tokenizer.convert_tokens_to_ids("</think>")
         interrupt_len = len(interrupt_ids)
-        # Match VeRL: response_length = thinking + interrupt + tool_call + tool_response + answer
+        # Match VeRL: response_length = thinking + interrupt + tool_call + tool_response + answer.
+        # In CoT mode (single_turn_agent_loop.py), tool_call + tool_response + answer all
+        # collapse into the post-interrupt answer budget so that TIR and CoT use identical
+        # total response length.
         response_budget = thinking_budget + interrupt_len + tool_call_budget + max_tool_response_len + answer_budget
-        print(f"Think-interrupt enabled: thinking={thinking_budget}, interrupt={interrupt_len}, "
-              f"tool_call={tool_call_budget}, tool_response={max_tool_response_len}, answer={answer_budget}")
+        cot_post_interrupt_budget = response_budget - thinking_budget - interrupt_len
+        if is_cot:
+            print(f"CoT mode: thinking={thinking_budget}, interrupt={interrupt_len}, "
+                  f"post_interrupt={cot_post_interrupt_budget}")
+        else:
+            print(f"TIR mode: thinking={thinking_budget}, interrupt={interrupt_len}, "
+                  f"tool_call={tool_call_budget}, tool_response={max_tool_response_len}, answer={answer_budget}")
         print(f"  response_budget={response_budget}")
     else:
         # Phase 1 up to max_tokens + injection + phase 2 up to max_tokens
         response_budget = 2 * max_tokens + max_tool_response_len + 256
-        print(f"Think-interrupt disabled: max_tokens={max_tokens}")
+        cot_post_interrupt_budget = None
+        print(f"Think-interrupt disabled: max_tokens={max_tokens} (mode={mode})")
 
     # Match VeRL: max_model_len = max_prompt_len + response_budget
     max_model_len = max_prompt_len + response_budget
@@ -268,6 +301,11 @@ def run_dump(
         print(f"Shard slice: rows [{s}:{e}) = {len(df)} problems")
 
     # --- Build phase 1 prompts ---
+    # TIR: TIR_SYSTEM_PROMPT + tools=[PYTHON_TOOL_SCHEMA]
+    # CoT: COT_SYSTEM_PROMPT + no tools (mirrors build_cot_parquets.py and VeRL's
+    #      single_turn_agent — no tool schema visible to the model).
+    system_prompt_text = COT_SYSTEM_PROMPT if is_cot else TIR_SYSTEM_PROMPT
+    tools_arg = None if is_cot else [PYTHON_TOOL_SCHEMA]
     problems, golds, answer_types, extra_infos = [], [], [], []
     phase1_prompts = []
     for _, row in df.iterrows():
@@ -277,13 +315,13 @@ def run_dump(
         answer_types.append(_get_answer_type(row))
         extra_infos.append(row.get("extra_info", {}))
         msgs = [
-            {"role": "system", "content": TIR_SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt_text},
             {"role": "user", "content": prob},
         ]
         phase1_prompts.append(
             tokenizer.apply_chat_template(
                 msgs,
-                tools=[PYTHON_TOOL_SCHEMA],
+                tools=tools_arg,
                 tokenize=False,
                 add_generation_prompt=True,
                 enable_thinking=enable_thinking,
@@ -327,25 +365,45 @@ def run_dump(
     # --- Shared sampling params ---
     p1_max = thinking_budget if interrupt_enabled else max_tokens
     p2_max = answer_budget if interrupt_enabled else max_tokens
-    _common = dict(temperature=temperature, top_p=top_p, top_k=top_k, presence_penalty=presence_penalty)
+    _common = dict(
+        temperature=temperature,
+        top_p=top_p,
+        top_k=top_k,
+        presence_penalty=presence_penalty,
+        repetition_penalty=repetition_penalty,
+    )
+    # Phase 1: TIR stops at </tool_call>; CoT has no stop (runs to EOS or budget).
     p1_params = SamplingParams(
         max_tokens=p1_max,
-        stop=[TOOL_CALL_STOP],
-        include_stop_str_in_output=True,
+        stop=None if is_cot else [TOOL_CALL_STOP],
+        include_stop_str_in_output=False if is_cot else True,
         **_common,
     )
     p2_params = SamplingParams(
         max_tokens=p2_max,
         **_common,
     )
+    # Phase 1b:
+    #   TIR: generates the tool call after interrupt — stops at </tool_call>,
+    #        max_tokens=tool_call_budget.
+    #   CoT: generates the final answer after interrupt — no stop, max_tokens is
+    #        the post-interrupt budget = response_length - thinking - interrupt_len
+    #        (absorbs TIR's tool_call + tool_response + answer share so total
+    #        response length is identical across modes).
     p1b_params = None
     if interrupt_enabled:
-        p1b_params = SamplingParams(
-            max_tokens=tool_call_budget,
-            stop=[TOOL_CALL_STOP],
-            include_stop_str_in_output=True,
-            **_common,
-        )
+        if is_cot:
+            p1b_params = SamplingParams(
+                max_tokens=cot_post_interrupt_budget,
+                **_common,
+            )
+        else:
+            p1b_params = SamplingParams(
+                max_tokens=tool_call_budget,
+                stop=[TOOL_CALL_STOP],
+                include_stop_str_in_output=True,
+                **_common,
+            )
 
     # --- Chunk setup ---
     n_problems = len(df)
@@ -409,73 +467,79 @@ def run_dump(
                 p1b_prompts.append(expanded_prompts[i] + p1.text + THINK_INTERRUPT_PHRASE)
 
         # ===== Phase 1b =====
+        # TIR: generates the tool call after interrupt (stops at </tool_call>).
+        # CoT: generates the final answer after interrupt (post_interrupt_budget, no stop).
         p1b_data: dict[int, tuple[str, str]] = {}
         if p1b_indices:
-            print(f"  phase 1b: {len(p1b_indices)}/{total} interrupted, max_tokens={tool_call_budget}")
+            p1b_max = cot_post_interrupt_budget if is_cot else tool_call_budget
+            print(f"  phase 1b: {len(p1b_indices)}/{total} interrupted, max_tokens={p1b_max}")
             p1b_outputs = llm.generate(p1b_prompts, p1b_params)
             for j, idx in enumerate(p1b_indices):
                 p1b_out = p1b_outputs[j].outputs[0]
                 p1b_data[idx] = (p1b_out.text, p1b_out.finish_reason or "unknown")
 
-        # ===== Sandbox =====
-        codes: list[str | None] = []
-        sandbox_stdouts: list[str] = []
-        sandbox_errs: list[str] = []
-        sandbox_errors: list[bool] = []
-        for i in range(total):
-            if interrupted_flags[i]:
-                p1b_text, _ = p1b_data[i]
-                code = extract_tool_call_code(p1b_text)
-            else:
-                code = extract_tool_call_code(p1_texts[i])
-            codes.append(code)
-            if code is not None:
-                res = execute_code(code)
-                sandbox_stdouts.append(res.stdout)
-                sandbox_errs.append(res.stderr)
-                sandbox_errors.append(res.error)
-            else:
-                sandbox_stdouts.append("")
-                sandbox_errs.append("")
-                sandbox_errors.append(False)
-
-        # ===== Build phase 2 prompts (only for rollouts that produced a tool call) =====
-        # Matches VeRL's tool_agent_loop.py: if no tool_calls found after phase 1,
-        # the agent returns AgentState.TERMINATED — no tool response injection, no
-        # phase 2 generation. The model's phase 1 output is the final answer.
+        # Defaults populated by either the TIR sandbox/phase-2 path or skipped in CoT.
+        codes: list[str | None] = [None] * total
+        sandbox_stdouts: list[str] = [""] * total
+        sandbox_errs: list[str] = [""] * total
+        sandbox_errors: list[bool] = [False] * total
         injection_texts: list[str] = [""] * total
-        phase2_indices: list[int] = []
-        phase2_prompts: list[str] = []
-        for i in range(total):
-            if codes[i] is None:
-                # No tool call → terminate (match VeRL behavior)
-                continue
-            if not sandbox_errors[i]:
-                output_text = sandbox_stdouts[i] or "(no output)"
-            else:
-                output_text = f"(execution error)\n{sandbox_errs[i][:300]}"
-            if len(output_text) > max_tool_response_len:
-                output_text = "(truncated)..." + output_text[-max_tool_response_len:]
-            injection = _make_tool_injection(output_text)
-            injection_texts[i] = injection
-            if interrupted_flags[i]:
-                p1b_text, _ = p1b_data[i]
-                p2_prompt = expanded_prompts[i] + p1_texts[i] + THINK_INTERRUPT_PHRASE + p1b_text + injection
-            else:
-                p2_prompt = expanded_prompts[i] + p1_texts[i] + injection
-            phase2_indices.append(i)
-            phase2_prompts.append(p2_prompt)
-
-        # ===== Phase 2 (only for rollouts with tool calls) =====
         p2_results: dict[int, tuple[str, str]] = {}
-        if phase2_prompts:
-            print(f"  phase 2: {len(phase2_prompts)}/{total} rollouts (skipped {total - len(phase2_prompts)} with no tool call), max_tokens={p2_max}")
-            p2_outputs = llm.generate(phase2_prompts, p2_params)
-            for j, idx in enumerate(phase2_indices):
-                p2_out = p2_outputs[j].outputs[0]
-                p2_results[idx] = (p2_out.text, p2_out.finish_reason or "unknown")
+
+        if is_cot:
+            # CoT: no sandbox, no phase 2. Phase 1 (+ phase 1b when interrupted) is the
+            # entire response — mirrors VeRL's single_turn_agent_loop.py.
+            print(f"  cot: skipping sandbox/phase-2 (answer is phase1 + phase1b)")
         else:
-            print(f"  phase 2: 0/{total} rollouts needed phase 2 (all terminated without tool call)")
+            # ===== Sandbox (TIR) =====
+            for i in range(total):
+                if interrupted_flags[i]:
+                    p1b_text, _ = p1b_data[i]
+                    code = extract_tool_call_code(p1b_text)
+                else:
+                    code = extract_tool_call_code(p1_texts[i])
+                codes[i] = code
+                if code is not None:
+                    res = execute_code(code)
+                    sandbox_stdouts[i] = res.stdout
+                    sandbox_errs[i] = res.stderr
+                    sandbox_errors[i] = res.error
+
+            # ===== Build phase 2 prompts (only for rollouts that produced a tool call) =====
+            # Matches VeRL's tool_agent_loop.py: if no tool_calls found after phase 1,
+            # the agent returns AgentState.TERMINATED — no tool response injection, no
+            # phase 2 generation. The model's phase 1 output is the final answer.
+            phase2_indices: list[int] = []
+            phase2_prompts: list[str] = []
+            for i in range(total):
+                if codes[i] is None:
+                    # No tool call → terminate (match VeRL behavior)
+                    continue
+                if not sandbox_errors[i]:
+                    output_text = sandbox_stdouts[i] or "(no output)"
+                else:
+                    output_text = f"(execution error)\n{sandbox_errs[i][:300]}"
+                if len(output_text) > max_tool_response_len:
+                    output_text = "(truncated)..." + output_text[-max_tool_response_len:]
+                injection = _make_tool_injection(output_text)
+                injection_texts[i] = injection
+                if interrupted_flags[i]:
+                    p1b_text, _ = p1b_data[i]
+                    p2_prompt = expanded_prompts[i] + p1_texts[i] + THINK_INTERRUPT_PHRASE + p1b_text + injection
+                else:
+                    p2_prompt = expanded_prompts[i] + p1_texts[i] + injection
+                phase2_indices.append(i)
+                phase2_prompts.append(p2_prompt)
+
+            # ===== Phase 2 (only for rollouts with tool calls) =====
+            if phase2_prompts:
+                print(f"  phase 2: {len(phase2_prompts)}/{total} rollouts (skipped {total - len(phase2_prompts)} with no tool call), max_tokens={p2_max}")
+                p2_outputs = llm.generate(phase2_prompts, p2_params)
+                for j, idx in enumerate(phase2_indices):
+                    p2_out = p2_outputs[j].outputs[0]
+                    p2_results[idx] = (p2_out.text, p2_out.finish_reason or "unknown")
+            else:
+                print(f"  phase 2: 0/{total} rollouts needed phase 2 (all terminated without tool call)")
 
         # ===== Build chunk records =====
         chunk_records: list[dict] = []
@@ -485,7 +549,7 @@ def run_dump(
                 p2_text, p2_stop = p2_results[i]
             else:
                 p2_text = None
-                p2_stop = "terminated_no_tool_call"
+                p2_stop = "cot_no_phase2" if is_cot else "terminated_no_tool_call"
             boxed_candidates = _extract_boxed(p1_texts[i])
             if interrupted_flags[i]:
                 p1b_text, _ = p1b_data[i]
@@ -558,18 +622,23 @@ def run_dump(
 
     summary_path = os.path.join(out_dir, "summary.txt")
     with open(summary_path, "w") as f:
+        f.write(f"mode              : {mode}\n")
         f.write(f"model             : {model_path}\n")
         f.write(f"parquet           : {parquet_path}\n")
         f.write(f"n_problems        : {n_problems}\n")
         f.write(f"n_rollouts        : {n_rollouts}\n")
         f.write(f"total             : {total_rollouts}\n")
         f.write(f"chunk_size        : {chunk}  (n_chunks={n_chunks})\n")
-        f.write(f"temperature       : {temperature}  top_p={top_p}  enable_thinking={enable_thinking}\n")
+        f.write(f"temperature       : {temperature}  top_p={top_p}  top_k={top_k}  "
+                f"presence_penalty={presence_penalty}  enable_thinking={enable_thinking}\n")
         if interrupt_enabled:
             f.write(f"thinking_budget   : {thinking_budget}\n")
             f.write(f"tool_call_budget  : {tool_call_budget}\n")
             f.write(f"answer_budget     : {answer_budget}\n")
             f.write(f"interrupt_len     : {interrupt_len}\n")
+            f.write(f"response_budget   : {response_budget}\n")
+            if is_cot:
+                f.write(f"cot_post_interrupt: {cot_post_interrupt_budget}\n")
             f.write(f"interrupted       : {n_interrupted_total}/{total_rollouts}\n")
         else:
             f.write(f"max_tokens        : {max_tokens}\n")
@@ -583,7 +652,10 @@ def run_dump(
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="Dump TIR rollouts for trajectory inspection")
+    p = argparse.ArgumentParser(description="Generate TIR or CoT rollouts via vLLM")
+    p.add_argument("--mode", choices=("tir", "cot"), default="tir",
+                   help="tir: 2-phase tool-integrated rollout (VeRL ToolAgentLoop parity). "
+                        "cot: single-turn CoT with think-interrupt (VeRL SingleTurnAgentLoop parity).")
     p.add_argument("--model", default="Qwen/Qwen3-0.6B")
     p.add_argument("--parquet", default="data/processed/corpus_train.parquet")
     p.add_argument("--n", type=int, default=4,
@@ -596,6 +668,9 @@ def main() -> None:
     p.add_argument("--top_p", type=float, default=1.0)
     p.add_argument("--top_k", type=int, default=-1)
     p.add_argument("--presence_penalty", type=float, default=0.0)
+    p.add_argument("--repetition_penalty", type=float, default=1.0,
+                   help="1.0 = no penalty (Qwen3.5 thinking-mode default). vLLM's internal "
+                        "default is also 1.0; we surface the flag so it's visible in configs.")
     p.add_argument("--enable_thinking", action="store_true", default=False)
     # Budget args — simple mode
     p.add_argument("--max_tokens", type=int, default=8192,
@@ -634,6 +709,7 @@ def main() -> None:
         top_p=args.top_p,
         top_k=args.top_k,
         presence_penalty=args.presence_penalty,
+        repetition_penalty=args.repetition_penalty,
         enable_thinking=args.enable_thinking,
         max_tokens=args.max_tokens,
         thinking_budget=args.thinking_budget,
@@ -645,6 +721,7 @@ def main() -> None:
         start_idx=args.start_idx,
         end_idx=args.end_idx,
         chunk_size=args.chunk_size,
+        mode=args.mode,
     )
 
 
