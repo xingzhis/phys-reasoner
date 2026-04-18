@@ -75,6 +75,7 @@ APT_CMD=(
     --env "TRITON_CACHE_DIR=/tmp/.cache/triton"
     --env "MPLCONFIGDIR=/tmp/.cache/matplotlib"
     --env "PHYS_REQUIRE_XVERIFY=1"
+    --env "PYTORCH_ALLOC_CONF=expandable_segments:True"
     "$SIF"
 )
 export APT_CMD
@@ -120,19 +121,32 @@ export XVERIFY_URL
 echo "[xverify] URL=$XVERIFY_URL"
 
 # ----- smoke overrides (resource knobs already exported above) -----
-export MODEL="${MODEL:-Qwen/Qwen3.5-4B}"
+export MODEL="${MODEL:-Qwen/Qwen3-4B-Thinking-2507}"
 export TRAIN_BATCH="${TRAIN_BATCH:-128}"
 export ROLLOUT_N="${ROLLOUT_N:-8}"
 export TOTAL_STEPS="${TOTAL_STEPS:-10}"
 export SAVE_FREQ="${SAVE_FREQ:-5}"
 export TEST_FREQ="${TEST_FREQ:-5}"
-export THINKING_BUDGET="${THINKING_BUDGET:-12288}"
-export TOOL_CALL_BUDGET="${TOOL_CALL_BUDGET:-2048}"
-export ANSWER_BUDGET="${ANSWER_BUDGET:-4096}"
+# Think-interrupt disabled for Qwen3 switch smoke: empty budgets → train_async.sh
+# omits the thinking_budget Hydra key (${VAR:+...}), which short-circuits the
+# interrupt path inside verl's tool_agent_loop (verified: thinking_budget=None
+# bypasses max_tokens override and interrupt injection entirely).
+export THINKING_BUDGET="${THINKING_BUDGET:-}"
+export TOOL_CALL_BUDGET="${TOOL_CALL_BUDGET:-}"
+export ANSWER_BUDGET="${ANSWER_BUDGET:-}"
 export VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-0.85}"
 export USE_DYNAMIC_BSZ="${USE_DYNAMIC_BSZ:-1}"
-export PPO_MAX_TOKEN_LEN_PER_GPU="${PPO_MAX_TOKEN_LEN_PER_GPU:-24576}"
+export PPO_MAX_TOKEN_LEN_PER_GPU="${PPO_MAX_TOKEN_LEN_PER_GPU:-20480}"
 export ACTOR_OPT_OFFLOAD="${ACTOR_OPT_OFFLOAD:-True}"
+# Qwen3 enablers (blocked on Qwen3.5 by GDN + flash-attn monkey-patch):
+#   TRAIN_SP=2 → Ulysses sequence parallelism over 2 of 4 trainer GPUs,
+#   DP=2 remaining for FSDP sharding. See qwen3-switch.md §2 (safer than SP=4
+#   first-try because SP=4 on 4 GPUs gives DP=1 and no FSDP shard).
+#   STALENESS=1 → rollout of step t+1 overlaps trainer update of step t,
+#   saving ~3 min wall-clock/step. use_rollout_log_probs + DAPO clip already
+#   cover the IS correction.
+export TRAIN_SP="${TRAIN_SP:-2}"
+export STALENESS="${STALENESS:-1}"
 export DUMP_TRAIN_ROLLOUTS=1
 export DUMP_VAL_ROLLOUTS=1
 

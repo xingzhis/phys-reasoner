@@ -42,7 +42,7 @@ echo "  OVERLAY: $OVERLAY"
 # ---------------------------------------------------------------------------
 # Configurable params — override via env vars
 # ---------------------------------------------------------------------------
-MODEL="${MODEL:-Qwen/Qwen3.5-4B}"
+MODEL="${MODEL:-Qwen/Qwen3-4B-Thinking-2507}"
 # Defaults point at the merged parquets fetched from the HF dataset
 # `xingzhi0/phys-tir` via scripts/fetch_dataset.py (docs/setup.md step 5).
 # Each split is a union of the curated + Dr. SCI pools; rows carry a `pool`
@@ -162,7 +162,7 @@ LOG_PROB_MICRO_BS_PER_GPU="${LOG_PROB_MICRO_BS_PER_GPU:-$PPO_MICRO_BS_PER_GPU}"
 # tokens regardless of sequence count — no more OOMs on tail-long responses.
 # ref + rollout log_prob max token len default to this same value via oc.select.
 USE_DYNAMIC_BSZ="${USE_DYNAMIC_BSZ:-0}"
-PPO_MAX_TOKEN_LEN_PER_GPU="${PPO_MAX_TOKEN_LEN_PER_GPU:-24576}"
+PPO_MAX_TOKEN_LEN_PER_GPU="${PPO_MAX_TOKEN_LEN_PER_GPU:-20480}"
 
 # LR schedule. Defaults match DAPO / SimpleRL canonical recipes:
 #   constant LR with 20-step linear warmup. Set LR_SCHEDULER_TYPE=cosine and
@@ -260,7 +260,6 @@ PYTHONNOUSERSITE=1 apptainer exec --nv \
     actor_rollout_ref.model.path="$MODEL" \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
-    '+actor_rollout_ref.model.override_config={attn_implementation:sdpa}' \
     actor_rollout_ref.actor.optim.lr=$LR \
     actor_rollout_ref.actor.optim.lr_scheduler_type=$LR_SCHEDULER_TYPE \
     actor_rollout_ref.actor.optim.lr_warmup_steps=$LR_WARMUP_STEPS \
@@ -278,10 +277,14 @@ PYTHONNOUSERSITE=1 apptainer exec --nv \
     actor_rollout_ref.actor.fsdp_config.param_offload=${ACTOR_PARAM_OFFLOAD:-False} \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=${ACTOR_OPT_OFFLOAD:-False} \
     actor_rollout_ref.actor.fsdp_config.model_dtype=bfloat16 \
-    '+actor_rollout_ref.actor.fsdp_config.wrap_policy.transformer_layer_cls_to_wrap=[Qwen3_5DecoderLayer]' \
+    actor_rollout_ref.actor.ulysses_sequence_parallel_size=${TRAIN_SP:-2} \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     actor_rollout_ref.ref.fsdp_config.model_dtype=bfloat16 \
-    '+actor_rollout_ref.ref.fsdp_config.wrap_policy.transformer_layer_cls_to_wrap=[Qwen3_5DecoderLayer]' \
+    actor_rollout_ref.ref.ulysses_sequence_parallel_size=${TRAIN_SP:-2} \
+    actor_rollout_ref.ref.log_prob_use_dynamic_bsz=True \
+    actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=${REF_LOG_PROB_MAX_TOKEN_LEN:-81920} \
+    actor_rollout_ref.rollout.log_prob_use_dynamic_bsz=True \
+    actor_rollout_ref.rollout.max_num_batched_tokens=$((MAX_PROMPT_LEN + MAX_RESPONSE_LEN)) \
     actor_rollout_ref.rollout.name=vllm \
     actor_rollout_ref.rollout.mode=async \
     actor_rollout_ref.rollout.n=$ROLLOUT_N \
@@ -300,7 +303,7 @@ PYTHONNOUSERSITE=1 apptainer exec --nv \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=$LOG_PROB_MICRO_BS_PER_GPU \
     actor_rollout_ref.rollout.agent.default_agent_loop=$AGENT_LOOP \
     actor_rollout_ref.rollout.multi_turn.enable=$MULTI_TURN_ENABLE \
-    actor_rollout_ref.rollout.multi_turn.format=qwen3_coder \
+    actor_rollout_ref.rollout.multi_turn.format=hermes \
     actor_rollout_ref.rollout.multi_turn.tool_config_path="$ROOT/scripts/physcode_tools.yaml" \
     actor_rollout_ref.rollout.multi_turn.max_assistant_turns=$((MAX_TOOL_TURNS * 2)) \
     actor_rollout_ref.rollout.multi_turn.max_user_turns=$MAX_TOOL_TURNS \
@@ -312,7 +315,7 @@ PYTHONNOUSERSITE=1 apptainer exec --nv \
     algorithm.rollout_correction.bypass_mode=True \
     async_training.trigger_parameter_sync_step=1 \
     async_training.require_batches=1 \
-    async_training.staleness_threshold=0 \
+    async_training.staleness_threshold=${STALENESS:-0} \
     async_training.partial_rollout=False \
     async_training.use_trainer_do_validate=False \
     reward.custom_reward_function.path="$ROOT/src/phys_reasoner/training/reward.py" \
