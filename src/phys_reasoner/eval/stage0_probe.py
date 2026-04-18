@@ -74,6 +74,7 @@ def run_probe(
     max_new_tokens: int = 8192,
     sandbox_timeout: float = 30.0,
     output_path: str | None = None,
+    enable_thinking: bool = True,
 ) -> pd.DataFrame:
     """Run TIR Stage 0 probe. Returns DataFrame with per-problem results + diagnostics."""
     from vllm import LLM, SamplingParams  # noqa: PLC0415
@@ -111,16 +112,29 @@ def run_probe(
     # squeezes reasoning into Python code comments instead. See prompts.py for details.
     # tools=[PYTHON_TOOL_SCHEMA] injects the tool schema so the model emits a native
     # tool call inside <tool_call>...</tool_call>.
-    phase1_prompts = [
-        tokenizer.apply_chat_template(
-            msgs,
-            tools=[PYTHON_TOOL_SCHEMA],
-            tokenize=False,
-            add_generation_prompt=True,
-            enable_thinking=True,
-        )
-        for msgs in messages_list
-    ]
+    # Qwen3-*-Instruct-2507 is no-think only and its chat template rejects
+    # enable_thinking=True; Qwen3-*-Thinking-2507 is think-only and its template
+    # rejects enable_thinking=False. Older Qwen3 / Qwen3.5 accept the toggle.
+    # Try with the flag first, fall back to a call without it if the template
+    # doesn't support that kwarg at all.
+    def _apply(msgs):
+        try:
+            return tokenizer.apply_chat_template(
+                msgs,
+                tools=[PYTHON_TOOL_SCHEMA],
+                tokenize=False,
+                add_generation_prompt=True,
+                enable_thinking=enable_thinking,
+            )
+        except TypeError:
+            return tokenizer.apply_chat_template(
+                msgs,
+                tools=[PYTHON_TOOL_SCHEMA],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+
+    phase1_prompts = [_apply(msgs) for msgs in messages_list]
 
     # --- Phase 1: generate until </tool_call> ---
     phase1_params = SamplingParams(
@@ -297,6 +311,7 @@ def main() -> None:
     parser.add_argument("--max_new_tokens", type=int, default=8192)
     parser.add_argument("--sandbox_timeout", type=float, default=30.0)
     parser.add_argument("--output", default=None)
+    parser.add_argument("--enable_thinking", type=lambda v: v.lower() in ("1","true","yes"), default=True)
     args = parser.parse_args()
 
     run_probe(
@@ -307,6 +322,7 @@ def main() -> None:
         max_new_tokens=args.max_new_tokens,
         sandbox_timeout=args.sandbox_timeout,
         output_path=args.output,
+        enable_thinking=args.enable_thinking,
     )
 
 
