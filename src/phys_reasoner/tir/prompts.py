@@ -176,6 +176,17 @@ def make_system_prompt(max_tool_calls: int = 1) -> str:
 # If MAX_TOOL_TURNS=2 is used in training/smoke, call make_system_prompt(2) instead.
 TIR_SYSTEM_PROMPT = make_system_prompt(max_tool_calls=1)
 
+# CoT baseline system prompt — deliberately minimal, parallel in structure to
+# TIR_SYSTEM_PROMPT so prompt style isn't a confound in the TIR-vs-CoT ablation.
+# No mention of Python / tools / code. Used by scripts/build_cot_parquets.py to
+# rewrite training parquets, and by the eval CoT rollout path.
+COT_SYSTEM_PROMPT = (
+    "You are an expert physics problem solver.\n"
+    "Solve the problem step by step. Show your reasoning concisely.\n"
+    "\n"
+    "End with your final answer as \\boxed{<value>}.\n"
+)
+
 # ---------------------------------------------------------------------------
 # TIR format parsing helpers (used by stage0_probe for manual 2-phase vLLM loop)
 # ---------------------------------------------------------------------------
