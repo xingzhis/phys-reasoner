@@ -52,6 +52,7 @@ srun $HET_SRUN_HEAD --nodes=1 --ntasks=1 -w "$HEAD_NODE" \
          --dashboard-host=0.0.0.0 \
          --dashboard-port="$DASH_PORT" \
          --num-gpus="$N_GPUS_TRAIN" \
+         --resources='{"trainer_node": 1}' \
          --block &
 RAY_HEAD_PID=$!
 export RAY_HEAD_PID

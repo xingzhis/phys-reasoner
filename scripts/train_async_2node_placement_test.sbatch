@@ -1,4 +1,15 @@
 #!/bin/bash
+# train_async_2node_placement_test.sbatch — minimal 2-node × 1-GPU smoke that
+# validates the trainer-coordinator placement fix (trainer_node Ray resource).
+# Not a training run — 3 steps, 1 GPU per node. Submit to scavenge_gpu so we
+# get fast turnaround; preemption risk is acceptable for a placement check.
+#
+# Expected signal: grep "[FullyAsyncTrainer] placed on" in the driver log —
+# should print the WORKER hostname (= NODES[1], where trainer_node resource
+# is advertised). If it prints the HEAD hostname, the fix is not working.
+# Copy of train_async_2node.sbatch with shrunk resources.
+#
+# Original header below:
 # train_async_2node.sbatch — 2-node async GRPO rehearsal for Perlmutter transfer.
 #
 # Topology:
@@ -33,14 +44,14 @@
 #   XVERIFY_URL                          — if set, trainer calls xVerify server
 #   TIME_LIMIT                           — defaults to 3 hours
 #
-#SBATCH --job-name=train_async_2node
-#SBATCH --partition=gpu_h200
+#SBATCH --job-name=async2node_placement
+#SBATCH --partition=gpu_b200
 #SBATCH --nodes=2
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=16
-#SBATCH --mem=256G
-#SBATCH --gres=gpu:h200:4
-#SBATCH --time=6:00:00
+#SBATCH --mem=128G
+#SBATCH --gres=gpu:b200:1
+#SBATCH --time=1:00:00
 #SBATCH --output=logs/%x_%j.log
 #SBATCH --error=logs/%x_%j.err
 #
@@ -192,7 +203,7 @@ srun --nodes=1 --ntasks=1 -w "$HEAD_NODE" --output="logs/%x_%j.ray_head.log" \
         --port=$RAY_PORT \
         --dashboard-host=0.0.0.0 \
         --dashboard-port=$DASHBOARD_PORT \
-        --num-gpus="${N_GPUS_ROLLOUT:-4}" \
+        --num-gpus="${N_GPUS_ROLLOUT:-1}" \
         --block &
 RAY_HEAD_PID=$!
 
@@ -207,7 +218,7 @@ srun --nodes=1 --ntasks=1 -w "$WORKER_NODE" --output="logs/%x_%j.ray_worker.log"
     "${APPTAINER_CMD[@]}" \
     ray start \
         --address="$RAY_ADDRESS" \
-        --num-gpus="${N_GPUS_TRAIN:-4}" \
+        --num-gpus="${N_GPUS_TRAIN:-1}" \
         --resources='{"trainer_node": 1}' \
         --block &
 RAY_WORKER_PID=$!
@@ -228,7 +239,7 @@ for i in range(60):
     nodes = [n for n in ray.nodes() if n['Alive']]
     gpus  = sum(int(n['Resources'].get('GPU', 0)) for n in nodes)
     print(f'[ray-probe] attempt {i}: {len(nodes)} nodes, {gpus} gpus', flush=True)
-    expected_gpus = ${N_GPUS_ROLLOUT:-4} + ${N_GPUS_TRAIN:-4}
+    expected_gpus = ${N_GPUS_ROLLOUT:-1} + ${N_GPUS_TRAIN:-1}
     if len(nodes) >= 2 and gpus >= expected_gpus:
         print(f'[ray-probe] READY: {len(nodes)} nodes, {gpus} gpus', flush=True)
         sys.exit(0)
@@ -248,8 +259,8 @@ export TOTAL_STEPS="${TOTAL_STEPS:-3}"
 export TRAIN_BATCH="${TRAIN_BATCH:-4}"
 export ROLLOUT_N="${ROLLOUT_N:-4}"
 export MODEL="${MODEL:-Qwen/Qwen3.5-4B}"
-export N_GPUS_ROLLOUT="${N_GPUS_ROLLOUT:-4}"
-export N_GPUS_TRAIN="${N_GPUS_TRAIN:-4}"
+export N_GPUS_ROLLOUT="${N_GPUS_ROLLOUT:-1}"
+export N_GPUS_TRAIN="${N_GPUS_TRAIN:-1}"
 export NNODES_ROLLOUT=1
 export NNODES_TRAIN=1
 # Save/resume controls. Default -1 = no checkpointing (smoke runs).
