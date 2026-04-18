@@ -22,29 +22,48 @@ Proposal: `docs/physcode_proposal_v5.md`
 
 Three main components:
 
-1. **TIR Trajectory Format** (single code block per rollout):
+1. **TIR Trajectory Format** (Qwen3.5 native `qwen3_coder` tool-call format):
    ```
-   reasoning... [code] import sympy... print(...) [/code] [output] result interpretation... [answer] \boxed{X}
+   <think>reasoning...</think>
+   <tool_call><function=python><parameter=code>
+   import sympy as sp
+   ...
+   print(result)
+   </parameter></function></tool_call>
+   <tool_response>
+   stdout
+   </tool_response>
+   interpretation... \boxed{answer}
    ```
-   - **`enable_thinking=True` for phase 1, `False` for phase 2** — In Qwen3.5's tool-call format the assistant turn has no plain-content slot; with thinking suppressed, reasoning leaks into Python code comments. With thinking ON, the model reasons in `<think>...</think>` then calls the tool with clean code. `</think>` closes before `<tool_call>` cleanly (confirmed 2026-04-02). Phase 2 injection uses `enable_thinking=False` (final answer needs no thinking).
-   - **Token length caveat**: thinking traces can be long on hard problems. Planned mitigations: token-budget checkpoint, stop-thinking injection, RL length penalty. See `prompts.py` THINKING MODE section.
-   - Model generates until `[/code]` stop token
-   - Sandbox executes code (30s timeout, subprocess isolation)
-   - `[output] {result}\n` injected as fixed continuation
-   - Model resumes to EOS/max_tokens; `[answer]` is a format marker only, not a stop token
+   - **`enable_thinking=True` for phase 1, `False` for phase 2** (confirmed 2026-04-02):
+     Qwen3.5's tool-call format has no plain-content slot in the assistant turn. With thinking OFF, reasoning leaks into Python code comments. With thinking ON, the model reasons in `<think>...</think>` then calls the tool with clean code. `</think>` closes before `<tool_call>` cleanly. Phase 2 (after tool response injection) uses `enable_thinking=False`.
+   - **Format constants** (`src/phys_reasoner/tir/prompts.py`):
+     `TIR_SYSTEM_PROMPT`, `COT_SYSTEM_PROMPT`, `PYTHON_TOOL_SCHEMA` (OpenAI function-schema passed via `tools=[...]` kwarg of `apply_chat_template`), `TOOL_CALL_STOP = "</tool_call>"`, `THINK_INTERRUPT_PHRASE`, `extract_tool_call_code()`.
+   - **Rollout flow** (reference impl: `eval/inference/rollout.py`; matches `verl/experimental/agent_loop/tool_agent_loop.py`):
+     1. Phase 1: `enable_thinking=True`, `stop=["</tool_call>"]`, `max_tokens=thinking_budget`
+     2. No `<tool_call>` found → terminate; phase 1 text is the final answer
+     3. Else: sandbox executes code (`src/phys_reasoner/tir/sandbox.py` — 30s timeout, subprocess isolation)
+     4. Tool response injected as `{"role": "tool", "content": stdout}` via `apply_chat_template(..., enable_thinking=False)`
+     5. Phase 2: resume to EOS or `answer_budget`; final `\boxed{X}` extracted by scorer
+   - **Think-interrupt** (budget escape for runaway thinking):
+     Fires when `len(phase1_tokens) >= thinking_budget AND </think> NOT in tokens`.
+     Phrase: `"\nOkay, I've thought enough. Time to write my response.\n</think>\n"`.
+     Followed by phase 1b: `max_tokens=tool_call_budget`, `stop=["</tool_call>"]`.
+     Mask=0 for interrupt tokens in training loss.
+     Budget identity: `response_length = thinking + interrupt + tool_call + tool_response + answer`.
 
 2. **GRPO Training Pipeline**:
-   - Model: Qwen3.5-4B instruct (thinking OFF); debug: Qwen3.5-0.8B
-   - Reward: binary R_correct on final \boxed{} (λ=0 initially; token cost penalty in late ablation)
-   - Primary data: Dr. SCI clean (~65k numerical + expression + MCQ) + 6.8k curated corpus
-   - Curriculum: numerical first → expression + MCQ
-   - SFT: conditional on Stage 0 probe (skip if zero-shot TIR hit rate ≥15%)
-   - Secondary benchmark: MATH-500 hard subset
+   - Model: Qwen3.5-4B instruct with thinking mode ON. Debug: Qwen3.5-0.8B.
+   - Reward: binary R_correct on final `\boxed{}` via `src/phys_reasoner/verifier/router.py`.
+   - Data: Dr. SCI (~102k) + UGPhysics (~5.4k). Four external benchmarks (PHYSICS, OlympiadBench OE_TO, SciBench-RL, PHYBench) held out from training to serve as clean eval.
+   - SFT: skipped (2026-04-14 Stage-0 probe: 22.18% hit rate, 49.68% pass@1 → above 15% threshold).
+   - Two runs, same hparams: TIR-GRPO (main) via `scripts/perlmutter/prod_tir_het.sbatch`; CoT-GRPO (ablation) via `prod_cot_het.sbatch`. CoT uses VeRL's `single_turn_agent`; TIR uses `tool_agent_loop` with `qwen3_coder` format. Both share identical total response_length — in CoT, the `tool_call + tool_response + answer` share collapses into the post-interrupt answer budget (see `verl/experimental/agent_loop/single_turn_agent_loop.py`).
 
-3. **Verification Stack** (unchanged from existing pipeline):
-   - `src/phys_reasoner/verifier/` — rule verifier + xVerify-7B fallback
-   - Execution reward: final \boxed{} verified against gold answer
-   - LaTeX FN rate measurement: per-type, used for RQ2 correlation analysis
+3. **Verification Stack**:
+   - `src/phys_reasoner/verifier/router.py` — rule verifier + xVerify-7B fallback
+   - xVerify served via `scripts/serve_xverify.py` (HTTP) during training — binary correct/incorrect output, no threshold semantics (the server's `>= 0.5` check is a no-op since score is always 0.0 or 1.0)
+   - For eval, `XVerifyJudge` is called in-process directly (same class, same behavior, no HTTP overhead)
+   - LaTeX FN rate (~68% on expression types) is the core RQ2 quantity — measured post-hoc from training rollouts
 
 ## Environment
 
