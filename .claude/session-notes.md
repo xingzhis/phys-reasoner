@@ -14,7 +14,7 @@ Last updated: 2026-04-19 (Perlmutter handoff prep)
 - **2026-04-19 Perlmutter-smoke prep cleanup** (commit `2932311`): `train_smoke_async.sh` hardcoded `VLLM_GPU_MEM_UTIL=0.8` no longer shadows env override; `TRAIN_SP=1` default for single-GPU smoke; NCCL tuning env vars (`NCCL_IB_TIMEOUT=32`, `NCCL_NVLS_ENABLE=1`, `NCCL_IBEXT_DISABLE=1`, `TORCH_NCCL_ENABLE_MONITORING=0`) added to `scripts/perlmutter/smoke_tir_het.sbatch`; CLAUDE.md Qwen3.5 section replaced with Qwen3-Thinking active overrides.
 
 **Next work (start here):**
-- **Phase-0 Perlmutter smoke** — submit `scripts/perlmutter/smoke_tir_het.sbatch` as-is on Perlmutter (branch `switch/qwen3-thinking` on both phys-reasoner and verl repos). Target: ≤5 min/step (vs 27 min baseline). Read new `[FullyAsyncTrainer] step=` lines from train.log for per-phase decomposition. Pass criteria in `perlmutter_debug/SMOKE_HANDOFF.md` §5.2.
+- **Phase-0 Perlmutter smoke** — submit `scripts/perlmutter/smoke_tir_het.sbatch` as-is on Perlmutter from parent `main` (verl submodule on `physcode`). Target: ≤5 min/step (vs 27 min baseline). Read new `[FullyAsyncTrainer] step=` lines from train.log for per-phase decomposition. Pass criteria in `perlmutter_debug/SMOKE_HANDOFF.md` §5.2.
 - **The handoff package for a Perlmutter Claude session lives in `.claude/handoff/` (entry point: `perlmutter-onboarding.md`).**
 
 ---

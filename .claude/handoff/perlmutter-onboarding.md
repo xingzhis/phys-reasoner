@@ -35,11 +35,11 @@ When the Phase-0 smoke finishes (pass, fail, or OOM), your job is to **report wh
 ## Where things are
 
 - **Repo root:** `/pscratch/sd/b/bwhou/17-phy-reasoner/phys-reasoner` (confirm via `pwd`; ask if different).
-- **Branch:** `switch/qwen3-thinking` on both the parent repo and the `verl` submodule. Both pushed.
+- **Branch:** `main` on the parent repo; `physcode` on the `verl` submodule. The old feature branch `switch/qwen3-thinking` has been fast-forward-merged into these and is retained only for forensics.
 - **Overlay image:** `phys-reasoner-overlay-017.img` (not `-017b`; that name appears in some older docs).
 - **Environment:** see `env.sh`; secrets (`WANDB_API_KEY`, `HF_TOKEN`) live in `.env` (gitignored, already staged by the user). Never push `.env`.
 - **Sbatch to submit:** `scripts/perlmutter/smoke_tir_het.sbatch` — 3 het-groups (trainer 1 node × 4 GPU + rollout 5 nodes × 4 GPU + xverify 1 GPU shared). Has `TODO(collab)` markers for account/queue/constraint; you'll resolve these with the collaborator.
-- **Target branch for new work:** keep edits on `switch/qwen3-thinking`; do not push to `main`.
+- **Target branch for new work:** small config/doc fixes land on parent `main` (and verl `physcode`). For bigger changes — e.g. the Phase-4 multi-trainer-node work — cut a feature branch off `main` (parent) / `physcode` (verl). **Never push to verl's public `main`** — that tracks upstream `verl-project/verl` and must stay a clean mirror.
 
 ## Reading order on arrival
 

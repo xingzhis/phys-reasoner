@@ -27,7 +27,8 @@ These are observations carried over from prior sessions to save you from re-aski
 
 ## Things NOT to do
 
-- Do not push to `main`. Work on `switch/qwen3-thinking` sub-branches.
+- Small fixes land on parent `main` / verl `physcode`. For bigger changes (e.g. Phase-4 multi-trainer-node), cut a feature branch off those.
+- **Never push to verl's public `main`** — that branch tracks upstream `verl-project/verl` and must stay a clean mirror.
 - Do not modify `.env` or the overlay image.
 - Do not `scancel` any job you did not submit.
 - Do not `git push --force` anything without asking.

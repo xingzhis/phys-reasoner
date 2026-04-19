@@ -17,7 +17,7 @@ New failure modes: cross-node NCCL on Perlmutter Slingshot. The Tier-A #3 (Ulyss
 
 ## Execution sketch (implement only after greenlight)
 
-1. Write a scratch branch `feat/2-trainer-node` off `switch/qwen3-thinking`.
+1. Write a scratch branch `feat/2-trainer-node` off parent `main` (and a matching branch off verl `physcode` if verl code changes are needed). Do **not** branch off verl's public `main` — that mirrors upstream.
 2. Extend `_ray_bringup.sh`: accept a `TRAIN_WORKER_NODES` array, loop over it with a second `srun` to start Ray workers on trainer nodes. Reuse the existing `--het-group` and placement-group logic.
 3. Add a second sbatch variant or parameterize the existing one. Leave `smoke_tir_het.sbatch` as-is (single trainer node) for rollback.
 4. Run a smoke: same TOTAL_STEPS=10, `NNODES_TRAIN=2`, `ACTOR_OPT_OFFLOAD=True` first (memory-safe), then retry with `False`.

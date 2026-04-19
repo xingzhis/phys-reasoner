@@ -5,8 +5,8 @@ Work through this top-to-bottom on arrival. Every "→ ask user if …" is a har
 ## 1. Orient
 
 - [ ] `pwd` → expect `/pscratch/sd/b/bwhou/17-phy-reasoner/phys-reasoner`. **→ ask user if different.**
-- [ ] `git log --oneline -5` on parent repo → confirm HEAD is on `switch/qwen3-thinking` and top commit is or descends from `2932311 prep for perlmutter smoke: unbreak local smoke wrapper, NCCL tuning, CLAUDE.md cleanup`. **→ ask user if older than that.**
-- [ ] `git -C verl log --oneline -3` → confirm HEAD is `d822b76a fix double timing_s/ prefix on param_sync and merge_val timers` or descends from it. **→ ask user if older.**
+- [ ] `git branch --show-current` on parent repo → expect `main`. `git log --oneline -10` → confirm the log contains `d3c8814 handoff package for remote-hosted Perlmutter Claude session` (i.e. this handoff has landed) and the more recent post-merge commit updating docs. **→ ask user if missing.**
+- [ ] `git -C verl branch --show-current` → expect `physcode`. `git -C verl log --oneline -5` → confirm HEAD contains `d822b76a fix double timing_s/ prefix on param_sync and merge_val timers`. **→ ask user if missing.**
 - [ ] `git status` on both repos → both clean. If not, **→ ask user before staging or discarding anything.**
 
 ## 2. Environment sanity
