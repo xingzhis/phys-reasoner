@@ -39,6 +39,7 @@ When the Phase-0 smoke finishes (pass, fail, or OOM), your job is to **report wh
 - **Overlay image:** `phys-reasoner-overlay-017.img` (not `-017b`; that name appears in some older docs).
 - **Environment:** see `env.sh`; secrets (`WANDB_API_KEY`, `HF_TOKEN`) live in `.env` (gitignored, already staged by the user). Never push `.env`.
 - **Sbatch to submit:** `scripts/perlmutter/smoke_tir_het.sbatch` — 3 het-groups (trainer 1 node × 4 GPU + rollout 5 nodes × 4 GPU + xverify 1 GPU shared). Has `TODO(collab)` markers for account/queue/constraint; you'll resolve these with the collaborator.
+- **Training data:** `data/processed_tir/data/{train,validation,test}.parquet`, pulled from the `xingzhi0/phys-tir` HF dataset via `scripts/fetch_dataset.py`. The user has re-filtered and pushed a new revision since this handoff was written, so on arrival you must **re-run the fetch and report row counts in chat for sanity-check**. See `day0-checklist.md` §2b.
 - **Target branch for new work:** small config/doc fixes land on parent `main` (and verl `physcode`). For bigger changes — e.g. the Phase-4 multi-trainer-node work — cut a feature branch off `main` (parent) / `physcode` (verl). **Never push to verl's public `main`** — that tracks upstream `verl-project/verl` and must stay a clean mirror.
 
 ## Reading order on arrival
