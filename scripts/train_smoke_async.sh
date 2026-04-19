@@ -85,23 +85,34 @@ df.to_parquet(dst, index=False)
 print(f"Wrote {len(df)} rows to {dst} (max_tool_calls={max_tool_turns})")
 PY
 
-# Launch the async training run.
+# Knobs that need to be smoke-specific (not the train_async.sh prod defaults).
+# TRAIN_SP defaults to 2 in train_async.sh because Perlmutter has 4 GPU/node
+# trainer pools; on this 2-GPU local box the trainer pool is 1 GPU and SP=2
+# would crash device-mesh init. TRAIN_BATCH is 2 (vs prod 128) so memory fits.
+# VLLM_GPU_MEM_UTIL is 0.4 (vs prod 0.8) because the rollout vLLM and trainer
+# FSDP can land on the same physical GPU under the local Ray placement group
+# allocation; 0.4 leaves room for the trainer if they collide.
+# All defaults below honor pre-existing env vars, so callers can override
+# everything from the command line (this was previously broken — hardcoded
+# values shadowed env exports).
 #   - TRAIN_BATCH=4, ROLLOUT_N=4, TOTAL_STEPS=2 → 8 total rollouts, 2 param syncs
 #   - N_GPUS_ROLLOUT=1, N_GPUS_TRAIN=1 → 1+1 split on the 2-GPU A100 node
-#   - VLLM_GPU_MEM_UTIL=0.8 is safe because the rollout GPU is dedicated
 MODEL="$MODEL" \
-TRAIN_BATCH=4 \
-ROLLOUT_N=4 \
-TOTAL_STEPS=2 \
+TRAIN_BATCH="${TRAIN_BATCH:-4}" \
+ROLLOUT_N="${ROLLOUT_N:-4}" \
+TOTAL_STEPS="${TOTAL_STEPS:-2}" \
 MAX_TOOL_TURNS="$MAX_TOOL_TURNS" \
 THINKING_BUDGET="$THINKING_BUDGET" \
 TOOL_CALL_BUDGET="$TOOL_CALL_BUDGET" \
 ANSWER_BUDGET="$ANSWER_BUDGET" \
-N_GPUS_ROLLOUT=1 \
-N_GPUS_TRAIN=1 \
-NNODES_ROLLOUT=1 \
-NNODES_TRAIN=1 \
-VLLM_GPU_MEM_UTIL=0.8 \
+N_GPUS_ROLLOUT="${N_GPUS_ROLLOUT:-1}" \
+N_GPUS_TRAIN="${N_GPUS_TRAIN:-1}" \
+NNODES_ROLLOUT="${NNODES_ROLLOUT:-1}" \
+NNODES_TRAIN="${NNODES_TRAIN:-1}" \
+TRAIN_SP="${TRAIN_SP:-1}" \
+STALENESS="${STALENESS:-0}" \
+VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-0.4}" \
+ROLLOUT_ENFORCE_EAGER="${ROLLOUT_ENFORCE_EAGER:-True}" \
 TRAIN_FILES="$SMOKE_DATA" \
 VAL_FILES="$SMOKE_DATA" \
 VERL_DUMP_DIR="$ROOT/outputs/rollout_dumps/${RUN_ID}" \

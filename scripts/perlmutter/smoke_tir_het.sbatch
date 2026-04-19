@@ -76,6 +76,17 @@ APT_CMD=(
     --env "MPLCONFIGDIR=/tmp/.cache/matplotlib"
     --env "PHYS_REQUIRE_XVERIFY=1"
     --env "PYTORCH_ALLOC_CONF=expandable_segments:True"
+    # NCCL tuning for inter-node Ray/FSDP on Perlmutter Slingshot. Adapted
+    # from Dr.SCI's verl launch (FINDINGS §5) minus NCCL_IB_HCA=mlx5 which
+    # is Azure-fabric-specific. Worst case: ignored. NVLS_ENABLE helps
+    # NCCL pick NVLink switch when present; IBEXT_DISABLE silences a known
+    # warning on Slingshot; ENABLE_MONITORING=0 suppresses a watchdog
+    # thread that periodically prints to stderr; IB_TIMEOUT bumps the
+    # default 18 to handle congested-fabric retries.
+    --env "NCCL_IB_TIMEOUT=32"
+    --env "NCCL_NVLS_ENABLE=1"
+    --env "NCCL_IBEXT_DISABLE=1"
+    --env "TORCH_NCCL_ENABLE_MONITORING=0"
     "$SIF"
 )
 export APT_CMD

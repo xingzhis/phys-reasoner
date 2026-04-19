@@ -34,7 +34,7 @@ Three main components:
    - Model resumes to EOS/max_tokens; `[answer]` is a format marker only, not a stop token
 
 2. **GRPO Training Pipeline**:
-   - Model: Qwen3.5-4B instruct (thinking OFF); debug: Qwen3.5-0.8B
+   - Model: Qwen3-4B-Thinking-2507 (current, switched 2026-04-18); debug: Qwen3-0.6B. Historical: Qwen3.5-4B (see "If reverting" footnote below)
    - Reward: binary R_correct on final \boxed{} (λ=0 initially; token cost penalty in late ablation)
    - Primary data: Dr. SCI clean (~65k numerical + expression + MCQ) + 6.8k curated corpus
    - Curriculum: numerical first → expression + MCQ
@@ -183,30 +183,41 @@ sbatch --export=ALL,XV_MODEL=IAAR-Shanghai/xVerify-7B-I,XV_OUTPUT=data/results/r
 - `verl` — GRPO/RLVR training framework (installed from `verl/` submodule with `--no-deps`)
 - Qwen3.5 model family via HuggingFace
 
-## Required VeRL Overrides for Qwen3.5-4B (GRPO)
+## Active model: Qwen3-4B-Thinking-2507 (GRPO)
 
-These Hydra overrides must be set in every GRPO / smoke-test run:
+The Qwen3.5-4B GDN-specific overrides (SDPA attention, Qwen3_5DecoderLayer
+wrap policy) are **no longer needed** — Qwen3-4B-Thinking is a vanilla
+transformer. The current required overrides are minimal:
 
 ```bash
-# SDPA attention — VeRL's Ulysses flash-attention monkey-patch is incompatible with
-# Qwen3.5 hybrid attention (GDN layers) in transformers 5.3.0; causes CUDA illegal
-# memory access. SDPA bypasses the monkey-patch entirely.
-'+actor_rollout_ref.model.override_config={attn_implementation:sdpa}'
-
-# Offload AdamW optimizer to CPU — 4.54B params × float32 × 2 moments ≈ 36 GB.
-# Combined with vLLM KV cache this exceeds H200 (80 GB) without offloading.
+# Optimizer offload — 4B params × fp32 × 2 moments ≈ 32 GB; combined with
+# vLLM KV cache exceeds 80 GB without offloading on a single trainer node.
+# Drop this once moving to 2-trainer-node FSDP-8.
 actor_rollout_ref.actor.fsdp_config.optimizer_offload=True
 
-# Explicit FSDP wrap — Qwen3_5ForCausalLM._no_split_modules incorrectly lists
-# Qwen3_5VisionBlock (a vision class absent from the text-only model).
-# Without this override VeRL crashes with "Could not find transformer layer class".
-'+actor_rollout_ref.actor.fsdp_config.wrap_policy.transformer_layer_cls_to_wrap=[Qwen3_5DecoderLayer]'
-'+actor_rollout_ref.ref.fsdp_config.wrap_policy.transformer_layer_cls_to_wrap=[Qwen3_5DecoderLayer]'
+# Ulysses sequence parallelism — 4 on 4-GPU trainer (FSDP=1, DP=1) or
+# 2 on 4-GPU trainer (DP=2 for FSDP shard). Set TRAIN_SP=1 to disable on
+# single-GPU smokes.
+actor_rollout_ref.actor.ulysses_sequence_parallel_size=2
+actor_rollout_ref.ref.ulysses_sequence_parallel_size=2
 
-# Multi-turn TIR with qwen3_coder tool-call format
-actor_rollout_ref.rollout.multi_turn.format=qwen3_coder
+# Multi-turn TIR with hermes tool-call format (Qwen3-4B-Thinking-2507 chat
+# template emits hermes-style <tool_call>{json}</tool_call>, NOT the
+# qwen3_coder XML format Qwen3.5 used).
+actor_rollout_ref.rollout.multi_turn.format=hermes
 actor_rollout_ref.rollout.multi_turn.enable=true
 actor_rollout_ref.rollout.agent.default_agent_loop=tool_agent
 ```
 
-Reference: `scripts/smoke_tir_qwen35.sh` (validated configuration, 2026-04-02).
+Reference: `scripts/train_async.sh` (canonical), `scripts/perlmutter/smoke_tir_het.sbatch` (Perlmutter wrapper). Migration plan: `.claude/plans/qwen3-switch.md`.
+
+### If reverting to Qwen3.5-4B (historical)
+
+Re-add: `+actor_rollout_ref.model.override_config={attn_implementation:sdpa}`
+(GDN+flash-attn monkey-patch crashes), and
+`+actor_rollout_ref.actor.fsdp_config.wrap_policy.transformer_layer_cls_to_wrap=[Qwen3_5DecoderLayer]`
+(plus the `ref.` twin) because `Qwen3_5ForCausalLM._no_split_modules`
+incorrectly lists `Qwen3_5VisionBlock`. Switch `multi_turn.format` back
+to `qwen3_coder`, set `INTERRUPT_LEN=17` (vs 16 for Qwen3), and remove
+the Ulysses SP lines entirely. See `scripts/smoke_tir_qwen35.sh`
+(validated 2026-04-02) for the full set.
