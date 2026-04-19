@@ -91,20 +91,32 @@ def score_rollouts(
         print("xVerify ready.")
 
     records: list[dict] = []
-    counts = {"correct": 0, "wrong": 0, "unverifiable": 0}
+    counts = {"correct": 0, "wrong": 0, "unverifiable": 0, "verifier_error": 0}
     for i, row in df.iterrows():
         pred_text = _concat_pred_text(row)
         gold = row["gold_answer"]
         meta = _extract_meta(row)
-        verdict = verify_answer(
-            pred_text=pred_text,
-            gold_answer=gold,
-            answer_type=meta["answer_type"],
-            gold_unit=meta["unit"],
-            tolerance=meta["tolerance"],
-            xverify_judge=xverify_judge,
-            problem_text=meta["problem"],
-        )
+        try:
+            verdict = verify_answer(
+                pred_text=pred_text,
+                gold_answer=gold,
+                answer_type=meta["answer_type"],
+                gold_unit=meta["unit"],
+                tolerance=meta["tolerance"],
+                xverify_judge=xverify_judge,
+                problem_text=meta["problem"],
+            )
+        except Exception as e:
+            # Verifier crashed on this row (e.g. pint OffsetUnitCalculusError on
+            # decibel, sympy parse failure on malformed LaTeX). Mark unverifiable
+            # so the rest of the scoring run completes; per-row diagnostics are
+            # in the parquet's verifier_error column.
+            counts["verifier_error"] += 1
+            verdict = -1.0
+            err_msg = f"{type(e).__name__}: {e}"
+        else:
+            err_msg = ""
+
         if verdict == 1.0:
             counts["correct"] += 1
         elif verdict == 0.0:
@@ -122,11 +134,13 @@ def score_rollouts(
             "verdict": verdict,
             "correct": bool(verdict == 1.0),
             "unverifiable": bool(verdict == -1.0),
+            "verifier_error": err_msg,
         })
 
         if (i + 1) % 50 == 0 or (i + 1) == n:
             print(f"  scored {i + 1}/{n}  (correct={counts['correct']}, "
-                  f"wrong={counts['wrong']}, unverifiable={counts['unverifiable']})")
+                  f"wrong={counts['wrong']}, unverifiable={counts['unverifiable']}, "
+                  f"errors={counts['verifier_error']})")
 
     os.makedirs(os.path.dirname(os.path.abspath(out_path)) or ".", exist_ok=True)
     scored = pd.DataFrame(records)
@@ -145,6 +159,7 @@ def score_rollouts(
         f.write(f"correct          : {counts['correct']}\n")
         f.write(f"wrong            : {counts['wrong']}\n")
         f.write(f"unverifiable     : {counts['unverifiable']}\n")
+        f.write(f"verifier_error   : {counts['verifier_error']}  (also counted as unverifiable)\n")
         f.write(f"pass@1 exclusive : {exclusive_rate:.4f}  (correct / (correct+wrong))\n")
         f.write(f"pass@1 inclusive : {inclusive_rate:.4f}  (correct / n; unverifiable counted as miss)\n")
 

@@ -143,8 +143,12 @@ def dump_diffs(
         tir_text = _annotated_trajectory(tir_r, is_cot=False)
         cot_text = _annotated_trajectory(cot_r, is_cot=True)
 
-        tir_v_str = ("correct" if tir_v["correct"] else "wrong") + (" (unverif)" if tir_v["unverifiable"] else "")
-        cot_v_str = ("correct" if cot_v["correct"] else "wrong") + (" (unverif)" if cot_v["unverifiable"] else "")
+        # `unverifiable` is only produced by our_verifier (pool_v2); the
+        # OlympiadBench scorer writes only {correct, verdict, judge_error}.
+        tir_unverif = bool(tir_v.get("unverifiable", False)) if hasattr(tir_v, "get") else False
+        cot_unverif = bool(cot_v.get("unverifiable", False)) if hasattr(cot_v, "get") else False
+        tir_v_str = ("correct" if tir_v["correct"] else "wrong") + (" (unverif)" if tir_unverif else "")
+        cot_v_str = ("correct" if cot_v["correct"] else "wrong") + (" (unverif)" if cot_unverif else "")
 
         manifest_lines.append(
             f"{k:<4}  {str(prob_idx):<12}  {answer_type[:20]:<20}  "
