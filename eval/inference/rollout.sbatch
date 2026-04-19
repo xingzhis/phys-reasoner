@@ -1,8 +1,8 @@
 #!/bin/bash
-#SBATCH --job-name=dump_rollouts
+#SBATCH --job-name=rollout
 # Partition / QOS / gres are NOT set here. Control them via env.sh (SBATCH_PARTITION)
 # or override at submit time, e.g.:
-#   sbatch --partition=gpu_b200 --gres=gpu:b200:1 scripts/dump_rollouts.sbatch
+#   sbatch --partition=gpu_b200 --gres=gpu:b200:1 eval/inference/rollout.sbatch
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
@@ -12,6 +12,7 @@
 #SBATCH --error=logs/%x_%j.err
 
 # Configurable via --export:
+#   MODE              — tir | cot (default: tir)
 #   MODEL             — HF model ID (default: Qwen/Qwen3.5-4B)
 #   N                 — number of problems to sample, <=0 for all (default: 4)
 #   N_ROLLOUTS        — rollouts per problem (default: 1)
@@ -20,7 +21,8 @@
 #   GPU_MEM           — vLLM gpu_memory_utilization (default: 0.7)
 #   MAX_TOKENS        — max response tokens when think-interrupt disabled (default: 8192)
 #   THINKING_BUDGET   — phase 1 token cap; enables think-interrupt when set
-#   TOOL_CALL_BUDGET  — phase 1b cap (required with THINKING_BUDGET)
+#   TOOL_CALL_BUDGET  — phase 1b cap (required with THINKING_BUDGET, TIR mode; also
+#                       required in CoT mode to compute the matched total response_length)
 #   ANSWER_BUDGET     — phase 2 cap (required with THINKING_BUDGET)
 #   START_IDX, END_IDX — shard slice for parallel chunks
 #   CHUNK_SIZE        — problems per flush chunk (crash safety)
@@ -28,15 +30,16 @@
 #   ENABLE_THINKING   — set to 1 to enable <think> in phase 1 (default: 1)
 #
 # Usage:
-#   sbatch scripts/dump_rollouts.sbatch
+#   sbatch eval/inference/rollout.sbatch
 #   sbatch --partition=gpu_b200 --gres=gpu:b200:1 \
-#     --export=ALL,N=-1,N_ROLLOUTS=4,PARQUET=data/processed/probe_subset.parquet,\
+#     --export=ALL,MODE=cot,N=-1,N_ROLLOUTS=4,PARQUET=data/processed/probe_subset.parquet,\
 #THINKING_BUDGET=12288,TOOL_CALL_BUDGET=2048,ANSWER_BUDGET=4096,START_IDX=0,END_IDX=1250 \
-#     scripts/dump_rollouts.sbatch
+#     eval/inference/rollout.sbatch
 
-ROOT="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
+ROOT="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "$0")/../.." && pwd)}"
 source "$ROOT/env.sh"
 
+MODE="${MODE:-tir}"
 MODEL="${MODEL:-Qwen/Qwen3.5-4B}"
 N="${N:-4}"
 N_ROLLOUTS="${N_ROLLOUTS:-1}"
@@ -132,7 +135,8 @@ apptainer exec --nv \
   --env "MPLCONFIGDIR=/tmp/.cache/matplotlib" \
   ${VLLM_USE_TRTLLM_ATTENTION:+--env "VLLM_USE_TRTLLM_ATTENTION=$VLLM_USE_TRTLLM_ATTENTION"} \
   "$SIF" \
-  python3 "$ROOT/scripts/dump_rollouts.py" \
+  python3 "$ROOT/eval/inference/rollout.py" \
+    --mode     "$MODE" \
     --model    "$MODEL" \
     --parquet  "$PARQUET" \
     --n        "$N" \

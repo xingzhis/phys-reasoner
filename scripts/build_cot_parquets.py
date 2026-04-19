@@ -28,16 +28,8 @@ from pathlib import Path
 
 import pandas as pd
 
-
-# Deliberately minimal. Parallel structure to TIR_SYSTEM_PROMPT in
-# src/phys_reasoner/tir/prompts.py so prompt style isn't a confound in the
-# TIR-vs-CoT ablation. No mention of Python / tools / code.
-COT_SYSTEM_PROMPT = (
-    "You are an expert physics problem solver.\n"
-    "Solve the problem step by step. Show your reasoning concisely.\n"
-    "\n"
-    "End with your final answer as \\boxed{<value>}.\n"
-)
+# Canonical CoT system prompt lives alongside TIR_SYSTEM_PROMPT for single-source truth.
+from phys_reasoner.tir.prompts import COT_SYSTEM_PROMPT
 
 
 SPLITS = ("train", "validation", "test")

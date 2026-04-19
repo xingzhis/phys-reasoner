@@ -63,3 +63,9 @@ old/
 
 .async-extras/
 tmp_apptainer/
+
+# Worktree-local pip packages used by the eval harness (e.g.
+# antlr4-python3-runtime==4.11 needed by sympy's LaTeX parser inside the
+# vendored OlympiadBench official judge). Reproducible via:
+#   pip install --no-deps --target eval/_pkgs antlr4-python3-runtime==4.11
+eval/_pkgs/

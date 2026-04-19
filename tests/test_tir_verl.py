@@ -117,6 +117,24 @@ def test_tool_syntax_error(tool):
     assert metrics["exec_success"] is False
 
 
+def test_tool_error_appends_reminder(tool):
+    """On error, the response must include TOOL_ERROR_REMINDER so the model is
+    explicitly told it cannot retry and must emit \\boxed{}."""
+    from phys_reasoner.tir.prompts import TOOL_ERROR_REMINDER
+    response, _, _ = _run(tool.execute("id1", {"code": "1 / 0"}))
+    assert TOOL_ERROR_REMINDER.strip() in response.text
+    # Reminder should be at the tail, after the stderr snippet
+    assert response.text.rstrip().endswith(TOOL_ERROR_REMINDER.strip())
+
+
+def test_tool_success_no_reminder(tool):
+    """On success, the reminder must NOT be appended — it would be noise."""
+    from phys_reasoner.tir.prompts import TOOL_ERROR_REMINDER
+    response, _, _ = _run(tool.execute("id1", {"code": "print(42)"}))
+    assert TOOL_ERROR_REMINDER.strip() not in response.text
+    assert response.text == "42"
+
+
 def test_tool_timeout(tool):
     # Fixture sets timeout=5.0 — override via a short-timeout tool
     short_tool = PythonSandboxTool(
