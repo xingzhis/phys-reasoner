@@ -1,20 +1,21 @@
 # Session Notes — for next session context
 
-Last updated: 2026-04-14 (session 8 handoff)
+Last updated: 2026-04-19 (Perlmutter handoff prep)
 
 ---
 
-## Status: Probe complete, ready for Strategy B weights
+## Status: Ready for Phase-0 Perlmutter smoke with Qwen3-4B-Thinking
 
-**Completed this session:**
-- Debugged and fixed the Qwen3.5 `!!!` degeneration bug (root cause: B200 TRTLLM prefill corruption — not sampling params, not batch size, not CUDA graphs)
-- Generated full probe on H200: `outputs/probe_v5_A` + `outputs/probe_v5_B` (2×10000 = 20000 rollouts, 0.1% degenerate)
-- Scored via xVerify-7B: `outputs/probe_v5_scored/rollouts_scored.parquet` + `score_summary.txt`
-- **Result: 22.18% overall hit rate, 49.68% pass@1 → SFT SKIPPED** per CLAUDE.md threshold
+**Completed since Apr 14:**
+- **2026-04-17 Perlmutter baseline run** (Qwen3.5-4B): step-1 took 27 min, step-2 OOM'd. Root cause analysis at `perlmutter_debug/FINDINGS.md` — 12-tier speedup catalogue with rationale.
+- **2026-04-18 Qwen3 switch executed** (`.claude/plans/qwen3-switch.md`): MODEL=Qwen/Qwen3-4B-Thinking-2507, multi_turn.format=hermes, Ulysses SP=2, staleness=1, `use_remove_padding=True`, `log_prob_max_token_len_per_gpu=81920` (4× actor), dynamic_bsz on ref+rollout, `PYTORCH_ALLOC_CONF=expandable_segments:True`, `PPO_MAX_TOKEN_LEN_PER_GPU=20480`. Qwen3.5-specific SDPA override + Qwen3_5DecoderLayer wrap policy removed (Qwen3 is vanilla transformer, flash-attn works natively).
+- **2026-04-18 0.6B end-to-end verified locally** (commit `cb10403`): `train_smoke_async.sh` with `Qwen3-0.6B` completes 2 steps cleanly; 4B rollout `dump_rollouts` looks healthy.
+- **2026-04-18 `[FullyAsyncTrainer] step=N ...` timing print landed** (verl `d822b76a`, parent `c230577`): per-phase timing (`timing_s/*`) + rollouter counters (`fully_async/*`) now emitted to stdout immediately at end of each `fit_step`, before the next step's `update_weights`. Fixes FINDINGS §9 caveat where a step-N+1 OOM ate step-N's decomposition. Also fixed pre-existing double-prefix bug (`timing_s/timing_s/param_sync` → `timing_s/param_sync`).
+- **2026-04-19 Perlmutter-smoke prep cleanup** (commit `2932311`): `train_smoke_async.sh` hardcoded `VLLM_GPU_MEM_UTIL=0.8` no longer shadows env override; `TRAIN_SP=1` default for single-GPU smoke; NCCL tuning env vars (`NCCL_IB_TIMEOUT=32`, `NCCL_NVLS_ENABLE=1`, `NCCL_IBEXT_DISABLE=1`, `TORCH_NCCL_ENABLE_MONITORING=0`) added to `scripts/perlmutter/smoke_tir_het.sbatch`; CLAUDE.md Qwen3.5 section replaced with Qwen3-Thinking active overrides.
 
 **Next work (start here):**
-- Step 4 of `.claude/plans/data-pipeline.md`: compute Strategy B weights from `probe_v5_scored`
-- Per-stratum Goldilocks rates → per-problem `_train_weight` column on train parquets
+- **Phase-0 Perlmutter smoke** — submit `scripts/perlmutter/smoke_tir_het.sbatch` as-is on Perlmutter (branch `switch/qwen3-thinking` on both phys-reasoner and verl repos). Target: ≤5 min/step (vs 27 min baseline). Read new `[FullyAsyncTrainer] step=` lines from train.log for per-phase decomposition. Pass criteria in `perlmutter_debug/SMOKE_HANDOFF.md` §5.2.
+- **The handoff package for a Perlmutter Claude session lives in `.claude/handoff/` (entry point: `perlmutter-onboarding.md`).**
 
 ---
 

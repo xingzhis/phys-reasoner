@@ -1,7 +1,13 @@
 # Perlmutter Smoke Handoff — Qwen3 Switch
 
+> **⚠ 2026-04-19 status update (read before acting):**
+> - The Qwen3 switch has been committed on both repos (`switch/qwen3-thinking`) and verified end-to-end locally on Qwen3-0.6B.
+> - The **`[FullyAsyncTrainer] step=N ...` timing print** (verl `d822b76a`) has landed since this doc was written — it replaces the §4 "decomposition is inferred" caveat. Grep the train log for `FullyAsyncTrainer\] step=` after any run.
+> - **Prep commit `2932311`** fixed a silent `VLLM_GPU_MEM_UTIL=0.8` shadowing bug in the local smoke wrapper and added NCCL tuning env vars to `smoke_tir_het.sbatch`.
+> - **Canonical entry point for a new Perlmutter Claude session** is now `.claude/handoff/perlmutter-onboarding.md`, which points here for specific sections (chat template check, pass criteria, failure modes). This doc's body remains accurate for those sections — the §1 "untested on Perlmutter" line is the only top-level claim to ignore.
+
 **Target session:** executing the Qwen3-switch smoke on Perlmutter.
-**Status:** branches ready locally; untested on Perlmutter.
+**Status (2026-04-19):** branches ready + pushed; prep commit landed; **not yet submitted on Perlmutter** since the prep commit.
 **Core goal:** validate ≤5 min/step (vs prior 27 min/step OOM baseline).
 
 Read this top-to-bottom once. References at the bottom.

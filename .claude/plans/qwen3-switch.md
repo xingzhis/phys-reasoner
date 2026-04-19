@@ -1,5 +1,7 @@
 # Qwen3.5 → Qwen3-4B-Thinking Switch — Execution Plan
 
+> **✅ 2026-04-19 status: config work executed.** Branches `switch/qwen3-thinking` exist on both repos with the §2 overrides applied. Local 0.6B end-to-end smoke passed (commit `cb10403`). Perlmutter smoke not yet run with the new stack. This doc is retained as the record of rationale + rollback instructions; live status lives in `.claude/session-notes.md` and `.claude/handoff/perlmutter-onboarding.md`.
+
 **Created:** 2026-04-18.
 **Goal:** unblock training throughput (current: 27 min/step on 1 trainer node + 5 rollout nodes; target: ≤5 min/step) by switching to Qwen3-4B-Thinking, enabling flash-attn + Ulysses SP=4 + `use_remove_padding=True`.
 **Why:** Qwen3.5 has hybrid GDN/transformer layers that break verl's Ulysses monkey-patch (see `perlmutter_debug/FINDINGS.md` §7). Qwen3 is standard transformer → the retool/dapo recipes work out of the box. Verified by reading `verl/recipe/retool/run_qwen2_7b_dapo.sh`.

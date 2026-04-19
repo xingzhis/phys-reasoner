@@ -22,14 +22,12 @@ Proposal: `docs/physcode_proposal_v5.md`
 
 Three main components:
 
-1. **TIR Trajectory Format** (Qwen3.5 native `qwen3_coder` tool-call format):
+1. **TIR Trajectory Format** (Qwen3-Thinking native `hermes` tool-call format; switched from Qwen3.5 `qwen3_coder` on 2026-04-18):
    ```
    <think>reasoning...</think>
-   <tool_call><function=python><parameter=code>
-   import sympy as sp
-   ...
-   print(result)
-   </parameter></function></tool_call>
+   <tool_call>
+   {"name":"python","arguments":{"code":"import sympy as sp\n...\nprint(result)"}}
+   </tool_call>
    <tool_response>
    stdout
    </tool_response>
@@ -78,7 +76,7 @@ Two files are relevant:
 | File | Purpose |
 |---|---|
 | `verl_vllm017.latest.sif` | Base Apptainer SIF — vllm 0.17.0, transformers 4.57.6 (read-only; never modify) |
-| `phys-reasoner-overlay-017b.img` | **Active overlay** — use for all sbatch jobs and interactive work |
+| `phys-reasoner-overlay-017.img` | **Active overlay** — use for all sbatch jobs and interactive work |
 
 The overlay holds project packages plus `/opt/phys-extras/` which contains upgraded versions of transformers, hub, and flash-linear-attention layered above the SIF base.
 
@@ -87,7 +85,7 @@ The overlay holds project packages plus `/opt/phys-extras/` which contains upgra
 ```bash
 ROOT=/gpfs/radev/scratch/krishnaswamy_smita/xs272/phys-reasoner
 SIF=$ROOT/verl_vllm017.latest.sif
-OVERLAY=$ROOT/phys-reasoner-overlay-017b.img
+OVERLAY=$ROOT/phys-reasoner-overlay-017.img
 
 # CPU command — PYTHONPATH is required for /opt/phys-extras/ packages
 PYTHONNOUSERSITE=1 apptainer exec \
@@ -173,7 +171,7 @@ SIF+overlay. The host dir travels with the repo via any `$ROOT` that apptainer a
 ### sbatch jobs
 
 Key points for all sbatch scripts:
-- Uses `phys-reasoner-overlay-017b.img` (`:ro` mount — safe for concurrent jobs)
+- Uses `phys-reasoner-overlay-017.img` (`:ro` mount — safe for concurrent jobs)
 - Exports `PYTHONNOUSERSITE=1` **and** `PYTHONPATH=/opt/phys-extras/` via `--env`
 - Uses `--no-home` to prevent `$HOME` from being mounted, further isolating from `~/.local`
 - Unsets `SIF` and `OVERLAY` before sourcing `env.sh` to prevent SLURM-inherited stale values
