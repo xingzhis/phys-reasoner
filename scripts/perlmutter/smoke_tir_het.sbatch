@@ -19,10 +19,10 @@
 #SBATCH --error=logs/%x_%j.err
 
 # --- het-group 0: TRAINER (1 × 4 GPU) ---
-# TODO(collab): account/queue/constraint — same as prod_tir_het.sbatch
-#SBATCH -A TODO_ACCOUNT_g
-#SBATCH -C gpu
-#SBATCH -q regular
+# Perlmutter canonical values (resolved 2026-04-20; see scripts/perlmutter/README.md).
+#SBATCH -A m2651
+#SBATCH -C gpu&hbm80g
+#SBATCH -q premium
 #SBATCH -t 04:00:00
 #SBATCH -N 1
 #SBATCH --ntasks-per-node=1
@@ -30,22 +30,24 @@
 #SBATCH --gpus-per-node=4
 
 #SBATCH hetjob
-# --- het-group 1: ROLLOUT (5 × 4 GPU) ---
-#SBATCH -A TODO_ACCOUNT_g
-#SBATCH -C gpu
-#SBATCH -q regular
+# --- het-group 1: ROLLOUT (3 × 4 GPU for smoke; prod uses 5) ---
+#SBATCH -A m2651
+#SBATCH -C gpu&hbm80g
+#SBATCH -q premium
 #SBATCH -t 04:00:00
-#SBATCH -N 5
+#SBATCH -N 3
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=32
 #SBATCH --gpus-per-node=4
 
 #SBATCH hetjob
 # --- het-group 2: XVERIFY (1 × 1 GPU) ---
-#SBATCH -A TODO_ACCOUNT_g
-#SBATCH -C gpu
-# TODO(collab): '-q shared' for fractional allocation if Perlmutter supports it
-#SBATCH -q shared
+#SBATCH -A m2651
+#SBATCH -C gpu&hbm80g
+# NOTE: m2651 lacks access to '-q shared' (tried 2026-04-20). Using premium, which
+# reserves a whole 4×A100 node even though xverify only needs 1 GPU. This wastes
+# 3 GPUs/job. See README.md "xverify GPU waste" for the co-location alternative.
+#SBATCH -q premium
 #SBATCH -t 04:00:00
 #SBATCH -N 1
 #SBATCH --ntasks=1
@@ -78,15 +80,27 @@ APT_CMD=(
     --env "PYTORCH_ALLOC_CONF=expandable_segments:True"
     # NCCL tuning for inter-node Ray/FSDP on Perlmutter Slingshot. Adapted
     # from Dr.SCI's verl launch (FINDINGS §5) minus NCCL_IB_HCA=mlx5 which
-    # is Azure-fabric-specific. Worst case: ignored. NVLS_ENABLE helps
-    # NCCL pick NVLink switch when present; IBEXT_DISABLE silences a known
-    # warning on Slingshot; ENABLE_MONITORING=0 suppresses a watchdog
-    # thread that periodically prints to stderr; IB_TIMEOUT bumps the
-    # default 18 to handle congested-fabric retries.
+    # is Azure-fabric-specific. Worst case: ignored. IBEXT_DISABLE silences
+    # a known warning on Slingshot; ENABLE_MONITORING=0 suppresses a
+    # watchdog thread that periodically prints to stderr; IB_TIMEOUT bumps
+    # the default 18 to handle congested-fabric retries.
+    #
+    # NCCL_NVLS_ENABLE=1 REMOVED 2026-04-20: Perlmutter A100 nodes use
+    # NVLink Bridge (no NVSwitch); forcing NVLS-enable was suspected to break
+    # vLLM's custom_all_reduce kernel on A100. Removing it alone did NOT
+    # resolve the issue (job 51807765 still failed identically), so we also
+    # disable vLLM's custom all-reduce path below. Default NVLS=0 is still
+    # the correct setting for A100.
     --env "NCCL_IB_TIMEOUT=32"
-    --env "NCCL_NVLS_ENABLE=1"
     --env "NCCL_IBEXT_DISABLE=1"
     --env "TORCH_NCCL_ENABLE_MONITORING=0"
+    # Note: vLLM's custom all-reduce kernel fails on Perlmutter A100 with
+    # `custom_all_reduce.cuh:455 'invalid argument'` (jobs 51805228 +
+    # 51807765 + 51811407, 2026-04-20). It's disabled at the verl config
+    # layer via engine_kwargs.vllm.disable_custom_all_reduce=True (see
+    # train_async.sh); vLLM 0.17 does NOT expose this as an env var —
+    # VLLM_USE_CUSTOM_ALL_REDUCE is not a recognised vLLM env (confirmed
+    # via vllm.envs inspection).
     "$SIF"
 )
 export APT_CMD
@@ -108,7 +122,7 @@ XVERIFY_PID=$!
 export N_GPUS_TRAIN="${N_GPUS_TRAIN:-4}"
 export N_GPUS_ROLLOUT="${N_GPUS_ROLLOUT:-4}"
 export NNODES_TRAIN="${NNODES_TRAIN:-1}"
-export NNODES_ROLLOUT="${NNODES_ROLLOUT:-5}"
+export NNODES_ROLLOUT="${NNODES_ROLLOUT:-3}"
 export HET_SRUN_HEAD="--het-group=0" HET_SRUN_WORKER="--het-group=1"
 source "$ROOT/scripts/perlmutter/_ray_bringup.sh"
 

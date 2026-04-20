@@ -14,7 +14,7 @@
 # by scripts/build_cot_parquets.py and published to HF as xingzhi0/phys-cot.
 # Identical rows to the TIR parquets, only the system prompt is swapped.
 #
-# Submit (AFTER filling TODO(collab) markers — identical to prod_tir_companion):
+# Submit (identical to prod_tir_companion):
 #   sbatch scripts/perlmutter/prod_cot_companion.sbatch
 # Resume:
 #   sbatch --export=ALL,EXPERIMENT=<prev> scripts/perlmutter/prod_cot_companion.sbatch
@@ -23,10 +23,10 @@
 #SBATCH --output=logs/%x_%j.log
 #SBATCH --error=logs/%x_%j.err
 
-# TODO(collab): fill these four fields — identical to prod_tir_companion.sbatch
-#SBATCH -A TODO_ACCOUNT_g
-#SBATCH -C gpu
-#SBATCH -q regular
+# fill these four fields — identical to prod_tir_companion.sbatch
+#SBATCH -A m2651
+#SBATCH -C gpu&hbm80g
+#SBATCH -q premium
 #SBATCH -t 48:00:00
 
 #SBATCH -N 6

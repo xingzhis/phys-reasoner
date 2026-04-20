@@ -16,19 +16,19 @@
 #SBATCH --output=logs/%x_%j.log
 #SBATCH --error=logs/%x_%j.err
 
-# TODO(collab): NERSC project account. Must be the same _g account used by the
+# NERSC project account. Must be the same _g account used by the
 #               training sbatch (cross-job rendezvous via shared filesystem works
 #               fine across accounts, but node-hour accounting will differ).
-#SBATCH -A TODO_ACCOUNT_g
+#SBATCH -A m2651
 
-# TODO(collab): 7B fits on any 40G+ card; '-C gpu' is fine.
-#SBATCH -C gpu
+# 7B fits on any 40G+ card; '-C gpu' is fine.
+#SBATCH -C gpu&hbm80g
 
-# TODO(collab): Shared QoS for fractional (1-GPU) allocation. NERSC typically
+# Shared QoS for fractional (1-GPU) allocation. NERSC typically
 #               supports '-q shared' with --gpus-per-task=1. If not available,
 #               drop to '-q regular' and accept a whole-node allocation (wastes
 #               3 GPUs) or bundle into the het variant instead.
-#SBATCH -q shared
+#SBATCH -q premium
 
 #SBATCH --nodes=1
 #SBATCH --ntasks=1

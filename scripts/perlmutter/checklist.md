@@ -10,10 +10,8 @@ Short document — read top-to-bottom the first time, treat as a reference after
 - [ ] `data/processed_tir/data/{train,validation,test}.parquet` exist (from `fetch_dataset.py`)
 - [ ] `WANDB_API_KEY` exported (or in `.env`), HF token already in `hf_cache` credentials
 - [ ] `.env` has `SBATCH_ACCOUNT=<...>_g` if you want to avoid editing the sbatch file
-- [ ] All `TODO(collab)` markers in the sbatch you're about to submit are resolved
-  ```
-  grep -n 'TODO(collab)' scripts/perlmutter/smoke_tir_het.sbatch
-  ```
+- [ ] SLURM header in the sbatch matches the canonical Perlmutter values
+      (`-A m2651`, `-C gpu&hbm80g`, `-q premium`). See `scripts/perlmutter/README.md` §2.
 
 ## Submit & observe (during smoke)
 

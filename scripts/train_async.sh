@@ -322,6 +322,7 @@ PYTHONNOUSERSITE=1 apptainer exec --nv \
     actor_rollout_ref.rollout.enable_prefix_caching=True \
     actor_rollout_ref.rollout.enable_chunked_prefill=True \
     actor_rollout_ref.rollout.enforce_eager=$ROLLOUT_ENFORCE_EAGER \
+    +actor_rollout_ref.rollout.engine_kwargs.vllm.disable_custom_all_reduce=${VLLM_DISABLE_CUSTOM_ALL_REDUCE:-True} \
     actor_rollout_ref.rollout.tensor_model_parallel_size=$N_GPUS_ROLLOUT \
     actor_rollout_ref.rollout.calculate_log_probs=True \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=$LOG_PROB_MICRO_BS_PER_GPU \

@@ -8,7 +8,7 @@
 # All other hparams (LR, batch, clips, steps, dataset) are identical so the
 # comparison with the main TIR run isolates the tool contribution.
 #
-# Submit (AFTER filling TODO(collab) markers — identical to prod_tir_het.sbatch):
+# Submit (identical to prod_tir_het.sbatch):
 #   sbatch scripts/perlmutter/prod_cot_het.sbatch
 # Resume:
 #   sbatch --export=ALL,EXPERIMENT=<prev> scripts/perlmutter/prod_cot_het.sbatch
@@ -22,10 +22,10 @@
 #SBATCH --error=logs/%x_%j.err
 
 # --- het-group 0: TRAINER ---
-# TODO(collab): same as prod_tir_het.sbatch
-#SBATCH -A TODO_ACCOUNT_g
-#SBATCH -C gpu
-#SBATCH -q regular
+# same as prod_tir_het.sbatch
+#SBATCH -A m2651
+#SBATCH -C gpu&hbm80g
+#SBATCH -q premium
 #SBATCH -t 48:00:00
 #SBATCH -N 1
 #SBATCH --ntasks-per-node=1
@@ -34,9 +34,9 @@
 
 #SBATCH hetjob
 # --- het-group 1: ROLLOUT ---
-#SBATCH -A TODO_ACCOUNT_g
-#SBATCH -C gpu
-#SBATCH -q regular
+#SBATCH -A m2651
+#SBATCH -C gpu&hbm80g
+#SBATCH -q premium
 #SBATCH -t 48:00:00
 #SBATCH -N 5
 #SBATCH --ntasks-per-node=1
@@ -45,9 +45,9 @@
 
 #SBATCH hetjob
 # --- het-group 2: XVERIFY ---
-#SBATCH -A TODO_ACCOUNT_g
-#SBATCH -C gpu
-#SBATCH -q shared
+#SBATCH -A m2651
+#SBATCH -C gpu&hbm80g
+#SBATCH -q premium
 #SBATCH -t 48:00:00
 #SBATCH -N 1
 #SBATCH --ntasks=1

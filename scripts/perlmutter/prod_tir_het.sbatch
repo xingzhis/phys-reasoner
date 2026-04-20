@@ -11,8 +11,8 @@
 # Resume (same EXPERIMENT → verl auto-resumes from latest checkpoint):
 #   sbatch --export=ALL,EXPERIMENT=<prev> scripts/perlmutter/prod_tir_het.sbatch
 #
-# All 'TODO(collab)' markers are cluster-specific values the collaborator must fill.
-# Grep '^# TODO(collab)' to find every one.
+# Perlmutter canonical config is baked in (see scripts/perlmutter/README.md §2).
+# Resolved 2026-04-20 for allocation m2651.
 
 #SBATCH --job-name=physcode_prod_tir_het
 #SBATCH --output=logs/%x_%j.log
@@ -21,12 +21,12 @@
 # =============================================================================
 # HET-GROUP 0: TRAINER (Ray head) — 1 node × 4 GPU
 # =============================================================================
-# TODO(collab): NERSC project account with GPU allocation, e.g. m1234_g
-#SBATCH -A TODO_ACCOUNT_g
-# TODO(collab): -C gpu = A100-40G. For 80G: -C 'gpu&a100_80gb' (confirm exact feature name).
-#SBATCH -C gpu
-# TODO(collab): 'regular' (48h cap) | 'premium' (faster, 2x cost) — confirm budget policy.
-#SBATCH -q regular
+# NERSC project account with GPU allocation, e.g. m1234_g
+#SBATCH -A m2651
+# -C gpu = A100-40G. For 80G: -C 'gpu&a100_80gb' (confirm exact feature name).
+#SBATCH -C gpu&hbm80g
+# 'regular' (48h cap) | 'premium' (faster, 2x cost) — confirm budget policy.
+#SBATCH -q premium
 #SBATCH -t 48:00:00
 #SBATCH -N 1
 #SBATCH --ntasks-per-node=1
@@ -37,11 +37,11 @@
 # =============================================================================
 # HET-GROUP 1: ROLLOUT (Ray workers) — 5 nodes × 4 GPU
 # =============================================================================
-# TODO(collab): same account as group 0
-#SBATCH -A TODO_ACCOUNT_g
-# TODO(collab): match group 0 GPU class (both 40G or both 80G; mixing is fine in theory but untested)
-#SBATCH -C gpu
-#SBATCH -q regular
+# same account as group 0
+#SBATCH -A m2651
+# match group 0 GPU class (both 40G or both 80G; mixing is fine in theory but untested)
+#SBATCH -C gpu&hbm80g
+#SBATCH -q premium
 #SBATCH -t 48:00:00
 #SBATCH -N 5
 #SBATCH --ntasks-per-node=1
@@ -52,14 +52,14 @@
 # =============================================================================
 # HET-GROUP 2: XVERIFY (reward server) — 1 × 1 GPU (shared QoS)
 # =============================================================================
-# TODO(collab): same account
-#SBATCH -A TODO_ACCOUNT_g
-# TODO(collab): 7B fits on 40G; either class fine
-#SBATCH -C gpu
-# TODO(collab): Perlmutter shared-GPU QoS. NERSC typically supports '-q shared' with
+# same account
+#SBATCH -A m2651
+# 7B fits on 40G; either class fine
+#SBATCH -C gpu&hbm80g
+# Perlmutter shared-GPU QoS. NERSC typically supports '-q shared' with
 #               --gpus-per-task=1 for fractional-node allocation. CONFIRM before submit —
 #               if not available, use the companion variant (prod_tir_companion.sbatch).
-#SBATCH -q shared
+#SBATCH -q premium
 #SBATCH -t 48:00:00
 #SBATCH -N 1
 #SBATCH --ntasks=1

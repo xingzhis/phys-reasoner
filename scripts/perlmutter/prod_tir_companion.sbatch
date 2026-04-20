@@ -18,10 +18,10 @@
 #SBATCH --output=logs/%x_%j.log
 #SBATCH --error=logs/%x_%j.err
 
-# TODO(collab): fill these four fields — identical to prod_tir_het.sbatch group 0
-#SBATCH -A TODO_ACCOUNT_g
-#SBATCH -C gpu
-#SBATCH -q regular
+# fill these four fields — identical to prod_tir_het.sbatch group 0
+#SBATCH -A m2651
+#SBATCH -C gpu&hbm80g
+#SBATCH -q premium
 #SBATCH -t 48:00:00
 
 #SBATCH -N 6
@@ -58,7 +58,7 @@ export APT_CMD
 
 # -----------------------------------------------------------------------------
 # Launch companion xVerify sbatch. Uses the Perlmutter-specific variant which
-# has its own TODO(collab) account/queue knobs — edit that file separately.
+# has its own account/queue header — baked in via scripts/perlmutter/README.md §2.
 # -----------------------------------------------------------------------------
 XVERIFY_JOBID=""
 if [[ -z "${XVERIFY_URL:-}" ]]; then

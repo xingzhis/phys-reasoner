@@ -87,21 +87,25 @@ APT python3 scripts/fetch_dataset.py --repo-id xingzhi0/phys-cot --out-dir data/
 bash scripts/perlmutter/bootstrap.sh
 ```
 
-## 2. Fill cluster-specific TODOs
+## 2. Perlmutter canonical SLURM config (resolved 2026-04-20)
 
-Only three things are cluster-specific — data paths are already baked into the sbatch files.
+The working values below are baked into every `scripts/perlmutter/*.sbatch`. Use these exact values on Perlmutter under the `m2651` allocation — all future job submissions from this repo should match this block.
 
-```bash
-grep -n 'TODO(collab)' scripts/perlmutter/*.sbatch
-```
-
-| Field | What to change | Where |
+| Field | Value | Rationale |
 |---|---|---|
-| `#SBATCH -A` | Replace `TODO_ACCOUNT_g` with your NERSC GPU account (e.g. `m1234_g`) | Every `#SBATCH -A` line in every sbatch |
-| `#SBATCH -C` | `-C gpu` = A100-40G (default). For 80G use `-C 'gpu&a100_80gb'` (confirm feature name on your cluster) | Every het-group and companion script |
-| `#SBATCH -q` | `-q regular` is the 48h default. For xVerify: `-q shared` with `--gpus-per-task=1` if your cluster supports fractional allocation, otherwise use the `*_companion.sbatch` variants | xVerify group in `prod_tir_het.sbatch` / `smoke_tir_het.sbatch` / `prod_cot_het.sbatch` |
+| `#SBATCH -A` | `m2651` | Project allocation granted to this collaboration |
+| `#SBATCH -C` | `gpu&hbm80g` | A100-80G only; `gpu` alone would accept 40G nodes which run OOM on 4B Qwen3-Thinking |
+| `#SBATCH -q` | `premium` (all three het-groups) | `m2651` does not have access to `-q shared`, so the xverify group reserves a whole 4×A100 node for a 1-GPU workload — see "xverify GPU waste" below |
+| `#SBATCH -t` | `04:00:00` for smokes; up to `24:00:00` for prod | premium QoS wall-time cap |
+| Topology | 1 trainer node × 4 GPU + 5 rollout nodes × 4 GPU + 1 xverify node × 1 GPU | Matches `FullyAsyncTrainer` placement; see `scripts/perlmutter/_ray_bringup.sh` |
 
-Fastest path: run `sed -i 's/TODO_ACCOUNT_g/<your-account>_g/g' scripts/perlmutter/*.sbatch`, then decide on GPU class (40G or 80G) and QoS policy.
+Adjusting to a different Perlmutter allocation: replace `m2651` globally with `sed -i 's/m2651/<new-account>/g' scripts/perlmutter/*.sbatch`. Constraint and queue are cluster-policy-dependent — verify with `sacctmgr show assoc user=$USER` before changing.
+
+### xverify GPU waste
+
+The xverify het-group requests `--gpus-per-task=1` but under `-q premium` Perlmutter reserves the entire 4×A100 node, wasting 3 A100s per run. Two mitigation paths, neither applied yet:
+- **`-q shared` queue** — cleanest, but `m2651` lacks access (confirmed 2026-04-20). Requires allocation-level change.
+- **Co-locate xverify on a rollout node** — technically possible (take 1 GPU from 1 of 5 rollout nodes, run the xverify HTTP server there on a pinned `CUDA_VISIBLE_DEVICES`). Requires non-uniform Ray placement groups (verl assumes homogeneous nodes), coordinating CUDA device masks per worker, and HTTP-port coordination. Moderate debugging cost — 1–2 days to stabilize.
 
 ## 3. Flow
 

@@ -11,10 +11,10 @@
 #SBATCH --output=logs/%x_%j.log
 #SBATCH --error=logs/%x_%j.err
 
-# TODO(collab): fill — same as prod_tir_companion.sbatch
-#SBATCH -A TODO_ACCOUNT_g
-#SBATCH -C gpu
-#SBATCH -q regular
+# fill — same as prod_tir_companion.sbatch
+#SBATCH -A m2651
+#SBATCH -C gpu&hbm80g
+#SBATCH -q premium
 #SBATCH -t 04:00:00
 #SBATCH -N 6
 #SBATCH --ntasks-per-node=1
