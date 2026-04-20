@@ -119,10 +119,15 @@ echo "[topology] HEAD=$HEAD_NODE  TRAIN_WORKERS=${TRAIN_WORKER_NODES[*]}  ROLLOU
 (( ${#WORKER_NODES[@]} == 6 )) || echo "WARN: expected 6 rollout workers, got ${#WORKER_NODES[@]}"
 
 # ---- launch xVerify ----
-rm -f "$ROOT/outputs/xverify_endpoints/current.url"
-echo "[xverify] launching on $XVERIFY_NODE ..."
+# Per-JOBID URL file so parallel prod runs (TIR + CoT) don't race on
+# outputs/xverify_endpoints/current.url and end up cross-wired.
+URL_FILE="$ROOT/outputs/xverify_endpoints/${SLURM_JOB_ID}.url"
+export URL_FILE
+rm -f "$URL_FILE"
+echo "[xverify] launching on $XVERIFY_NODE (URL_FILE=$URL_FILE) ..."
 srun --het-group=2 --nodes=1 --ntasks=1 \
      --output="logs/%x_%j.xverify.log" \
+     --export=ALL,URL_FILE="$URL_FILE" \
      bash "$ROOT/scripts/serve_xverify.sh" &
 XVERIFY_PID=$!
 
@@ -144,8 +149,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# ---- xVerify URL rendezvous ----
-URL_FILE="$ROOT/outputs/xverify_endpoints/current.url"
+# ---- xVerify URL rendezvous (per-JOBID URL_FILE set above) ----
 XVERIFY_WAIT_SECS="${XVERIFY_WAIT_SECS:-900}"
 deadline=$(( $(date +%s) + XVERIFY_WAIT_SECS ))
 while (( $(date +%s) < deadline )); do

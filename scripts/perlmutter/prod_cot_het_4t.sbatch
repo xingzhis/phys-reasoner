@@ -95,10 +95,15 @@ export HEAD_NODE TRAIN_WORKER_NODES WORKER_NODES XVERIFY_NODE
 echo "[topology] HEAD=$HEAD_NODE  TRAIN_WORKERS=${TRAIN_WORKER_NODES[*]}  ROLLOUT=${WORKER_NODES[*]}"
 
 # ---- launch xVerify ----
-rm -f "$ROOT/outputs/xverify_endpoints/current.url"
-echo "[xverify] launching on $XVERIFY_NODE ..."
+# Per-JOBID URL file so parallel prod runs (TIR + CoT) don't race on the
+# shared rendezvous path. See scripts/serve_xverify.sh for the env contract.
+URL_FILE="$ROOT/outputs/xverify_endpoints/${SLURM_JOB_ID}.url"
+export URL_FILE
+rm -f "$URL_FILE"
+echo "[xverify] launching on $XVERIFY_NODE (URL_FILE=$URL_FILE) ..."
 srun --het-group=2 --nodes=1 --ntasks=1 \
      --output="logs/%x_%j.xverify.log" \
+     --export=ALL,URL_FILE="$URL_FILE" \
      bash "$ROOT/scripts/serve_xverify.sh" &
 XVERIFY_PID=$!
 
@@ -119,7 +124,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-URL_FILE="$ROOT/outputs/xverify_endpoints/current.url"
+# URL_FILE (per-JOBID) was set above before launching xVerify.
 XVERIFY_WAIT_SECS="${XVERIFY_WAIT_SECS:-900}"
 deadline=$(( $(date +%s) + XVERIFY_WAIT_SECS ))
 while (( $(date +%s) < deadline )); do
