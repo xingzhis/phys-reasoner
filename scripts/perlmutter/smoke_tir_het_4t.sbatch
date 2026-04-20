@@ -7,14 +7,14 @@
 #
 # Topology:
 #   het-group 0  TRAINER   4 nodes × 4 A100   Ray head + 3 trainer workers (FSDP-16)
-#   het-group 1  ROLLOUT   6 nodes × 4 A100   (at 4T update ~2.5-3 min → rollout
-#                                              must produce 1024 traj in ≤6 min
-#                                              staleness window; 3R takes ~13.5
-#                                              min at prod budget → insufficient)
+#   het-group 1  ROLLOUT   8 nodes × 4 A100   safety margin for 4T step rate
+#                                             (6R minimum to keep up, 8R for tail
+#                                             latency margin)
 #   het-group 2  XVERIFY   1 × 1 A100
 #
-# Total: 11 compute nodes + 1 xverify node. The bigger rollout pool is driven
-# by 4T trainer speed, NOT by reaching prod budget alone.
+# Total: 13 compute nodes + 1 xverify node. Budget-expanded per user direction;
+# prior 2T+3R smoke showed 2T+offload=True only 1.08× faster than 1T, insufficient
+# to fit 3 epochs in 48h. This smoke tests FSDP-16 + offload=False together.
 #
 # Expected risks not yet observed:
 #   - FSDP-16 cross-node all-reduce scaling on Slingshot is unknown. Beyond
@@ -41,12 +41,15 @@
 #SBATCH --gpus-per-node=4
 
 #SBATCH hetjob
-# --- het-group 1: ROLLOUT (6 × 4 GPU — scaled to match faster trainer) ---
+# --- het-group 1: ROLLOUT (8 × 4 GPU — scaled for aggressive trainer step rate) ---
+# At 4T+offload=False, projected step time drops toward ~3 min. Rollout must
+# produce 1024 trajectories inside the ~6 min staleness window; 6R covers ~4
+# min, 8R gives ~2× safety margin for tail-latency robustness.
 #SBATCH -A m2651
 #SBATCH -C gpu&hbm80g
 #SBATCH -q premium
 #SBATCH -t 04:00:00
-#SBATCH -N 6
+#SBATCH -N 8
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=32
 #SBATCH --gpus-per-node=4
