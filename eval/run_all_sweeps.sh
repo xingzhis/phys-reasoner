@@ -28,7 +28,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 LOGDIR="$ROOT/logs"
 mkdir -p "$LOGDIR"
 
-MODEL="${MODEL:-Qwen/Qwen3.5-4B}"
+MODEL="${MODEL:-Qwen/Qwen3-4B-Thinking-2507}"
 MODEL_SLUG="$(printf %s "$MODEL" | tr '/' '-' | tr -c '[:alnum:]._-' _)"
 SUMMARY_FILE="$LOGDIR/all_sweeps_summary.txt"
 : > "$SUMMARY_FILE"

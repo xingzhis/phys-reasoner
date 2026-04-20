@@ -40,7 +40,7 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 TAG="${TAG:-$(date +%Y%m%d.%H%M%S)}"
 
-MODEL="${MODEL:-Qwen/Qwen3.5-4B}"
+MODEL="${MODEL:-Qwen/Qwen3-4B-Thinking-2507}"
 MODE="${MODE:-tir}"
 N_ROLLOUTS="${N_ROLLOUTS:-1}"
 GPU_MEM="${GPU_MEM:-0.7}"
@@ -66,14 +66,23 @@ esac
 export TEMPERATURE TOP_P TOP_K REPETITION_PENALTY
 
 # All benchmarks. Order: smallest first so any pipeline issues surface cheap.
-# scibench(153) < physics(191) < ugphysics(217) < olympiad(236) < drsci(503)
-BENCHMARKS=(
-    pool_v2_scibench
-    pool_v2_physics
-    pool_v2_ugphysics
-    olympiad_oe_to_physics
-    pool_v2_drsci
-)
+# scibench(153) < physics(191) < ugphysics(217) < olympiad(236) < abench_phy_a(400)
+# ≤ abench_phy_b(400) < drsci(503) < phybench(1000).
+#
+# Override via BENCHMARKS env (comma-separated list of registered benchmark names
+# from run_eval.py). Used by run_external_sweeps.sh to target only the external
+# benchmarks in a separate pass.
+if [ -n "${BENCHMARKS:-}" ]; then
+    IFS=',' read -ra BENCHMARKS <<< "$BENCHMARKS"
+else
+    BENCHMARKS=(
+        pool_v2_scibench
+        pool_v2_physics
+        pool_v2_ugphysics
+        olympiad_oe_to_physics
+        pool_v2_drsci
+    )
+fi
 LOGDIR="$ROOT/logs"
 mkdir -p "$LOGDIR"
 
