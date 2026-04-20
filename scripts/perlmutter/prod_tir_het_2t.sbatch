@@ -1,64 +1,65 @@
 #!/bin/bash
-# prod_tir_het.sbatch — Production GRPO on Perlmutter, 3-group heterogeneous job.
+# prod_tir_het_2t.sbatch — Production GRPO on Perlmutter (Phase-4 multi-trainer).
 #
 # Topology (dies together; any preemption tears the whole job down):
-#   het-group 0  TRAINER   1 node × 4 A100   Ray head + FSDP actor/ref
-#   het-group 1  ROLLOUT   5 nodes × 4 A100  Ray workers + vLLM engines
-#   het-group 2  XVERIFY   1 × 1 A100       reward server (shared-QoS)
+#   het-group 0  TRAINER   2 nodes × 4 A100   Ray head + trainer worker, FSDP-8
+#   het-group 1  ROLLOUT   3 nodes × 4 A100   Ray workers + vLLM engines (TP=4)
+#   het-group 2  XVERIFY   1 × 1 A100        reward server
+#
+# Uses the same knobs as prod_tir_het.sbatch but with trainer scaled to 2 nodes
+# (FSDP-8). See .claude/handoff/plan-multi-trainer-node.md and FINDINGS §12
+# Tier-A lever #2 (estimated 1.7–1.9× trainer speedup vs FSDP-4).
+#
+# Rollout default is 3 nodes (matches smoke_tir_het measured-adequate config at
+# prod budget). If 2T update_actor drops below rollout wall-clock, bump to 6 by
+# editing `-N 3` → `-N 6` in het-group-1 below (no other changes needed).
+#
+# First submission policy (per plan-multi-trainer-node.md): keep
+# ACTOR_OPT_OFFLOAD=True for the first FSDP-8 run; flip to False once memory
+# headroom is confirmed (potential extra 1.2–1.4× via FINDINGS Tier-B #9).
 #
 # Submit:
-#   sbatch scripts/perlmutter/prod_tir_het.sbatch
-# Resume (same EXPERIMENT → verl auto-resumes from latest checkpoint):
-#   sbatch --export=ALL,EXPERIMENT=<prev> scripts/perlmutter/prod_tir_het.sbatch
+#   sbatch scripts/perlmutter/prod_tir_het_2t.sbatch
+# Resume (same EXPERIMENT → verl auto-resumes):
+#   sbatch --export=ALL,EXPERIMENT=<prev> scripts/perlmutter/prod_tir_het_2t.sbatch
 #
-# Perlmutter canonical config is baked in (see scripts/perlmutter/README.md §2).
-# Resolved 2026-04-20 for allocation m2651.
+# Rollback: the single-trainer-node variant prod_tir_het.sbatch is untouched.
 
-#SBATCH --job-name=physcode_prod_tir_het
+#SBATCH --job-name=physcode_prod_tir_het_2t
 #SBATCH --output=logs/%x_%j.log
 #SBATCH --error=logs/%x_%j.err
 
 # =============================================================================
-# HET-GROUP 0: TRAINER (Ray head) — 1 node × 4 GPU
+# HET-GROUP 0: TRAINER (Ray head + 1 trainer worker) — 2 nodes × 4 GPU (FSDP-8)
 # =============================================================================
-# NERSC project account with GPU allocation, e.g. m1234_g
 #SBATCH -A m2651
-# -C gpu = A100-40G. For 80G: -C 'gpu&a100_80gb' (confirm exact feature name).
 #SBATCH -C gpu&hbm80g
-# 'regular' (48h cap) | 'premium' (faster, 2x cost) — confirm budget policy.
 #SBATCH -q premium
 #SBATCH -t 48:00:00
-#SBATCH -N 1
+#SBATCH -N 2
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=32
 #SBATCH --gpus-per-node=4
 
 #SBATCH hetjob
 # =============================================================================
-# HET-GROUP 1: ROLLOUT (Ray workers) — 5 nodes × 4 GPU
+# HET-GROUP 1: ROLLOUT — 3 nodes × 4 GPU (bump to 6 if rollout becomes bottleneck)
 # =============================================================================
-# same account as group 0
 #SBATCH -A m2651
-# match group 0 GPU class (both 40G or both 80G; mixing is fine in theory but untested)
 #SBATCH -C gpu&hbm80g
 #SBATCH -q premium
 #SBATCH -t 48:00:00
-#SBATCH -N 5
+#SBATCH -N 3
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=32
 #SBATCH --gpus-per-node=4
 
 #SBATCH hetjob
 # =============================================================================
-# HET-GROUP 2: XVERIFY (reward server) — 1 × 1 GPU (shared QoS)
+# HET-GROUP 2: XVERIFY — 1 × 1 GPU (reserves a whole 4×A100 on m2651)
 # =============================================================================
-# same account
 #SBATCH -A m2651
-# 7B fits on 40G; either class fine
 #SBATCH -C gpu&hbm80g
-# Perlmutter shared-GPU QoS. NERSC typically supports '-q shared' with
-#               --gpus-per-task=1 for fractional-node allocation. CONFIRM before submit —
-#               if not available, use the companion variant (prod_tir_companion.sbatch).
 #SBATCH -q premium
 #SBATCH -t 48:00:00
 #SBATCH -N 1
@@ -77,9 +78,9 @@ source "$ROOT/env.sh"
 [[ -f "$SIF" ]]     || { echo "ERROR: SIF not found: $SIF" >&2; exit 1; }
 [[ -f "$OVERLAY" ]] || { echo "ERROR: OVERLAY not found: $OVERLAY" >&2; exit 1; }
 
-echo "=== prod_tir_het.sbatch ==="
+echo "=== prod_tir_het_2t.sbatch ==="
 echo "  Job       : $SLURM_JOB_ID"
-echo "  Trainer   : $SLURM_JOB_NODELIST_HET_GROUP_0"
+echo "  Trainer   : $SLURM_JOB_NODELIST_HET_GROUP_0  (FSDP-8)"
 echo "  Rollout   : $SLURM_JOB_NODELIST_HET_GROUP_1"
 echo "  xVerify   : $SLURM_JOB_NODELIST_HET_GROUP_2"
 echo "  SIF       : $SIF"
@@ -87,7 +88,7 @@ echo "  OVERLAY   : $OVERLAY"
 echo "  HF_HOME   : $HF_HOME"
 
 # -----------------------------------------------------------------------------
-# Apptainer prefix used everywhere.
+# Apptainer prefix.
 # -----------------------------------------------------------------------------
 APT_CMD=(
     apptainer exec --nv
@@ -105,31 +106,33 @@ APT_CMD=(
     --env "MPLCONFIGDIR=/tmp/.cache/matplotlib"
     --env "PHYS_REQUIRE_XVERIFY=1"
     --env "PYTORCH_ALLOC_CONF=expandable_segments:True"
-    # NCCL tuning for Perlmutter Slingshot. See smoke_tir_het.sbatch for rationale.
-    # NCCL_NVLS_ENABLE REMOVED 2026-04-20 (A100 has NVLink Bridge not NVSwitch).
+    # NCCL tuning for Perlmutter Slingshot. Cross-node FSDP-8 adds inter-node
+    # all-reduce; NCCL_IB_TIMEOUT=32 is the current value; raise to 64 only if
+    # timeouts appear during trainer-to-trainer NCCL init.
     --env "NCCL_IB_TIMEOUT=32"
     --env "NCCL_IBEXT_DISABLE=1"
     --env "TORCH_NCCL_ENABLE_MONITORING=0"
-    # vLLM's custom all-reduce disabled at verl config layer via
-    # engine_kwargs.vllm.disable_custom_all_reduce=True in train_async.sh
-    # (Perlmutter A100 `custom_all_reduce.cuh:455 'invalid argument'` fix).
+    # vLLM's custom all-reduce disabled via verl config (train_async.sh).
     "$SIF"
 )
 export APT_CMD
 
 # -----------------------------------------------------------------------------
-# Resolve node roles from het-group env vars.
+# Resolve node roles. Trainer het-group splits into HEAD (Ray head) + WORKERS.
 # -----------------------------------------------------------------------------
-HEAD_NODE=$(scontrol show hostnames "$SLURM_JOB_NODELIST_HET_GROUP_0" | head -n1)
+TRAIN_NODES=( $(scontrol show hostnames "$SLURM_JOB_NODELIST_HET_GROUP_0") )
+HEAD_NODE="${TRAIN_NODES[0]}"
+TRAIN_WORKER_NODES=( "${TRAIN_NODES[@]:1}" )
 WORKER_NODES=( $(scontrol show hostnames "$SLURM_JOB_NODELIST_HET_GROUP_1") )
 XVERIFY_NODE=$(scontrol show hostnames "$SLURM_JOB_NODELIST_HET_GROUP_2" | head -n1)
-export HEAD_NODE WORKER_NODES XVERIFY_NODE
+export HEAD_NODE TRAIN_WORKER_NODES WORKER_NODES XVERIFY_NODE
 
-(( ${#WORKER_NODES[@]} == 5 )) || echo "WARN: expected 5 rollout workers, got ${#WORKER_NODES[@]}"
+echo "[topology] HEAD=$HEAD_NODE  TRAIN_WORKERS=${TRAIN_WORKER_NODES[*]}  ROLLOUT=${WORKER_NODES[*]}"
+(( ${#TRAIN_WORKER_NODES[@]} == 1 )) || echo "WARN: expected 1 trainer worker, got ${#TRAIN_WORKER_NODES[@]}"
+(( ${#WORKER_NODES[@]} == 3 )) || echo "WARN: expected 3 rollout workers, got ${#WORKER_NODES[@]}"
 
 # -----------------------------------------------------------------------------
-# Launch xVerify in het-group 2.
-# Writes rendezvous URL to outputs/xverify_endpoints/current.url.
+# Launch xVerify.
 # -----------------------------------------------------------------------------
 rm -f "$ROOT/outputs/xverify_endpoints/current.url"
 echo "[xverify] launching on $XVERIFY_NODE ..."
@@ -139,23 +142,16 @@ srun --het-group=2 --nodes=1 --ntasks=1 \
 XVERIFY_PID=$!
 
 # -----------------------------------------------------------------------------
-# Ray cluster bring-up (trainer = head, rollout = workers).
-# These defaults MUST match the #SBATCH --gpus-per-node / -N directives above —
-# if you override one via --export=ALL,N_GPUS_ROLLOUT=2 you must ALSO edit the
-# SBATCH header, otherwise Ray sees a different GPU count than Slurm allocated.
+# Ray cluster bring-up (FSDP-8 trainer pool + rollout workers).
 # -----------------------------------------------------------------------------
 export N_GPUS_TRAIN="${N_GPUS_TRAIN:-4}"
 export N_GPUS_ROLLOUT="${N_GPUS_ROLLOUT:-4}"
-export NNODES_TRAIN="${NNODES_TRAIN:-1}"
-export NNODES_ROLLOUT="${NNODES_ROLLOUT:-5}"
+export NNODES_TRAIN="${NNODES_TRAIN:-2}"
+export NNODES_ROLLOUT="${NNODES_ROLLOUT:-3}"
 export HET_SRUN_HEAD="--het-group=0"
 export HET_SRUN_WORKER="--het-group=1"
 source "$ROOT/scripts/perlmutter/_ray_bringup.sh"
 
-# -----------------------------------------------------------------------------
-# Cleanup trap. Guarded — ray_teardown is only defined by _ray_bringup.sh after
-# a successful source; if bring-up failed early this trap fires with it undefined.
-# -----------------------------------------------------------------------------
 cleanup() {
     local rc=$?
     echo "[cleanup] exit=$rc — tearing down Ray + xVerify"
@@ -166,11 +162,9 @@ cleanup() {
 trap cleanup EXIT
 
 # -----------------------------------------------------------------------------
-# Poll for xVerify URL (server takes ~1-3 min to load the 7B model).
+# Poll for xVerify URL.
 # -----------------------------------------------------------------------------
 URL_FILE="$ROOT/outputs/xverify_endpoints/current.url"
-# 900s covers cold HF cache + xVerify-7B load on a fresh node; het-group 2 starts
-# simultaneously with the others so there's no queue time to absorb.
 XVERIFY_WAIT_SECS="${XVERIFY_WAIT_SECS:-900}"
 echo "[xverify] polling $URL_FILE (timeout ${XVERIFY_WAIT_SECS}s) ..."
 deadline=$(( $(date +%s) + XVERIFY_WAIT_SECS ))
@@ -180,7 +174,6 @@ while (( $(date +%s) < deadline )); do
 done
 [[ -z "${XVERIFY_URL:-}" ]] && { echo "ERROR: xverify did not come up" >&2; exit 1; }
 echo "[xverify] URL = $XVERIFY_URL"
-# Health check — fail loudly if reachable but not ready.
 health_url="${XVERIFY_URL%/judge}/health"
 hc_deadline=$(( $(date +%s) + 300 ))
 while (( $(date +%s) < hc_deadline )); do
@@ -190,58 +183,48 @@ done
 export XVERIFY_URL
 
 # -----------------------------------------------------------------------------
-# Production knobs — override via sbatch --export=ALL,KEY=VAL to tweak.
-# N_GPUS_* / NNODES_* are already exported above (before Ray bring-up) so that
-# both Ray and verl see the same values; do NOT re-assign them here.
+# Production knobs. Same defaults as prod_tir_het.sbatch.
 # -----------------------------------------------------------------------------
 export MODEL="${MODEL:-Qwen/Qwen3-4B-Thinking-2507}"
 
-export TRAIN_BATCH="${TRAIN_BATCH:-128}"            # ppo_mini_batch_size
-export ROLLOUT_N="${ROLLOUT_N:-8}"                  # GRPO group size
-# ~3 epochs over the 23,589-row filtered pool: 23589 / 128 ≈ 184 steps/epoch × 3.
-# Raise ceiling via --export=ALL,TOTAL_STEPS=... if you want more epochs.
+export TRAIN_BATCH="${TRAIN_BATCH:-128}"
+export ROLLOUT_N="${ROLLOUT_N:-8}"
+# 3 epochs over 23,589-row filtered pool: 23589 / 128 ≈ 184 steps/epoch × 3.
 export TOTAL_STEPS="${TOTAL_STEPS:-552}"
-export SAVE_FREQ="${SAVE_FREQ:-50}"                 # ~11 checkpoints at 552 steps
-export TEST_FREQ="${TEST_FREQ:-50}"                 # aligned with save cadence
+export SAVE_FREQ="${SAVE_FREQ:-50}"
+export TEST_FREQ="${TEST_FREQ:-50}"
 
-# Sequence budgets — think-interrupt enabled. Total MAX_RESPONSE_LEN computed
-# in train_async.sh as THINKING + 16 + TOOL_CALL + 1024 + ANSWER = 19,472.
+# Prod sequence budgets — think-interrupt enabled. MAX_RESPONSE_LEN = 19,472.
 export THINKING_BUDGET="${THINKING_BUDGET:-12288}"
 export TOOL_CALL_BUDGET="${TOOL_CALL_BUDGET:-2048}"
 export ANSWER_BUDGET="${ANSWER_BUDGET:-4096}"
 
-# vLLM memory util. Rollout GPU dedicated → safe at 0.85; bump to 0.90 on 80G.
 export VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-0.85}"
-
-# Trainer memory. Use dynamic batch sizing (see Q10 in checklist.md).
-# PPO_MICRO_BS_PER_GPU is ignored when USE_DYNAMIC_BSZ=1 below.
-# 20480 = max_prompt(1024) + max_response(19472) packed per GPU; matches
-# what smoke A/B measured stable. Bump to 24576 only with spare memory headroom.
 export USE_DYNAMIC_BSZ="${USE_DYNAMIC_BSZ:-1}"
 export PPO_MAX_TOKEN_LEN_PER_GPU="${PPO_MAX_TOKEN_LEN_PER_GPU:-20480}"
+
+# ACTOR_OPT_OFFLOAD policy for Phase-4:
+#   - First FSDP-8 run: keep True (memory-safe baseline, same as 1T prod).
+#   - Once green: flip to False via --export for the full Tier-A #2 speedup
+#     (combined 1T offload-on → 2T offload-off = ~1.8-2.5× trainer).
 export ACTOR_OPT_OFFLOAD="${ACTOR_OPT_OFFLOAD:-True}"
 
-# Qwen3-switch knobs (unblocked by moving off Qwen3.5 GDN):
-#   TRAIN_SP=2 → Ulysses sequence parallelism, 2-way split across trainer GPUs.
-#   STALENESS=1 → rollout of step t+1 overlaps trainer update of step t
-#                 (~40% wall savings at prod budget per smoke B measurement).
+# Qwen3 knobs (unchanged from 1T prod). TRAIN_SP=2 at FSDP-8 leaves 4-way DP.
+# Could try SP=4 (DP=2) later but stick with known-good SP=2 on first 2T prod.
 export TRAIN_SP="${TRAIN_SP:-2}"
 export STALENESS="${STALENESS:-1}"
 
-# Data defaults resolve to the local HF-download path (fetch_dataset.py output).
 export TRAIN_FILES="${TRAIN_FILES:-$ROOT/data/processed_tir/data/train.parquet}"
 export VAL_FILES="${VAL_FILES:-$ROOT/data/processed_tir/data/validation.parquet}"
 
-# Logging.
 export WANDB_PROJECT="${WANDB_PROJECT:-physcode_tir}"
 export LOGGERS="${LOGGERS:-console,wandb}"
-export EXPERIMENT="${EXPERIMENT:-grpo_tir_$(date +%Y%m%d.%H%M%S)}"
+export EXPERIMENT="${EXPERIMENT:-grpo_tir_2t_$(date +%Y%m%d.%H%M%S)}"
 
 # -----------------------------------------------------------------------------
-# Launch driver on trainer node. --overlap shares the HEAD task slot with the
-# backgrounded `ray start --head --block` srun.
+# Launch driver on trainer head. FSDP-8 spans HEAD + TRAIN_WORKER_NODES.
 # -----------------------------------------------------------------------------
-echo "[driver] launching train_async.sh on $HEAD_NODE (EXPERIMENT=$EXPERIMENT)"
+echo "[driver] launching train_async.sh on $HEAD_NODE (EXPERIMENT=$EXPERIMENT, FSDP=$((NNODES_TRAIN*N_GPUS_TRAIN)))"
 srun --overlap --het-group=0 --nodes=1 --ntasks=1 -w "$HEAD_NODE" \
      bash "$ROOT/scripts/train_async.sh"
 DRIVER_EXIT=$?
