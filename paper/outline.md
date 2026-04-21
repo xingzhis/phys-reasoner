@@ -1,19 +1,19 @@
 # Outline — PhysCode, ICML 2026 AI4Physics workshop
 
-**Status:** v0 — first pass, awaiting review
+**Status:** v1 — reframed around tool-use miscalibration finding (Apr 19)
 **Page budget:** 8 pages ICML 2-column (references excluded)
 
 ---
 
-## Thesis (one sentence)
+## Thesis (one sentence, locked)
 
-Training Qwen3.5-4B with single-block tool-integrated RLVR on ~108k physics problems yields higher accuracy on a suite of physics benchmarks than a strict CoT-GRPO baseline matched in data, training budget, and reward stack, with gains concentrated on expression-type answers and harder problems.
+Zero-shot tool use on a reasoning-tuned base (Qwen3-4B-Thinking-2507) is miscalibrated: tools are invoked on problems where they hurt and skipped on problems where they would help. We show that tool-integrated RLVR recalibrates this decision, lifting call-conditional pass rates and outperforming a strict CoT-GRPO baseline matched in data, training budget, and reward stack — with gains concentrated on expression-type answers where zero-shot triage is worst.
 
 ## Contributions (3, in priority order)
 
-1. **Empirical.** First controlled TIR-GRPO vs. CoT-GRPO comparison for physics at RL training level, across five physics benchmarks. Matched data, steps, reward.
-2. **Behavioral.** Per-answer-type decomposition showing where TIR gains concentrate (expression-type, hard problems) and where it does not (equation derivation remains open).
-3. **Recipe.** Single-block TIR with ScaleRL-style think-interrupt implemented inside VeRL for Qwen3.5 hybrid attention, plus the Dr.GRPO + DAPO-lite training configuration that made it stable. Reproducible artifact.
+1. **Empirical finding.** Base-model tool use is miscalibrated zero-shot (quantified by call-conditional vs. skip-conditional pass@1 across five physics benchmarks and six answer types); TIR-GRPO recalibrates it.
+2. **Controlled comparison.** First apples-to-apples TIR-GRPO vs. CoT-GRPO at matched RL training budget on physics, across five benchmarks. Per-type decomposition identifies where tool use helps (expression, numerical-on-hard) and where it doesn't (short numerical, pure-reasoning equation derivation).
+3. **Recipe.** Single-block TIR with ScaleRL-style think-interrupt inside VeRL for Qwen3-Thinking, plus the Dr.GRPO + DAPO-lite training config that made it stable. Reproducible artifact.
 
 ---
 
@@ -22,162 +22,172 @@ Training Qwen3.5-4B with single-block tool-integrated RLVR on ~108k physics prob
 | § | Pages | Net content |
 |---|---|---|
 | Abstract | — | ~180 words |
-| 1. Introduction | 1.0 | Motivation → problem → approach → contributions; Figure 1 hero. |
+| 1. Introduction | 1.0 | Miscalibration hook → RL as recalibration → contributions; Figure 1 hero. |
 | 2. Related Work | 0.5 | RL for reasoning, TIR, physics benchmarks, verifiers. |
-| 3. Method | 1.75 | Trajectory, rollout mechanism, training algorithm. Figure 2. |
+| 3. Method | 1.5 | Trajectory (conceptual), rollout mechanism, training algorithm. Figure 2. Details → appendix. |
 | 4. Experimental Setup | 1.0 | Data, benchmarks, baselines, metrics, training config. |
-| 5. Results | 2.25 | Main benchmark table + per-type + output characterization + truncation. |
-| 6. Analysis | 0.75 | Solution-strategy qualitative + failure modes. |
+| 5. Results | 2.5 | Zero-shot miscalibration table + main table + per-type + call-rate-shift + output characterization. |
+| 6. Analysis | 0.75 | Qualitative strategies + failure modes. |
 | 7. Discussion | 0.5 | Scope, limitations, reward-noise hypothesis as future work. |
 | 8. Conclusion | 0.25 | — |
 | — | **8.0** | — |
 | References | — | On overflow page. |
-| Appendix | — | Hyperparameters, ablations, extended prompts, failure examples. |
+| Appendix | — | Format specs, hyperparameters, ablations, extended prompts, failure examples. |
 
-Pressure valve: if tight, collapse Analysis into Results; cut Related Work to ~0.4.
+Pressure valve: collapse Analysis into Results; cut Related Work to ~0.4; drop Figure 2 if tight.
 
 ---
 
 ## §1 Introduction — beats
 
-- **Hook:** Physics problems stress symbolic verifiers in ways that pure-math tasks do not — mixed answer types (equations, expressions with units, dimensional prose) make gold-vs-prediction comparison unreliable.
-- **Why RLVR for physics is a story worth telling:** RLVR has driven recent progress in math reasoning (DeepSeek-R1, DAPO, Dr. GRPO, Dr. SCI). Physics lags. Part of the gap is that reliable reward signal on physics is harder to obtain.
-- **What we do:** train Qwen3.5-4B with single-block tool-integrated RLVR, where the model reasons, executes one Python/SymPy block, and returns a final boxed answer. Compared to strict CoT-GRPO.
-- **What we find:** (placeholder numbers) aggregate gain on benchmark suite; gains concentrated on expression and harder problems.
-- **Why it matters for the workshop:** tool-augmented agents is a named direction. Our setup is a concrete, reproducible instance.
+- **Hook:** Strong reasoning-tuned LLMs reach for symbolic-computation tools on ~30–80% of physics problems zero-shot, but on many benchmarks tool calls are as-or-less accurate than skipping the tool. Tool availability ≠ productive tool use.
+- **Why this is a physics RL story:** physics answer types are heterogeneous (numerical, expression, equation, MCQ, interval). Tool usefulness is per-type. RL should teach the model *when* and *how* to use the tool.
+- **What we do:** train Qwen3-4B-Thinking-2507 with single-block tool-integrated RLVR on a curriculum-filtered physics training pool; compare to strict CoT-GRPO at matched budget.
+- **What we find:** (placeholder) call-conditional pass rates rise; overall accuracy improves across benchmarks; gains concentrate on the expression/equation types where zero-shot triage was worst.
+- **Why it matters for the workshop:** tool-augmented agents is a named direction. The miscalibration finding is a concrete instance of a failure mode the CFP names (tool use reliability).
 - **Contribution bullets** (3, as above).
-- **Figure 1** (hero): side-by-side CoT vs TIR trajectory on one example problem with annotation.
+- **Figure 1** (hero): three-panel sketch — (a) a representative problem where base calls tool and gets it wrong, (b) the same problem where base skips and gets it right, (c) TIR-GRPO correctly triages. Or a single "call-path vs skip-path pass@1" bar chart across benchmarks, zero-shot.
 
 ## §2 Related Work — beats
 
-**Target length:** 0.5 page. Four short paragraphs, ~3-5 citations each.
+**Target length:** 0.5 page. Four short paragraphs, ~3–5 citations each.
 
-- **RL for reasoning with verifiable rewards.** DeepSeek-R1, GRPO, DAPO, Dr. GRPO, Dr. SCI. One sentence on each; emphasize that most work is on math or code, with physics under-studied.
-- **Tool-integrated reasoning.** ToRA, MathCoder, SimpleTIR, GTPO, NeMo TIR. Note: most are SFT + inference-time tool use; few do RL with tool integration in the rollout. Ours is single-block TIR at RL training time.
-- **Physics reasoning benchmarks.** UGPhysics, PHYBench, OlympiadBench, SciBench, PhysReason, Dr. SCI corpus. One line on each; note limited RL training work on these datasets.
-- **Verification for open-ended answers.** math-verify, xVerify, rule-based symbolic checkers. Frame: we use rule + xVerify as the reward stack; this is standard, not our contribution.
+- **RL for reasoning with verifiable rewards.** DeepSeek-R1, GRPO (DeepSeekMath), DAPO, Dr. GRPO, Dr. SCI. One sentence on each; emphasize math/code focus with physics under-studied.
+- **Tool-integrated reasoning.** ToRA, MathCoder, PAL, SimpleTIR, GTPO. Most are SFT + inference-time tool use; few do RL with tool integration in the rollout; none report tool-use calibration dynamics during training on physics.
+- **Physics reasoning benchmarks.** UGPhysics, PHYBench, OlympiadBench, SciBench, Dr. SCI corpus, (PhysReason, PHYSICS). One line each; note limited RL training work on these datasets.
+- **Verification for open-ended answers.** math-verify, xVerify. Frame: we use rule + xVerify as the reward stack; this is tooling, not our contribution.
 
-**Stylistic note:** workshop related-work should be brief and orienting, not exhaustive.
+**Stylistic note:** workshop related-work is brief and orienting, not exhaustive.
 
 ## §3 Method — beats
 
-### 3.1 Single-block TIR trajectory
+### 3.1 Single-block TIR trajectory (conceptual)
 
-- Schema: `<think>reasoning</think> <tool_call>code</tool_call> <tool_response>output</tool_response> <think>interpret</think> \boxed{answer}`
-- Why single-block: execution-budget discipline, token-length control, reproducibility. Multi-block deliberately out of scope.
-- Qwen3.5-4B specifics: `enable_thinking=True` in phase 1 (reasoning leaks into code comments without), `enable_thinking=True` also in phase 2 (matches VeRL's ToolAgentLoop). Brief.
+- Schema: thinking → one tool call → tool output → interpretation → boxed answer. Exact token-level format in appendix.
+- Design choice: single-block for budget discipline, token-length control, reproducibility. Multi-block deliberately out of scope.
+- Base model: Qwen3-4B-Thinking-2507 with `enable_thinking=True` throughout; hermes tool-call format native to the chat template.
 
-### 3.2 Rollout mechanism (think-interrupt + sandbox)
+### 3.2 Rollout mechanism (conceptual)
 
-- Think-interrupt (ScaleRL-style): if model is still inside `<think>` at thinking budget (12288 tokens), inject an interrupt phrase with mask=0 and resume generation for tool call.
-- Sandbox: 30 s timeout, subprocess isolation, import allowlist (SymPy, NumPy, standard library).
-- Format markers: `[code]…[/code]` as stop token; `[output]` as injected continuation marker; `[answer]` format marker only (not a stop token).
-- **Figure 2:** rollout flow diagram.
+- **Think-interrupt** (ScaleRL-style): if thinking budget is exhausted without closing `</think>`, inject a short interrupt phrase with mask=0 and resume generation for the tool call. Prevents runaway reasoning from starving the tool-call phase. Exact phrase and implementation details in appendix.
+- **Sandbox:** subprocess-isolated Python with SymPy + NumPy + stdlib, 30 s timeout.
+- **Figure 2:** rollout flow diagram (4–5 boxes: think → interrupt? → tool → output → interpret → boxed).
 
 ### 3.3 Training algorithm
 
-- Dr. GRPO (no length norm, no std norm) + DAPO-lite (clip-higher, token-mean loss aggregation, overlong-response shaping).
-- KL off (DAPO canonical), so zero-advantage groups contribute exactly zero to the loss.
-- Reward: binary `R_correct` on final `\boxed{}` via rule + xVerify-7B on dedicated GPU. No length penalty in main run (ablated later).
-- One sentence each on why these choices are defensible (refer to papers).
+- Dr. GRPO (no length norm, no std norm) + DAPO-lite (clip-higher, token-mean loss aggregation, overlong shaping). KL off so zero-advantage groups contribute zero to loss.
+- Reward: binary `R_correct` on final boxed answer via rule + xVerify-7B.
+- One sentence each on why these choices are defensible; cite Dr. GRPO and DAPO.
 
 ## §4 Experimental Setup — beats
 
 ### 4.1 Training data
 
-- Dr. SCI clean (~101k rows, Chinese-origin university physics translated) + curated corpus (~6.8k rows from SciBench, UGPhysics, OlympiadBench, PHYBench, PHYSICS).
-- Train/dev/test splits stratified by (answer type × source × difficulty). Details in appendix.
-- Total training pool: ~108k problems, ~2k dev, ~2k test in-domain.
+- **TODO:** lock numbers — difficulty-filtered subset of Dr. SCI + curated corpus (numerical / expression / MCQ / equation / multi-part / interval).
+- Stratified train/dev/test splits.
 
 ### 4.2 Benchmarks
 
-- **In-domain held-out:** Dr. SCI test + corpus test.
-- **External physics:** UGPhysics, PHYBench, OlympiadBench, SciBench (physics subset). These were moved out of training pool to serve as held-out benchmarks.
-- (Stretch) critpt — research-style physics problems. Included only if results arrive in time.
+- **In-distribution test slices (pool_v2):** drsci, physics, ugphysics, scibench. Drawn from the training pool; held out from training via the split.
+- **External physics (held out entirely from training):** OlympiadBench (OE_TO subset), PHYBench, ABench-Phy A, ABench-Phy B. Each judged by the benchmark-provided scorer where available; rule+xVerify elsewhere.
+- (Stretch) critpt — research-style physics problems. Only if eval pipeline finishes in time.
 
 ### 4.3 Baselines and models
 
-- **Base Qwen3.5-4B** (instruct, thinking on): zero-shot reference.
-- **TIR zero-shot Qwen3.5-4B:** single-block TIR prompt, no RL training.
-- **CoT-GRPO (strict):** same VeRL setup, same pool, same steps, same rule+xVerify reward. Only difference: no code tool.
+- **Zero-shot CoT (Qwen3-4B-Thinking-2507):** thinking-on, no tool. Already evaluated.
+- **Zero-shot TIR (Qwen3-4B-Thinking-2507):** thinking-on with tool available. Already evaluated — this is where we observe the miscalibration.
+- **CoT-GRPO (strict baseline):** same VeRL setup, same pool, same steps, same rule+xVerify reward. Only difference: no code tool.
 - **TIR-GRPO (ours):** same as CoT-GRPO + single-block tool rollout.
 
 ### 4.4 Metrics
 
-- Accuracy (pass@1, xVerify-7B as judge) on each benchmark.
-- Per-answer-type accuracy on in-domain test.
-- Truncation rate (% rollouts hitting response cap without a boxed answer).
-- Tool-execution success rate (TIR only).
+- **Pass@1** (xVerify-7B as judge, or benchmark-native scorer when provided).
+- **Call rate** — fraction of rollouts that invoke the tool (TIR only).
+- **Call-conditional pass@1 / skip-conditional pass@1** — headline for §5.
+- **Per-answer-type accuracy** on in-dist test.
+- **Truncation rate** — % rollouts hitting response cap without a boxed answer.
+- **Tool-execution success rate** (TIR only).
 
 ### 4.5 Training config
 
-- 4×A100-80G trainer + 5 A100 rollout nodes, VeRL `fully_async_policy`.
-- `rollout.n=8`, `ppo_mini_batch_size=128`, 1500 steps (≈ 1.8 epochs of the pool).
-- Table with key hyperparameters; full config in appendix.
+- Hardware: 4 A100-80G trainer nodes + 6 A100-80G rollout nodes + 1 xVerify GPU; VeRL `fully_async_policy` with `trigger_parameter_sync_step=1` (staleness-1).
+- `rollout.n=8`, `ppo_mini_batch_size=128`, 1500 steps.
+- Table with key hyperparameters in body; full config in appendix.
 
 ## §5 Results — beats
 
-### 5.1 Main benchmark results (headline)
+### 5.1 Zero-shot miscalibration (setup for the paper)
 
-- **Table 1:** rows = {base, TIR zero-shot, CoT-GRPO, TIR-GRPO}; cols = {in-domain, UGPhysics, PHYBench, OlympiadBench, SciBench, (critpt), macro-avg}.
-- One paragraph interpretation: aggregate gain of TIR-GRPO over CoT-GRPO, consistency across benchmarks.
+- **Table A (new, pre-RL):** per benchmark, {call%, call-conditional pass@1, skip-conditional pass@1, overall pass@1}. One row per benchmark × preset. Highlights the benchmarks where call-path is worse than skip-path.
+- Per-type breakdown for pool_v2_drsci: numerical well-triaged (high call, high call-pass); expression/equation/MCQ under-called with low call-pass.
+- One paragraph interpretation: tool use is already on the menu for this base model, but the decision to call is miscalibrated on most benchmarks.
 
-### 5.2 Per-answer-type decomposition
+### 5.2 Main benchmark results (headline)
 
-- **Table 2:** in-domain accuracy by answer type (numerical, expression, MCQ, equation, multi-part, interval) for {base, CoT-GRPO, TIR-GRPO}. Column for TIR−CoT delta.
-- **Figure 3:** learning curves per answer type (2×2 or 2×3 panel) for CoT-GRPO and TIR-GRPO over training steps on dev set.
-- Interpretation: where the gain concentrates.
+- **Table 1:** rows = {zero-shot CoT, zero-shot TIR, CoT-GRPO, TIR-GRPO}; cols = {pool_v2_drsci, pool_v2_physics, pool_v2_ugphysics, pool_v2_scibench, OlympiadBench, PHYBench (EED), ABench-A, ABench-B per-mid, macro-avg}.
+- TIR-GRPO vs CoT-GRPO delta is the claim-carrying number.
 
-### 5.3 Output characterization
+### 5.3 Recalibration: call rate and call-conditional accuracy shift
 
-- Rule verifier coverage: % of xVerify-correct outputs that rule verifier also accepts, per type, for TIR vs CoT.
+- **Figure 3 (new):** call rate × call-conditional pass@1 scatter, one point per (benchmark × type), before and after RL. Arrows from zero-shot to post-RL show the recalibration direction.
+- Per-type analysis: which types saw call-rate increase, which saw call-path accuracy increase, which saw both.
+
+### 5.4 Per-answer-type decomposition
+
+- **Table 2:** in-dist accuracy by answer type for {zero-shot, CoT-GRPO, TIR-GRPO}. Column for TIR−CoT delta.
+- **Figure 4:** learning curves per answer type (2×3 grid) for CoT-GRPO and TIR-GRPO over training steps on dev.
+
+### 5.5 Output characterization
+
 - Tool-execution success rate across training.
-- Code complexity (lines, SymPy usage) distribution.
+- Code complexity distribution (compact SymPy lines vs scaffolded numerical setup).
+- Note: rule verifier coverage on TIR vs CoT outputs — brief; full table in appendix.
 
-### 5.4 Truncation reduction
+### 5.6 Truncation reduction (optional, cut if space tight)
 
-- **Figure 4:** truncation rate vs training step for TIR and CoT; response length distribution.
-- Target result: TIR uses shorter responses on hard problems, fewer truncated rollouts.
+- **Figure 5:** truncation rate vs step; response-length CDF at final checkpoint.
 
 ## §6 Analysis — beats
 
-- 100–150 sampled outputs per {TIR-GRPO, CoT-GRPO}, labeled by hand.
-- Solution strategy categories (qualitative): direct-compute, unit-conversion scaffolding, multi-step derivation with partial code, error-free single-shot.
+- 100–150 sampled outputs per {TIR-GRPO, CoT-GRPO}, labeled (LLM-assisted first pass + spot check).
+- Solution strategies: direct-compute, unit-conversion scaffolding, multi-step derivation with partial code, error-free single-shot.
 - Failure modes: wrong physics / execution error / correct code but wrong interpretation / truncation.
 - **Table 3:** strategy and failure-mode frequencies by condition.
-- Representative example walkthroughs (2-3 in body, more in appendix).
+- 2–3 example walkthroughs in body.
 
 ## §7 Discussion — beats
 
-- **Scope:** when is TIR necessary vs. sufficient? It works where the solution is *reachable by one computational step*; equation-derivation and geometric-intuition problems are still open.
-- **Limitations:** single-block constraint; dependency on SymPy/NumPy capability; 4B scale; Chinese-origin training data translated to English.
-- **Future work / open hypothesis (one paragraph):** rule verifier coverage on TIR outputs is substantially higher than on CoT outputs; this suggests the RL reward signal may be less noisy for TIR, but isolating the reward-quality effect from problem-difficulty requires a rule-only-vs-rule+xVerify ablation we leave to future work. (This is where the verifier-noise idea lives — honestly framed, not oversold.)
+- **Scope of the recalibration finding:** works where the solution is reachable by one computational step; pure symbolic derivation and geometric-intuition problems show smaller gains.
+- **Limitations:** single-block constraint; SymPy/NumPy dependency; 4B scale; hermes tool-call format; training data source composition.
+- **Future work / open hypothesis:** rule verifier coverage on TIR outputs may be higher than on CoT outputs, consistent with a cleaner reward signal for TIR. Isolating the reward-quality effect from problem difficulty requires a rule-only vs rule+xVerify reward ablation, which we leave to future work. (Park for the verifier-noise idea.)
 
 ## §8 Conclusion — beats
 
-- Restate the single claim.
-- Position: a reproducible recipe + honest evaluation of where tool use helps physics RLVR.
+- Restate the miscalibration + recalibration claim.
+- Position: reproducible recipe + honest evaluation of where tool use helps physics RLVR.
 - One sentence on follow-up direction.
 
 ---
 
 ## Appendix plan (no page limit, but don't inflate)
 
-- A. Hyperparameter tables (training, sampling, reward)
-- B. Data pipeline details (cleaning, splits, stratification)
-- C. Think-interrupt implementation (VeRL patch summary)
-- D. Sandbox details (timeout, resource limits, allowlist)
-- E. Additional benchmark results (per-type per-benchmark)
-- F. Ablations (cost penalty, think-interrupt on/off, 0.8B scaling) — run only if time permits
-- G. Extended failure-mode examples
-- H. Prompt templates
+- A. Training config + hyperparameter tables
+- B. Data pipeline details (cleaning, splits, stratification, filter rules)
+- C. TIR trajectory format, exact token-level markers, think-interrupt phrase
+- D. VeRL think-interrupt patch summary
+- E. Sandbox details (timeout, resource limits, allowlist)
+- F. Per-benchmark × per-type tables (full expansion of Table 2)
+- G. Rule verifier coverage table (TIR vs CoT)
+- H. Extended failure-mode examples
+- I. Prompt templates (TIR system prompt, CoT system prompt, tool schema)
+- J. Ablations if any (cost penalty, think-interrupt on/off, 0.8B) — only if run
 
 ---
 
 ## Open decisions / TODO before prose drafting
 
-- [ ] Confirm exact list of external benchmarks in main Table 1 (stretch: critpt)
-- [ ] Confirm whether CoT-GRPO uses the same thinking budget as TIR-GRPO
-- [ ] Decide whether 0.8B scaling ablation runs (compute-dependent)
-- [ ] Resolve whether "equation-derivation" goes in main body or appendix (data-dependent on how many expression-type problems we actually have)
-- [ ] Pull 2–3 sample workshop papers for style reference → `bibliography/sample-abstracts/`
+- [ ] Lock training data size + composition (user to provide)
+- [ ] Confirm final benchmark list and scorer per benchmark
+- [ ] Paper title + author list + affiliations
+- [ ] Pull 2–3 sample workshop papers → `bibliography/sample-abstracts/`
+- [ ] Decide critpt inclusion (Apr 22 cut-off)

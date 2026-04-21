@@ -1,9 +1,13 @@
 # HANDOFF — paper writing session context
 
-**Created:** 2026-04-19.
+**Created:** 2026-04-19. **Last revised:** 2026-04-19 (v2 — after HPC tool-use-by-type results landed).
 **Purpose:** full, loss-free context dump of the planning discussion so a fresh session can resume paper writing without re-deriving decisions.
 **Branch:** `paper-writing` (this branch). Not merged to main.
 **Main only has:** `docs/tool_use_analysis_handoff.md` (the HPC-side runbook for tool-use analysis).
+
+## Revision log
+
+- **v2 (2026-04-19):** HPC tool-use analysis showed the base model DOES call tool at 31–89% rates. Reframed thesis around "tool-use miscalibration + RL recalibration" rather than the earlier "model ignores tool" story. Updated §4, §7, §8 accordingly. Training infra now 4 train + 6 rollout + 1 xVerify, staleness=1. Training data moved to a difficulty-filtered subset (size TBD).
 
 Read this first. Everything else in `paper/` follows from what's here.
 
@@ -37,19 +41,26 @@ All runs use Dr.GRPO + DAPO-lite configuration per `docs/training-decisions.md`:
 - `actor_rollout_ref.actor.use_kl_loss=False, kl_loss_coef=0.0`
 - `actor_rollout_ref.actor.loss_agg_mode=token-mean`
 - `actor_rollout_ref.actor.clip_ratio_low=0.2, clip_ratio_high=0.28`
-- 4×A100-80G trainer + 5 A100 rollout nodes, `rollout.n=8`, `ppo_mini_batch_size=128`, 1500 steps (~1.8 epochs of the ~108k pool).
-- Reward: binary `R_correct` on final `\boxed{}` via rule + xVerify-7B on a dedicated reward GPU.
+- **Hardware:** 4 A100-80G trainer nodes + 6 A100-80G rollout nodes + 1 xVerify reward GPU.
+- **Async:** VeRL `fully_async_policy` with `trigger_parameter_sync_step=1` (staleness-1).
+- `rollout.n=8`, `ppo_mini_batch_size=128`, 1500 steps.
+- **Training pool:** difficulty-filtered subset of Dr. SCI + curated corpus. **TODO:** lock size and composition from user.
+- Reward: binary `R_correct` on final `\boxed{}` via rule + xVerify-7B on the dedicated reward GPU.
 
-## 4. Thesis — one sentence (locked)
+Infrastructure-level details (staleness, node counts, exact Hydra flags) go to appendix; body only mentions "VeRL async RL with rule+xVerify reward."
 
-> Training Qwen3-4B-Thinking-2507 with single-block tool-integrated RLVR on ~108k physics problems teaches the model *when* to reach for a symbolic-computation tool; against a strict CoT-GRPO baseline matched in data, training budget, and reward stack, accuracy improves across a suite of physics benchmarks with gains concentrated on expression-type answers and harder problems.
+## 4. Thesis — one sentence (locked, v2)
 
-One claim. Falsifiable. Directly supported by the planned experiments.
+> Zero-shot tool use on a reasoning-tuned base (Qwen3-4B-Thinking-2507) is miscalibrated — tools are invoked on many problems where they hurt and skipped on many where they would help. We show that tool-integrated RLVR recalibrates this decision, lifting call-conditional pass rates and outperforming a strict CoT-GRPO baseline matched in data, training budget, and reward stack, with gains concentrated on expression-type answers where zero-shot triage is worst.
+
+One claim. Falsifiable. Directly supported by planned experiments and the already-run zero-shot tool-use-by-type analysis.
+
+**Why this is sharper than v1 ("model ignores tool; RL teaches tool use"):** v1 was falsified by the HPC analysis showing call rates of 31–89% zero-shot. The real zero-shot problem is not "no tool use" but "unproductive tool use" — and the RL intervention has a concrete observable mechanism (call rate shift + call-conditional pass rate shift) that v1's framing didn't capture.
 
 ## 5. Contributions (3, in priority order)
 
-1. **Empirical.** First controlled TIR-GRPO vs CoT-GRPO comparison for physics at RL training level, across five physics benchmarks (four in-dist pool_v2 slices + four external: OlympiadBench, PHYBench, ABench-Phy A, ABench-Phy B). Matched data, steps, reward.
-2. **Behavioral.** Per-answer-type decomposition showing where TIR gains concentrate (expression-type, hard problems) and where it does not (equation derivation remains open). Tool-use rate before vs after RL is the sharpest form of the story: "RL unlocks tool use on tool-suited problems."
+1. **Empirical finding.** Base-model tool use is miscalibrated zero-shot — quantified by call-conditional vs. skip-conditional pass@1 across four in-distribution and four external physics benchmarks, and by per-answer-type call rates on Dr. SCI. TIR-GRPO recalibrates this decision, as measured by the change in (call rate × call-conditional pass) before and after RL.
+2. **Controlled comparison.** First apples-to-apples TIR-GRPO vs CoT-GRPO at matched RL training budget on physics (same data, steps, reward stack). Per-type decomposition identifies where tool use helps and where it doesn't.
 3. **Recipe.** Single-block TIR with ScaleRL-style think-interrupt implemented inside VeRL for Qwen3-Thinking, plus the Dr.GRPO + DAPO-lite training configuration that made it stable. Reproducible artifact.
 
 ## 6. Framing decisions and rejected alternatives (read to avoid re-litigating)
@@ -84,7 +95,7 @@ Abstract language should reflect this: "TIR-GRPO teaches a reasoning-tuned model
 
 ## 7. Zero-shot eval results (already run, in main via `docs/eval_results.md`)
 
-### 7.1 The numbers
+### 7.1 Aggregate pass@1 (no call/skip split)
 
 **In-distribution (pool_v2 test):**
 
@@ -106,13 +117,37 @@ Abstract language should reflect this: "TIR-GRPO teaches a reasoning-tuned model
 | abench_phy_b (400) per-row | 0.633 | 0.633 | 0.640 | 0.620 |
 | abench_phy_b (100) per-mid (all-4-subid) | **0.500** | 0.490 | 0.490 | 0.480 |
 
-Sampling presets: `train` = `temp=1.0, top_p=1.0` (matches RL training); `qwen` = `temp=0.6, top_p=0.95, top_k=20` (Qwen team thinking-mode recommendation).
+Sampling presets: `train` = `temp=1.0, top_p=1.0` (matches RL training); `qwen` = `temp=0.6, top_p=0.95, top_k=20` (Qwen team thinking-mode recommendation). We use the **train** preset in the paper for consistency with RL training.
 
-### 7.2 What these numbers say
+### 7.2 Zero-shot TIR, by call vs skip (HPC analysis 2026-04-19) — THE HEADLINE FINDING
 
-- **TIR ≈ CoT on every in-dist cell (±5pp).** Expected, not worrying — see §8.
-- **Qwen sampling slightly hurts TIR (~2–4pp) and slightly helps CoT (~1–2pp).** Lower entropy makes the thinking model skip the tool more confidently; CoT benefits marginally from the same determinism. We'll use the **train** preset in the paper for consistency with RL training.
-- **OlympiadBench and PHYBench are punishing** — exact symbolic judges cap raw numbers at 1–7%. For PHYBench we use the continuous EED metric as primary; exact-match goes to the appendix.
+From `outputs/eval/tool_use_by_type_summary.txt` (Qwen3-4B-Thinking-2507, TIR mode, train preset):
+
+| benchmark | n | called% | skip_pass% | call_pass% | overall% |
+|---|---|---|---|---|---|
+| pool_v2_drsci | 503 | 38.4 | 61.9 | 66.5 | 63.0 |
+| pool_v2_physics | 191 | 44.5 | 41.5 | 41.1 | 39.3 |
+| pool_v2_scibench | 153 | 70.6 | 71.1 | 58.4 | 59.5 |
+| pool_v2_ugphysics | 217 | 33.6 | 38.9 | 37.0 | 38.2 |
+| olympiad_oe_to_physics | 236 | 34.7 | 4.5 | 6.2 | 4.7 |
+| phybench | 1000 | 30.7 | 1.7 | 1.0 | 1.5 |
+| abench_phy_a | 400 | 72.0 | 27.7 | 18.2 | 20.2 |
+| abench_phy_b | 400 | 82.2 | 52.1 | 68.0 | 63.2 |
+
+**Per-type on pool_v2_drsci/train:**
+- numerical: called% 75.6, pass 81.7 (call-path well-triaged)
+- expression, equation, MCQ: call rates 25–35%, pass 48–67% (under-called; skip-path accuracy lower than for numerical)
+
+### 7.3 Reading the numbers
+
+- **Call rates are non-trivial (31–89%).** The v1 story "model ignores tool" is wrong.
+- **On most in-dist and external benchmarks, call-path pass ≤ skip-path pass.** Scibench, ugphysics, phybench, abench_a all show skip ≥ call. Tool calls are often unproductive.
+- **Where tools work, they work well:** pool_v2_drsci numerical (81.7% on call-path, at 75.6% call rate) and abench_phy_b (call 68.0% vs skip 52.1%) show productive tool use.
+- **The gap between "model knows to call the tool" and "calling the tool helps" is the paper's central observation.** RL needs to move both distributions: raise call rate on types where tools would help, and raise call-conditional pass through better code generation.
+
+### 7.4 PHYBench and OlympiadBench caveats
+
+Exact symbolic judges cap raw pass@1 at 1–7%. For PHYBench the continuous EED metric is the primary headline; exact-match goes to the appendix.
 
 ### 7.3 Benchmarks — decided list
 
@@ -127,17 +162,25 @@ External (held out from training):
 
 **Dropped:** MATH-500 (distracts from physics focus). **Stretch (only if time):** critpt (research-style problems; mentioned by user as nice-to-have for signaling research capability, but not on the critical path).
 
-## 8. Zero-shot TIR ≈ CoT is a feature, not a bug
+## 8. Tool-use miscalibration — the central observation
 
-Because Qwen3-Thinking often ignores the tool in TIR mode zero-shot, "TIR mode" and "CoT mode" are often the same behavior on the same problem. That is why the numbers are close. This is the exact gap that RL training fills: the tool-use distribution needs to shift from "rarely use" to "use where it pays off."
+The base model (Qwen3-4B-Thinking-2507) calls the tool at 31–89% rates zero-shot. On most benchmarks, calling the tool is **as accurate or less accurate** than skipping it. On Dr. SCI, the model correctly triages numerical questions (high call rate, high call-path pass) but under-calls on expressions and equations (low call rate, low skip-path pass).
+
+This is the gap RL training fills. The intervention has two observable axes:
+
+1. **Call rate** — which problems the model decides to use the tool on.
+2. **Call-conditional pass rate** — whether, given a call, the tool use is productive.
+
+RL can improve accuracy by moving either axis (or both). Our job in §5 is to show where each axis moves and which drives the aggregate gain.
 
 ### Implications for the paper
 
-1. **Don't oversell aggregate gains.** If post-RL gap is 2–5pp on aggregate, write "improves" not "substantially outperforms."
-2. **Tool-use rate is a first-class finding, not a side analysis.** Add explicit tool-use figure/table (see §10).
-3. **Per-type concentration becomes more important**, since small aggregate may coexist with sharp per-type shifts.
-4. **Include zero-shot TIR and zero-shot CoT in Table 1** — the pre-RL parity is load-bearing for the "RL unlocks tool use" narrative.
-5. **Watch for the collapse failure mode during training**: a reasoning-tuned base under RL might learn to skip the tool entirely (since tool calls cost tokens and sometimes fail). Log tool-call rate per training step. If it trends toward zero, consider (a) an auxiliary reward term encouraging tool use on hard problems, or (b) reporting the collapse as a finding.
+1. **Don't oversell aggregate gains.** If post-RL macro gap is 2–5pp, write "improves" not "substantially outperforms." The mechanism (recalibration) is the story; aggregate is evidence.
+2. **Zero-shot miscalibration table is load-bearing.** Pre-RL (call rate, call-path pass, skip-path pass) table *sets up the paper*. It's Table A in §5.1.
+3. **Per-type concentration is a first-class finding** — Table 2 shows which answer types saw the biggest recalibration.
+4. **Call rate × call-path pass scatter (zero-shot → post-RL) is a headline figure.** One point per (benchmark × type), arrows from before to after.
+5. **Watch for collapse during training.** A reasoning-tuned base under RL might learn to skip the tool entirely (tool calls cost tokens and sometimes fail). Log tool-call rate per training step. If it trends toward zero, consider (a) an auxiliary reward term encouraging tool use, or (b) reporting the collapse as a finding with different framing.
+6. **Watch for the opposite collapse** — tool is called on everything but call-path pass is flat or falls. This would mean RL teaches tool invocation without teaching productive use. Also worth reporting as a finding.
 
 ## 9. Paper outline (page budget)
 
@@ -159,27 +202,29 @@ Full detail in `paper/outline.md`. Summary:
 
 Pressure valve if tight: collapse §6 into §5; cut Related Work to 0.4 page.
 
-## 10. Figures and tables (priority order)
+## 10. Figures and tables (priority order, v2)
 
 Full detail in `paper/storyboard.md`. Priorities:
 
 **Must-have:**
-- **Table 1 — Main benchmark results.** Rows: {zero-shot CoT, zero-shot TIR, CoT-GRPO, TIR-GRPO}. Cols: {pool_v2 slices, UGPhysics, PHYBench (EED), OlympiadBench, ABench-Phy-A, ABench-Phy-B per-mid, macro-avg}.
-- **Table 2 — Per-answer-type accuracy** on in-dist test. {numerical, expression, MCQ, equation, multi-part, interval} × {base, CoT-GRPO, TIR-GRPO, Δ}.
-- **Figure 3 — Per-type learning curves.** CoT-GRPO vs TIR-GRPO over training steps, per answer type.
+- **Table A (§5.1) — Zero-shot miscalibration.** Per benchmark, {call%, call-path pass%, skip-path pass%, overall%}. Rows highlight benchmarks where call ≤ skip. This table sets up the paper.
+- **Table 1 (§5.2) — Main results.** Rows: {zero-shot CoT, zero-shot TIR, CoT-GRPO, TIR-GRPO}. Cols: {pool_v2 slices, OlympiadBench, PHYBench (EED), ABench-A, ABench-B per-mid, macro-avg}.
+- **Table 2 (§5.4) — Per-answer-type accuracy** on in-dist test. {numerical, expression, MCQ, equation, multi-part, interval} × {zero-shot, CoT-GRPO, TIR-GRPO, Δ(TIR−CoT)}.
+- **Figure 3 (§5.3) — Call rate × call-path pass scatter, pre-RL vs post-RL.** One point per (benchmark × answer-type), arrows from zero-shot to TIR-GRPO showing recalibration direction. **This is the headline mechanistic figure**.
+- **Figure 4 (§5.4) — Per-type learning curves.** CoT-GRPO vs TIR-GRPO over training steps, per answer type.
 
 **Strong-to-have:**
-- **Figure 4 — Tool-use rate pre-RL vs post-RL.** Per benchmark, per type. Promoted to first-class — NEW, added after base-model switch.
-- **Figure 1 — Hero: CoT vs TIR trajectory** on a single problem.
-- **Figure 5 — Truncation and response length.** (May downgrade to appendix if space tight.)
+- **Figure 1 (hero) — Miscalibration illustration.** Either a single problem where base calls tool and errs / base skips and succeeds / TIR-GRPO triages correctly; or a bar chart showing call vs skip pass per benchmark zero-shot. Pick after we see more data.
+- **Figure 2 — Rollout mechanism diagram.** (Cut to numbered list in prose if space is tight.)
+- **Figure 5 — Truncation and response length.** (Appendix if space tight.)
 
 **Nice-to-have:**
-- Figure 2 — rollout mechanism diagram (can be replaced by prose + numbered list if space is truly tight).
-- Table 3 — solution-strategy and failure-mode frequencies from hand-labeled samples.
+- Table 3 — solution-strategy and failure-mode frequencies from hand-labeled samples (§6).
 
 **Appendix only:**
 - Table 4 — hyperparameters.
 - Table 5 — rule verifier coverage on TIR vs CoT outputs (feeds the reward-noise future-work paragraph).
+- Full per-benchmark × per-type expansion of Table 2.
 
 ## 11. Novelty pitch + anticipated objections
 
@@ -281,19 +326,27 @@ paper/
     timeline.md            # day-by-day plan
 ```
 
-## 17. Pending inputs from HPC session (user will provide)
+## 17. Pending inputs from HPC session
 
-From `docs/tool_use_analysis_handoff.md` (committed to main):
-
+**Done (committed to main as of 2026-04-19):**
 - `outputs/eval/tool_use_summary.txt` — aggregate per-cell tool-use rates.
 - `outputs/eval/tool_use_by_type.csv` — per-answer-type tool-use rates on in-dist cells.
 - `outputs/eval/tool_use_by_type_summary.txt` — human-readable version.
 
-These will be committed to main and picked up via `git merge origin/main` into paper-writing. When they land:
+These are the source for §7.2 of this handoff and already informed the v2 framing.
 
-- Use for Figure 4 zero-shot "before" data.
-- Use for Table 1 "zero-shot TIR" row plausibility check (is tool-use > 0 at all? if not, the headline becomes "reasoning-tuned base ignores tools entirely").
-- Use in §5.3 prose: "Before RL, TIR-mode called the tool on only X% of rollouts; CoT-mode by construction never calls the tool."
+**Still pending — full task list in `paper/HPC_TASKS.md`:**
+- Task 1: call/skip-conditional pass@1 by benchmark AND answer type (CSV + summary). **Gates §5.1 Table A. Can run today on existing rollouts.**
+- Task 4: final-checkpoint benchmark evaluation for {CoT-GRPO, TIR-GRPO}. Gates Table 1.
+- Task 1 (again) on post-RL rollouts. Gates Figure 3.
+- Task 2: per-answer-type accuracy trajectory during training. Gates Figure 4.
+- Task 3: tool-call rate trajectory during training. Collapse-mode early warning.
+- Task 5: rule verifier coverage on TIR vs CoT (appendix).
+- Task 6: truncation + response-length (optional).
+- Task 7: sampled outputs for §6 qualitative analysis.
+- Task 8: triage correctness (supplementary).
+
+See `paper/HPC_TASKS.md` for input/output specs, invariants, and priority order.
 
 ## 18. Immediate next steps for the new session
 
@@ -305,14 +358,17 @@ These will be committed to main and picked up via `git merge origin/main` into p
 
 ## 19. Things decided that should not be re-opened (unless new evidence)
 
-- Framing: "RL unlocks tool-use behavior" + aggregate accuracy. Not reward-noise mechanism.
-- Base model: Qwen3-4B-Thinking-2507. Not Qwen3.5-4B.
-- CoT-GRPO: strict apples-to-apples + base zero-shot reference. Both in Table 1.
-- External benchmarks: OlympiadBench exact-match + PHYBench EED + ABench A/B all kept. MATH-500 dropped.
-- Verifier noise analysis: one paragraph in §7 Discussion as future work. Not a headline section.
-- Single-block TIR: design choice, mentioned in §3, not a pitched contribution.
-- 8-page two-column ICML format.
-- Work in markdown first, port to Overleaf around Apr 21.
+- **Framing (v2):** "Zero-shot tool use is miscalibrated; RL recalibrates." Not the old "model ignores tool" (v1, falsified by HPC data). Not reward-noise mechanism.
+- **Base model:** Qwen3-4B-Thinking-2507.
+- **CoT-GRPO:** strict apples-to-apples + both zero-shot CoT and zero-shot TIR references in Table 1.
+- **External benchmarks kept:** OlympiadBench, PHYBench (EED primary), ABench A, ABench B. In-dist: pool_v2 × 4 slices. Dropped: MATH-500.
+- **Verifier edge-case rules:** implementation detail, appendix only. Not pitched as a contribution.
+- **Verifier-noise analysis:** one paragraph in §7 Discussion as future work. Not a headline.
+- **Single-block TIR:** design choice, mentioned in §3, not a pitched contribution.
+- **8-page two-column ICML format.**
+- **Work in markdown first, port to Overleaf around Apr 21.**
+- **No algo boxes** — prose + numbered steps for rollout.
+- **One hero schematic figure** (Figure 1) is worth the space.
 
 ## 20. Tone + style conventions for prose
 

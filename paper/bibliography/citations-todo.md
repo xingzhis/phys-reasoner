@@ -4,6 +4,16 @@ Every entry below must be confirmed against a primary source before it goes into
 
 Format: `[CITE:tag]` — topic — proposed primary source — status.
 
+**Verified arXiv IDs so far (2026-04-19):**
+- SimpleTIR → 2509.02479 (Sep 2025) ✓
+- ToRA → 2309.17452 (ICLR 2024) ✓
+- PHYBench → 2504.16074 (Apr 2025) ✓
+- UGPhysics → 2502.00334 (ICML 2025) ✓
+- DAPO → 2503.14476 (Mar 2025) ✓
+- ABench-Physics → 2507.04766 (Jul 2025) ✓ (noted in PHYBench search)
+
+Full abstracts for these in `sample-abstracts/`.
+
 ## RL for reasoning with verifiable rewards
 
 - [CITE:deepseek-r1] — R1's GRPO-from-base pipeline — arXiv 2501.12948 — UNVERIFIED

@@ -18,6 +18,7 @@ One experiment carries one claim. No reward-noise mechanism pitch in the body â€
 | Path | Purpose |
 |---|---|
 | `HANDOFF.md` | **Read first.** Full session context: thesis, framing decisions, rejected alternatives, zero-shot eval numbers, figure/table priorities, timeline, risks. |
+| `HPC_TASKS.md` | Complete, unambiguous list of analysis tasks to hand to the HPC session. Input/output specs + priority order. |
 | `outline.md` | Section-by-section story beats. Source of truth for structure. |
 | `storyboard.md` | One-liner per figure and table. What each shows and why. |
 | `sections/` | Per-section prose drafts (markdown). Stitched into `main.md` at the end. |
