@@ -35,6 +35,38 @@ All tasks below specify **what** to compute and **what format** the output shoul
 
 ---
 
+## Task 1b — Per-problem paired TIR-mode vs CoT-mode comparison (the cleanest evidence)
+
+**Why:** Table A in §5.1 and the strongest form of Claim 1 (no selection bias). For each problem evaluated in both TIR mode and CoT mode zero-shot, classify the pair as Win / Loss / Tie:
+- **Win:** TIR correct AND CoT wrong
+- **Loss:** TIR wrong AND CoT correct
+- **Tie-pass:** both correct
+- **Tie-fail:** both wrong
+
+**Input:** pairs of rollouts parquets — one TIR-mode (`outputs/eval/<benchmark>/train/TIR/rollouts.parquet`) and one CoT-mode (`outputs/eval/<benchmark>/train/CoT/rollouts.parquet`) — same base model, same preset, same problems.
+
+For each problem_id that appears in both, join on problem_id and compute the pairwise outcome.
+
+**Output 1 — by benchmark:** `outputs/eval/paired_tir_vs_cot_by_benchmark.csv`:
+- `benchmark`, `preset`, `n_paired`, `n_win`, `n_loss`, `n_tie_pass`, `n_tie_fail`, `win_rate`, `loss_rate`, `win_minus_loss`
+
+**Output 2 — by benchmark × answer_type:** `outputs/eval/paired_tir_vs_cot_by_type.csv`:
+- `benchmark`, `preset`, `answer_type`, `n_paired`, `n_win`, `n_loss`, `n_tie_pass`, `n_tie_fail`, `win_rate`, `loss_rate`, `win_minus_loss`
+
+**Output 3 (human-readable):** `outputs/eval/paired_tir_vs_cot_summary.txt`.
+
+**Notes:**
+- If there are rollout counts >1 per problem (rollout.n > 1 in zero-shot), aggregate to problem-level pass@1 first (majority or mean), then classify.
+- Keep only problems that were evaluated in **both** modes. Record the join yield.
+- Use the same judge (xVerify-7B or benchmark-provided scorer) for both sides.
+
+**Test on:** the existing `outputs/eval/` zero-shot rollouts. Both TIR and CoT cells exist for pool_v2 slices and most external benchmarks.
+**Apply later to:** post-RL rollouts (TIR-GRPO rollouts vs CoT-GRPO rollouts on the same benchmarks). Same Win/Loss/Tie semantics.
+
+**This is the strongest form of the zero-shot claim and the strongest form of the post-RL comparison.** Run before Task 2.
+
+---
+
 ## Task 2 — Per-answer-type accuracy trajectory during training
 
 **Why:** Figure 4 (§5.4) — learning curves per answer type for CoT-GRPO and TIR-GRPO.
@@ -172,14 +204,16 @@ All tasks below specify **what** to compute and **what format** the output shoul
 
 | Order | Task | Blocking? | Notes |
 |---|---|---|---|
-| 1 | Task 1 on existing zero-shot rollouts | yes — gates §5.1 Table A | Run today. Pure CPU. |
-| 2 | Task 4 (post-RL rollouts per benchmark) | yes — gates §5.2 Table 1 | Needs training done. |
-| 3 | Task 1 on post-RL rollouts | yes — gates Fig 3 | After Task 4. |
-| 4 | Task 2 and 3 (training curves) | yes — gates Fig 4 | Needs training logs. Should be streaming. |
-| 5 | Task 5 (rule coverage) | no — appendix / discussion | After Task 4. |
-| 6 | Task 7 (qualitative samples) | no — §6 nice-to-have | After Task 4. |
-| 7 | Task 6 (truncation) | no — appendix fallback | Any time. |
-| 8 | Task 8 (triage correctness) | no — supplementary | After Task 1 + 4. |
+| 1 | **Task 1b on existing zero-shot rollouts** | yes — gates §5.1 Table A | **Run today. Pure CPU. This is the headline evidence.** |
+| 2 | Task 1 on existing zero-shot rollouts | yes — gates §5.2 Table 2a zoom-in | Run today. |
+| 3 | Task 4 (post-RL rollouts per benchmark) | yes — gates §5.3 Table 1 | Needs training done. |
+| 4 | Task 1b on post-RL rollouts | yes — strongest post-RL claim | After Task 4. |
+| 5 | Task 1 on post-RL rollouts | yes — gates Fig 3 | After Task 4. |
+| 6 | Task 2 and 3 (training curves) | yes — gates Fig 4 | Needs training logs. Should be streaming. |
+| 7 | Task 5 (rule coverage) | no — appendix / discussion | After Task 4. |
+| 8 | Task 7 (qualitative samples) | no — §6 nice-to-have | After Task 4. |
+| 9 | Task 6 (truncation) | no — appendix fallback | Any time. |
+| 10 | Task 8 (triage correctness) | no — supplementary | After Task 1 + 4. |
 
 ---
 

@@ -1,19 +1,19 @@
 # Outline — PhysCode, ICML 2026 AI4Physics workshop
 
-**Status:** v1 — reframed around tool-use miscalibration finding (Apr 19)
+**Status:** v2 — claim-1-led thesis (Apr 21)
 **Page budget:** 8 pages ICML 2-column (references excluded)
 
 ---
 
 ## Thesis (one sentence, locked)
 
-Zero-shot tool use on a reasoning-tuned base (Qwen3-4B-Thinking-2507) is miscalibrated: tools are invoked on problems where they hurt and skipped on problems where they would help. We show that tool-integrated RLVR recalibrates this decision, lifting call-conditional pass rates and outperforming a strict CoT-GRPO baseline matched in data, training budget, and reward stack — with gains concentrated on expression-type answers where zero-shot triage is worst.
+Tool availability alone is not enough: giving a reasoning-tuned LLM (Qwen3-4B-Thinking-2507) access to a symbolic-computation tool fails to consistently help on physics and, on four of five in-distribution benchmarks, hurts — despite call rates of 31–89% zero-shot. We show tool-integrated RLVR bridges this gap, with TIR-GRPO outperforming a strict CoT-GRPO baseline matched in data, training budget, and reward stack, and gains concentrated on answer types where zero-shot TIR underperforms most.
 
 ## Contributions (3, in priority order)
 
-1. **Empirical finding.** Base-model tool use is miscalibrated zero-shot (quantified by call-conditional vs. skip-conditional pass@1 across five physics benchmarks and six answer types); TIR-GRPO recalibrates it.
-2. **Controlled comparison.** First apples-to-apples TIR-GRPO vs. CoT-GRPO at matched RL training budget on physics, across five benchmarks. Per-type decomposition identifies where tool use helps (expression, numerical-on-hard) and where it doesn't (short numerical, pure-reasoning equation derivation).
-3. **Recipe.** Single-block TIR with ScaleRL-style think-interrupt inside VeRL for Qwen3-Thinking, plus the Dr.GRPO + DAPO-lite training config that made it stable. Reproducible artifact.
+1. **Empirical finding (zero-shot characterization).** Paired comparison of TIR-mode vs. CoT-mode on the same problems shows tool availability does not translate to benefit on a reasoning-tuned 4B model — TIR ≤ CoT on 4 of 5 in-distribution physics benchmarks despite tool use being attempted on 31–89% of problems. We characterize this per-benchmark and per-answer-type.
+2. **Controlled RL intervention.** First apples-to-apples TIR-GRPO vs. CoT-GRPO at matched RL training budget on physics. TIR-GRPO closes and reverses the zero-shot gap; per-type decomposition shows gains concentrate on answer types where zero-shot TIR underperformed most.
+3. **Recipe.** Single-block TIR with ScaleRL-style think-interrupt inside VeRL for Qwen3-Thinking, plus the Dr.GRPO + DAPO-lite training configuration. Reproducible artifact.
 
 ---
 
@@ -40,13 +40,13 @@ Pressure valve: collapse Analysis into Results; cut Related Work to ~0.4; drop F
 
 ## §1 Introduction — beats
 
-- **Hook:** Strong reasoning-tuned LLMs reach for symbolic-computation tools on ~30–80% of physics problems zero-shot, but on many benchmarks tool calls are as-or-less accurate than skipping the tool. Tool availability ≠ productive tool use.
-- **Why this is a physics RL story:** physics answer types are heterogeneous (numerical, expression, equation, MCQ, interval). Tool usefulness is per-type. RL should teach the model *when* and *how* to use the tool.
-- **What we do:** train Qwen3-4B-Thinking-2507 with single-block tool-integrated RLVR on a curriculum-filtered physics training pool; compare to strict CoT-GRPO at matched budget.
-- **What we find:** (placeholder) call-conditional pass rates rise; overall accuracy improves across benchmarks; gains concentrate on the expression/equation types where zero-shot triage was worst.
-- **Why it matters for the workshop:** tool-augmented agents is a named direction. The miscalibration finding is a concrete instance of a failure mode the CFP names (tool use reliability).
+- **Hook:** Equipping a reasoning-tuned LLM with a symbolic-computation tool doesn't obviously help — and on 4 of 5 physics benchmarks we test, it hurts. The model does invoke the tool (31–89% of problems), but invoking it does not translate to accuracy gains.
+- **Why this is a physics RL story:** Physics is where tools should shine — it is precisely the domain with dimensional analysis, symbolic manipulation, and numerical evaluation that LLMs struggle to do reliably in chain-of-thought. That the gap *narrows or reverses* there is the surprise. RL must teach not just *when* but *how* to use the tool productively.
+- **What we do:** train Qwen3-4B-Thinking-2507 with single-block tool-integrated RLVR on a curriculum-filtered physics training pool; compare against strict CoT-GRPO at matched training budget.
+- **What we find:** (placeholder) TIR-GRPO closes the zero-shot TIR-vs-CoT gap and surpasses CoT-GRPO across benchmarks. Gains concentrate on answer types where zero-shot TIR was worst.
+- **Why it matters for the workshop:** tool-augmented agents is a named direction. The zero-shot finding alone (tool availability isn't enough) quantifies a known-but-underreported failure mode for reasoning-tuned LLMs on physics.
 - **Contribution bullets** (3, as above).
-- **Figure 1** (hero): three-panel sketch — (a) a representative problem where base calls tool and gets it wrong, (b) the same problem where base skips and gets it right, (c) TIR-GRPO correctly triages. Or a single "call-path vs skip-path pass@1" bar chart across benchmarks, zero-shot.
+- **Figure 1** (hero): paired bar chart — for each in-dist benchmark, two bars (TIR-mode, CoT-mode) zero-shot, plus two matching bars after RL (TIR-GRPO, CoT-GRPO). The visual story: zero-shot pair shows TIR ≤ CoT; post-RL pair shows the reversal.
 
 ## §2 Related Work — beats
 
@@ -116,34 +116,39 @@ Pressure valve: collapse Analysis into Results; cut Related Work to ~0.4; drop F
 
 ## §5 Results — beats
 
-### 5.1 Zero-shot miscalibration (setup for the paper)
+### 5.1 Zero-shot: tool availability ≠ tool benefit (sets up the paper)
 
-- **Table A (new, pre-RL):** per benchmark, {call%, call-conditional pass@1, skip-conditional pass@1, overall pass@1}. One row per benchmark × preset. Highlights the benchmarks where call-path is worse than skip-path.
-- Per-type breakdown for pool_v2_drsci: numerical well-triaged (high call, high call-pass); expression/equation/MCQ under-called with low call-pass.
-- One paragraph interpretation: tool use is already on the menu for this base model, but the decision to call is miscalibrated on most benchmarks.
+- **Table A (headline):** paired TIR-mode vs CoT-mode zero-shot on each benchmark. Columns: benchmark, n, TIR pass@1, CoT pass@1, Δ(TIR−CoT), TIR call rate. One row per benchmark. Δ column is the story — negative on 4/5 in-dist slices.
+- **Per-problem paired comparison** (once Task 1b output lands): for each problem, is tool mode "Win" (correct when CoT wrong), "Loss" (wrong when CoT correct), "Tie"? Report Win/Loss/Tie counts per benchmark and per answer type — **this is the strongest form of the evidence, no selection bias**.
+- One paragraph interpretation: the model attempts tool use at 31–89% rates but on most benchmarks the attempts do not help or hurt aggregate accuracy.
 
-### 5.2 Main benchmark results (headline)
+### 5.2 Within-TIR zoom-in: call-path vs skip-path (with caveat)
 
-- **Table 1:** rows = {zero-shot CoT, zero-shot TIR, CoT-GRPO, TIR-GRPO}; cols = {pool_v2_drsci, pool_v2_physics, pool_v2_ugphysics, pool_v2_scibench, OlympiadBench, PHYBench (EED), ABench-A, ABench-B per-mid, macro-avg}.
-- TIR-GRPO vs CoT-GRPO delta is the claim-carrying number.
+- **Table 2a (secondary):** within TIR mode, per benchmark, {call%, call-path pass@1, skip-path pass@1, overall}. Caveat: the model's choice of when to call is not random, so call-path and skip-path populations differ in problem difficulty. The pass-rate difference therefore cannot be read as "tool harms" or "tool helps" per call; it characterizes the model's current triage against the reality of which problems it succeeds on.
+- Per-type breakdown for pool_v2_drsci: where is call rate high and where is it low. Numerical has high call rate (76%) with high overall pass (82%); expression/equation/MCQ have lower call rates (25–35%) with lower-to-moderate overall pass (48–67%).
 
-### 5.3 Recalibration: call rate and call-conditional accuracy shift
+### 5.3 Main benchmark table with RL
 
-- **Figure 3 (new):** call rate × call-conditional pass@1 scatter, one point per (benchmark × type), before and after RL. Arrows from zero-shot to post-RL show the recalibration direction.
-- Per-type analysis: which types saw call-rate increase, which saw call-path accuracy increase, which saw both.
+- **Table 1:** rows = {base CoT zero-shot, base TIR zero-shot, CoT-GRPO, TIR-GRPO}; cols = in-dist slices + external benchmarks + macro-avg. This is the claim-carrying table.
+- Interpretation: how much of the zero-shot TIR-vs-CoT gap does RL close? Does TIR-GRPO exceed CoT-GRPO?
 
 ### 5.4 Per-answer-type decomposition
 
-- **Table 2:** in-dist accuracy by answer type for {zero-shot, CoT-GRPO, TIR-GRPO}. Column for TIR−CoT delta.
-- **Figure 4:** learning curves per answer type (2×3 grid) for CoT-GRPO and TIR-GRPO over training steps on dev.
+- **Table 2:** in-dist accuracy by answer type for {zero-shot CoT, zero-shot TIR, CoT-GRPO, TIR-GRPO}. Columns include Δ(zero-shot TIR−CoT) and Δ(TIR-GRPO−CoT-GRPO). Predicts: types with most-negative zero-shot Δ become types with most-positive post-RL Δ.
+- **Figure 3:** per-type learning curves on dev for CoT-GRPO and TIR-GRPO.
 
-### 5.5 Output characterization
+### 5.5 Tool-use dynamics during training
+
+- **Figure 4:** TIR-GRPO's call rate and call-path pass rate over training steps, overlaid on dev set. Goal: show which axis moves — call rate, call-path pass, or both.
+- Collapse check: was there a run where call rate → 0 or → 1? Discuss briefly.
+
+### 5.6 Output characterization (short)
 
 - Tool-execution success rate across training.
-- Code complexity distribution (compact SymPy lines vs scaffolded numerical setup).
-- Note: rule verifier coverage on TIR vs CoT outputs — brief; full table in appendix.
+- Code complexity distribution (compact SymPy vs scaffolded numerical setup).
+- Note: rule verifier coverage on TIR vs CoT outputs — one-line mention; full table in appendix.
 
-### 5.6 Truncation reduction (optional, cut if space tight)
+### 5.7 Truncation reduction (optional, cut if space tight)
 
 - **Figure 5:** truncation rate vs step; response-length CDF at final checkpoint.
 

@@ -1,80 +1,88 @@
-# Timeline — 8 days to Apr 24 AOE
+# Timeline — 3 days to Apr 24 AOE
 
-**Today:** Apr 16 2026. **Deadline:** Apr 24 2026 AOE (≈ Apr 25 evening local).
+**Today:** Apr 21 2026. **Deadline:** Apr 24 2026 AOE (≈ Apr 25 evening local time).
 
-## Day-by-day plan
+**Remaining calendar days:** Apr 22, Apr 23, Apr 24. That's it.
 
-### Apr 16 (today) — Scaffold + plan
-- [x] Agree on single-claim framing
-- [x] Create `paper/` folder, outline, storyboard, novelty notes
-- [ ] Pull 2–3 sample workshop papers (tool-use RL, physics reasoning) for style → `bibliography/sample-abstracts/`
-- [ ] Start `bibliography/citations-todo.md`
-- [ ] Decide if/how CoT-GRPO baseline compute fits alongside TIR-GRPO
+## Day-by-day plan (revised for 3-day window)
 
-### Apr 17 — Related work + method skeleton
-- [ ] Draft §2 Related Work (0.5 page) with `[CITE:…]` markers
-- [ ] Draft §3 Method (1.75 pages) — this is mostly locked content
-- [ ] Draft §4 Experimental Setup (1.0 page) — also mostly locked
-- [ ] Sketch Figure 2 rollout diagram
+### Apr 21 (today) — Framing + scaffold
+- [x] Claim-1-led thesis locked (TIR-mode vs CoT-mode paired comparison as headline)
+- [x] HPC_TASKS updated with Task 1b (per-problem paired comparison)
+- [x] Outline updated
+- [ ] Writing samples refactored (in progress)
+- [ ] Start drafting §3 Method and §4 Setup — these are ~90% locked content
+- [ ] HPC runs Task 1b on existing zero-shot rollouts (blocks §5.1)
 
-### Apr 18 — Intro + Overleaf port
-- [ ] Draft §1 Introduction (1.0 page), leaving results bullets as placeholders
-- [ ] Set up ICML 2026 LaTeX template in Overleaf
-- [ ] Port §2, §3, §4 drafts into Overleaf — check line lengths, table fits, first overflow check
-- [ ] Build Figure 2 final
+### Apr 22 — Prose draft 1 + Overleaf port
+- [ ] Complete §3 Method and §4 Setup drafts (md)
+- [ ] Draft §1 Introduction around locked contributions; leave results-sentence as placeholder
+- [ ] Draft §2 Related Work with `[CITE:tag]` markers
+- [ ] Set up Overleaf template (user provides preference or fresh ICML template)
+- [ ] Port §2, §3, §4 to Overleaf; first overflow check
+- [ ] When Task 1b lands: pull §5.1 Table A numbers in
+- [ ] Training should be well underway; monitor call-rate collapse
 
-### Apr 19 — Results scaffolding
-- [ ] First training checkpoints should be landing (CoT-GRPO and TIR-GRPO)
-- [ ] Write plotting scripts for Figures 3 and 4 against partial data
-- [ ] Pre-structure Table 1 and Table 2 in LaTeX with placeholder values
-- [ ] Start drafting §5 prose around placeholder numbers
+### Apr 23 — Results pull + §5 and §6 draft
+- [ ] Training results landing — run Task 4 evaluations on final/best checkpoints
+- [ ] Task 1b on post-RL rollouts → Table 1 numbers
+- [ ] Draft §5 Results around real numbers; build Figures 1, 3, 4
+- [ ] Draft §6 Analysis using sampled outputs (LLM-assisted labeling)
+- [ ] Draft §7 Discussion and §8 Conclusion
+- [ ] Write Abstract from finished body
+- [ ] Full read-through; citation audit
+- [ ] If training is incomplete or results are weak: evaluate fallback framing (characterization-only paper)
 
-### Apr 20 — Fill in results
-- [ ] Training likely complete or near-complete
-- [ ] Run benchmark evals (in-domain + UGPhysics + PHYBench + OlympiadBench + SciBench)
-- [ ] Populate Table 1, Table 2, Figures 3, 4 with real numbers
-- [ ] Finalize §5 prose
-
-### Apr 21 — Analysis
-- [ ] Sample 100–150 outputs per condition; label strategies and failure modes
-- [ ] Draft §6 Analysis (0.75 page) with Table 3
-- [ ] Hand-pick Figure 1 example from rollouts; render Figure 1
-- [ ] Decide on critpt inclusion (cut if not ready)
-
-### Apr 22 — Polish pass 1
-- [ ] Draft §7 Discussion (0.5 page) and §8 Conclusion (0.25 page)
-- [ ] Write abstract from finished body
-- [ ] Full read-through for flow and clarity
-- [ ] Check every `[CITE:…]` marker is resolved with verified bib entry
-
-### Apr 23 — Polish pass 2 + buffer
+### Apr 24 — Polish + submit
 - [ ] Overflow check — is it 8 pages?
-- [ ] Figure captions, table captions
-- [ ] Appendix cleanup
-- [ ] Second full read-through; author pass
-- [ ] Prepare submission materials
+- [ ] Figure/table captions (takeaway-first)
+- [ ] Abstract polish
+- [ ] Verify every `[CITE:tag]` is resolved in refs.bib
+- [ ] Second read-through
+- [ ] Submit by end of local day (AoE buffers to Apr 25 evening)
 
-### Apr 24 — Submit (with local-day buffer)
-- [ ] Submit by end of your local day (AoE gives you until Apr 25 evening, but don't cut it close)
+## Risks and triggers (compressed)
 
-## Risks and triggers
+**Result-level risks:**
+- Training slips past Apr 23 → use whatever checkpoints exist; report honestly.
+- Aggregate TIR-GRPO gain is negative → hard pivot Apr 23 to characterization framing. Don't wait until Apr 24.
+- Call rate collapses to 0 → frame as a finding; paper becomes "RL dynamics under tool availability on reasoning-tuned models" rather than "TIR beats CoT."
 
-- **Training slips past Apr 21:** use partial-checkpoint eval for Table 1; note as "X checkpoint" in the paper. If results are still missing Apr 23, submit with best-available numbers.
-- **Aggregate TIR gain is flat:** reframe abstract and intro to emphasize per-type findings and behavioral characterization. §5.2 becomes the headline, not §5.1.
-- **Aggregate TIR gain is negative:** hard pivot required. Candidate: "where tool use does NOT help" characterization paper. Decide by Apr 22.
-- **xVerify reward GPU setup slips:** fall back to rule-only reward for smoke; reward noise is higher but signal still present for numerical. Flag in discussion.
+**Time-level risks:**
+- Overleaf porting drags → port §3 and §4 first (most locked); leave §1 and §5 in markdown until last.
+- Citation verification drags → skip the Apr 23 full audit; do only `\cite` vs `refs.bib` name-match check.
 
-## Pressure-valve cuts (in order, if space tight)
+## Pressure-valve cuts (in order, if tight)
 
-1. Cut Figure 5 if present.
+### Space cuts (if exceeds 8 pages)
+1. Cut Figure 5 (truncation).
 2. Collapse §6 into §5.
 3. Cut Related Work to 0.4 page.
 4. Move Table 3 to appendix.
-5. Make Figure 4 one panel instead of two.
+5. Drop Figure 2 (rollout diagram); replace with numbered list in §3.2.
 
-## Pressure-valve cuts (if time tight)
-
-1. Cut critpt.
-2. Skip manual solution-strategy labeling; rely on LLM-assisted first pass only.
+### Scope cuts (if time tight)
+1. Cut critpt benchmark.
+2. Skip manual solution-strategy labeling; LLM-assisted only.
 3. Skip 0.8B scaling ablation.
-4. Ship without truncation analysis (Fig 4).
+4. Ship without Figure 5.
+5. Skip §6 qualitative analysis entirely — present results and discussion only.
+
+## What the paper-writing session works on each day
+
+### Apr 21 evening:
+- Sections most ready: §3 Method, §4 Setup (just need data size placeholder).
+- Start drafting in parallel with HPC Task 1b.
+
+### Apr 22:
+- §1, §2 drafts.
+- Overleaf setup.
+- Integrate Task 1b numbers into §5.1.
+
+### Apr 23:
+- §5 real numbers.
+- §6, §7, §8.
+- Abstract.
+
+### Apr 24:
+- Polish only. No new content.

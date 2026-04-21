@@ -1,12 +1,13 @@
 # HANDOFF — paper writing session context
 
-**Created:** 2026-04-19. **Last revised:** 2026-04-19 (v2 — after HPC tool-use-by-type results landed).
+**Created:** 2026-04-19. **Last revised:** 2026-04-21 (v3 — claim-1-led thesis after selection-bias discussion).
 **Purpose:** full, loss-free context dump of the planning discussion so a fresh session can resume paper writing without re-deriving decisions.
 **Branch:** `paper-writing` (this branch). Not merged to main.
 **Main only has:** `docs/tool_use_analysis_handoff.md` (the HPC-side runbook for tool-use analysis).
 
 ## Revision log
 
+- **v3 (2026-04-21):** Raised the concern that within-TIR `call-pass% < skip-pass%` has selection bias (the model's choice to call is not random). Switched the thesis to lead with the **paired TIR-mode-vs-CoT-mode zero-shot comparison** (same problem, same prompt, only tool availability differs — no selection bias). Added Task 1b to HPC_TASKS for per-problem paired comparison. Discussed fallback path if post-RL results are weak. Also refactored bibliography/sample-abstracts/ → writing-samples/ and shifted those docs toward paper-writing style analysis.
 - **v2 (2026-04-19):** HPC tool-use analysis showed the base model DOES call tool at 31–89% rates. Reframed thesis around "tool-use miscalibration + RL recalibration" rather than the earlier "model ignores tool" story. Updated §4, §7, §8 accordingly. Training infra now 4 train + 6 rollout + 1 xVerify, staleness=1. Training data moved to a difficulty-filtered subset (size TBD).
 
 Read this first. Everything else in `paper/` follows from what's here.
@@ -49,18 +50,35 @@ All runs use Dr.GRPO + DAPO-lite configuration per `docs/training-decisions.md`:
 
 Infrastructure-level details (staleness, node counts, exact Hydra flags) go to appendix; body only mentions "VeRL async RL with rule+xVerify reward."
 
-## 4. Thesis — one sentence (locked, v2)
+## 4. Thesis — one sentence (locked, v3)
 
-> Zero-shot tool use on a reasoning-tuned base (Qwen3-4B-Thinking-2507) is miscalibrated — tools are invoked on many problems where they hurt and skipped on many where they would help. We show that tool-integrated RLVR recalibrates this decision, lifting call-conditional pass rates and outperforming a strict CoT-GRPO baseline matched in data, training budget, and reward stack, with gains concentrated on expression-type answers where zero-shot triage is worst.
+> Tool availability alone is not enough: giving a reasoning-tuned LLM (Qwen3-4B-Thinking-2507) access to a symbolic-computation tool fails to consistently help on physics problems and, on four of five in-distribution benchmarks, hurts. Despite the model invoking the tool on 31–89% of problems zero-shot, tool-augmented accuracy falls at or below plain reasoning. We show tool-integrated RLVR bridges this gap: TIR-GRPO outperforms a strict CoT-GRPO baseline matched in data, training budget, and reward stack, with gains concentrated on answer types where zero-shot tool use underperforms most.
 
-One claim. Falsifiable. Directly supported by planned experiments and the already-run zero-shot tool-use-by-type analysis.
+One claim. Falsifiable. Directly supported by the already-run paired TIR-mode-vs-CoT-mode zero-shot comparison and the planned RL runs.
 
-**Why this is sharper than v1 ("model ignores tool; RL teaches tool use"):** v1 was falsified by the HPC analysis showing call rates of 31–89% zero-shot. The real zero-shot problem is not "no tool use" but "unproductive tool use" — and the RL intervention has a concrete observable mechanism (call rate shift + call-conditional pass rate shift) that v1's framing didn't capture.
+### Why this framing, not earlier drafts
+
+- **v1 (dropped 2026-04-19):** "Base model ignores tool; RL teaches use." Falsified by HPC analysis showing call rates 31–89%.
+- **v2 (dropped 2026-04-21):** "Within TIR mode, call-path pass < skip-path pass → miscalibration." Real but **selection-biased** — the model's choice of when to call isn't random, so low call-path pass might reflect problem difficulty rather than tool-use quality. A careful reviewer would flag this.
+- **v3 (current):** Leads with the paired TIR-vs-CoT aggregate comparison (same problems, same prompts, only tool availability differs — *no* selection bias). The within-TIR call-vs-skip observation becomes a secondary zoom-in with an explicit selection-bias caveat.
+
+### Claim evidence levels
+
+| Claim | Evidence | Confidence |
+|---|---|---|
+| **C1.** Tool availability doesn't consistently help zero-shot; sometimes hurts | Paired TIR-vs-CoT zero-shot table (§7.1) — 4/5 in-dist slices show TIR ≤ CoT | **High** |
+| **C2.** Base model calls tool at non-trivial rates | HPC tool-use analysis (§7.2) — 31–89% | **High** |
+| **C3.** Within TIR mode, call-path pass ≠ skip-path pass | HPC tool-use analysis (§7.2) | Medium — selection-biased, frame with caveat |
+| **C4.** Miscalibration is systematic by answer type | Partial: per-type call rate + aggregate pass exist; per-type call-path vs skip-path NOT yet run | Pending Task 1 Output 2 |
+| **C5.** Per-problem: tool-mode-vs-no-tool-mode paired comparison shows directional pattern | Not yet run — **new Task 1b** | Pending |
+| **C6.** RL recalibrates (TIR-GRPO > CoT-GRPO) | Needs training results | Unknown |
+
+C1 is the single strongest claim and carries the paper. C5 when it lands will be cleaner still. C6 is the endpoint. C3/C4 are supporting.
 
 ## 5. Contributions (3, in priority order)
 
-1. **Empirical finding.** Base-model tool use is miscalibrated zero-shot — quantified by call-conditional vs. skip-conditional pass@1 across four in-distribution and four external physics benchmarks, and by per-answer-type call rates on Dr. SCI. TIR-GRPO recalibrates this decision, as measured by the change in (call rate × call-conditional pass) before and after RL.
-2. **Controlled comparison.** First apples-to-apples TIR-GRPO vs CoT-GRPO at matched RL training budget on physics (same data, steps, reward stack). Per-type decomposition identifies where tool use helps and where it doesn't.
+1. **Empirical finding (zero-shot characterization).** Paired comparison shows that, for a reasoning-tuned 4B model, tool availability does not consistently help on physics and often hurts: TIR-mode ≤ CoT-mode on 4 of 5 in-distribution benchmarks at matched prompts. Despite call rates of 31–89%, the benefit does not materialize zero-shot. Observation holds across answer types.
+2. **Controlled RL intervention.** First apples-to-apples TIR-GRPO vs CoT-GRPO at matched RL training budget on physics (same data, same steps, same reward stack). TIR-GRPO closes and reverses the zero-shot TIR-vs-CoT gap, with gains concentrated on answer types where zero-shot TIR underperforms most.
 3. **Recipe.** Single-block TIR with ScaleRL-style think-interrupt implemented inside VeRL for Qwen3-Thinking, plus the Dr.GRPO + DAPO-lite training configuration that made it stable. Reproducible artifact.
 
 ## 6. Framing decisions and rejected alternatives (read to avoid re-litigating)
@@ -162,25 +180,25 @@ External (held out from training):
 
 **Dropped:** MATH-500 (distracts from physics focus). **Stretch (only if time):** critpt (research-style problems; mentioned by user as nice-to-have for signaling research capability, but not on the critical path).
 
-## 8. Tool-use miscalibration — the central observation
+## 8. Tool availability ≠ tool benefit — the central observation
 
-The base model (Qwen3-4B-Thinking-2507) calls the tool at 31–89% rates zero-shot. On most benchmarks, calling the tool is **as accurate or less accurate** than skipping it. On Dr. SCI, the model correctly triages numerical questions (high call rate, high call-path pass) but under-calls on expressions and equations (low call rate, low skip-path pass).
+The base model (Qwen3-4B-Thinking-2507) calls the tool at 31–89% rates zero-shot, but the paired TIR-mode-vs-CoT-mode comparison shows that tool *availability* does not translate to tool *benefit*: on four of five in-distribution slices, TIR mode is equal to or worse than CoT mode. The model uses the tool, but using it does not help.
 
-This is the gap RL training fills. The intervention has two observable axes:
+This is the gap RL training has to fill. There are two non-mutually-exclusive mechanisms RL can fix:
 
-1. **Call rate** — which problems the model decides to use the tool on.
-2. **Call-conditional pass rate** — whether, given a call, the tool use is productive.
+1. **Triage (when to call):** the model calls on problems where tool use hurts and skips on problems where it would help. Selection-biased within TIR-mode data, so best measured via per-problem tool-vs-no-tool paired comparison (Task 1b).
+2. **Execution quality (how to call):** when the model does call, the code is suboptimal (e.g., incorrect SymPy usage, wrong units). Observable via call-path pass rate at the benchmark level, shifting with training.
 
-RL can improve accuracy by moving either axis (or both). Our job in §5 is to show where each axis moves and which drives the aggregate gain.
+Our job in §5 is to show (a) the zero-shot paired gap (Claim 1), (b) whether RL closes or reverses it, and (c) which mechanism drives the change, to the extent the data disambiguates.
 
 ### Implications for the paper
 
-1. **Don't oversell aggregate gains.** If post-RL macro gap is 2–5pp, write "improves" not "substantially outperforms." The mechanism (recalibration) is the story; aggregate is evidence.
-2. **Zero-shot miscalibration table is load-bearing.** Pre-RL (call rate, call-path pass, skip-path pass) table *sets up the paper*. It's Table A in §5.1.
-3. **Per-type concentration is a first-class finding** — Table 2 shows which answer types saw the biggest recalibration.
-4. **Call rate × call-path pass scatter (zero-shot → post-RL) is a headline figure.** One point per (benchmark × type), arrows from before to after.
-5. **Watch for collapse during training.** A reasoning-tuned base under RL might learn to skip the tool entirely (tool calls cost tokens and sometimes fail). Log tool-call rate per training step. If it trends toward zero, consider (a) an auxiliary reward term encouraging tool use, or (b) reporting the collapse as a finding with different framing.
-6. **Watch for the opposite collapse** — tool is called on everything but call-path pass is flat or falls. This would mean RL teaches tool invocation without teaching productive use. Also worth reporting as a finding.
+1. **Lead with the paired comparison (C1), not within-TIR call-vs-skip (C3).** C1 has no selection bias. C3 is a zoom-in that requires a caveat.
+2. **Don't oversell aggregate gains.** If post-RL macro gap is 2–5pp, write "closes the gap" not "substantially outperforms."
+3. **Zero-shot paired table is load-bearing.** Table A in §5.1 compares {TIR-mode, CoT-mode} × benchmarks with explicit Δ column. Paper starts from this observation.
+4. **Per-type Table 2 is supporting** — it gives the "where does tool use help" answer even zero-shot, and lets us predict where RL gains will concentrate.
+5. **Watch for collapse during training.** A reasoning-tuned base under RL might learn to skip the tool entirely (tool calls cost tokens and sometimes fail). Log tool-call rate per training step. If call rate → 0, frame as a finding about RL dynamics rather than a failure.
+6. **Watch for the opposite collapse.** Tool called on everything but call-path pass is flat. Would mean RL teaches tool invocation without teaching productive use.
 
 ## 9. Paper outline (page budget)
 
@@ -308,6 +326,7 @@ git push origin main
 paper/
   HANDOFF.md               # this file — read first
   README.md                # navigation + policies
+  HPC_TASKS.md             # analysis tasks for the HPC session
   outline.md               # section beats + page budget
   storyboard.md            # figures/tables, one-liner each, priority order
   sections/
@@ -317,10 +336,18 @@ paper/
     08-conclusion.md
   figures/                 # empty, subdirs per figure when we start building
   tables/                  # empty
+  writing-samples/         # structural/stylistic analyses of reference papers
+    README.md
+    simpletir.md
+    tora.md
+    phybench.md
+    ugphysics.md
+    dapo.md
+    user-2410.12779.md     # author's prior arxiv — AISTATS 2025
+    user-2602.00217.md     # author's prior arxiv
   bibliography/
-    refs.bib               # verified-only, currently empty
+    refs.bib               # verified citations only
     citations-todo.md      # all [CITE:tag] markers + verification status
-    sample-abstracts/      # empty, reference papers to drop here
   notes/
     novelty-pitch.md       # anticipated-reviewer-objections responses
     timeline.md            # day-by-day plan

@@ -26,7 +26,7 @@ One experiment carries one claim. No reward-noise mechanism pitch in the body â€
 | `tables/` | Table source CSVs and rendered tex. |
 | `bibliography/refs.bib` | Verified citations only. Every entry checked against primary source. |
 | `bibliography/citations-todo.md` | Placeholder citation markers and verification checklist. |
-| `bibliography/sample-abstracts/` | Abstracts of strong related papers for reference. |
+| `writing-samples/` | Structural + stylistic analyses of reference papers (for learning paper-writing craft; separate from citation management). |
 | `notes/novelty-pitch.md` | Crystallized thesis + reviewer-anticipation notes. |
 | `notes/timeline.md` | Day-by-day plan through Apr 24. |
 | `main.md` | Stitched draft for reading / sharing. Built from `sections/` when ready. |
