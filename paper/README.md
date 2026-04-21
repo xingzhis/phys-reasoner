@@ -1,5 +1,7 @@
 # Paper workspace — PhysCode, ICML 2026 AI4Physics workshop
 
+> **Start here:** [`HANDOFF.md`](./HANDOFF.md) — full, loss-free context dump of the planning session. Read it first if you're picking up this workspace in a fresh session.
+
 **Deadline:** April 24, 2026 AOE
 **Page limit:** 8 pages (ICML 2-column), references excluded
 **Workshop:** https://ai4physics-workshop.github.io/
@@ -15,6 +17,7 @@ One experiment carries one claim. No reward-noise mechanism pitch in the body �
 
 | Path | Purpose |
 |---|---|
+| `HANDOFF.md` | **Read first.** Full session context: thesis, framing decisions, rejected alternatives, zero-shot eval numbers, figure/table priorities, timeline, risks. |
 | `outline.md` | Section-by-section story beats. Source of truth for structure. |
 | `storyboard.md` | One-liner per figure and table. What each shows and why. |
 | `sections/` | Per-section prose drafts (markdown). Stitched into `main.md` at the end. |
