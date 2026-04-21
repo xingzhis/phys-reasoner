@@ -53,7 +53,10 @@ XVERIFY_MODEL="${XVERIFY_MODEL:-IAAR-Shanghai/xVerify-7B-I}"
 # training job, fall back to `hostname --ip-address` and write the IP instead.
 HOST=$(hostname)
 URL="http://${HOST}:${PORT}/judge"
-URL_FILE="$ROOT/outputs/xverify_endpoints/current.url"
+# URL_FILE can be overridden via --export=ALL,URL_FILE=... when multiple
+# concurrent consumers need distinct rendezvous files (e.g. TIR+CoT prod
+# sharing one xverify — use a `shared.url` path in that case).
+URL_FILE="${URL_FILE:-$ROOT/outputs/xverify_endpoints/current.url}"
 
 echo "=== serve_xverify_perlmutter.sbatch ==="
 echo "  Job   : $SLURM_JOB_ID"
@@ -78,4 +81,5 @@ mv "$TMP" "$URL_FILE"
 trap 'rm -f "$URL_FILE"; echo "[xverify] URL file cleaned"' EXIT
 
 # Delegate to the underlying server runner (uses apptainer internally).
-PORT="$PORT" XVERIFY_MODEL="$XVERIFY_MODEL" bash "$ROOT/scripts/serve_xverify.sh"
+# Pass URL_FILE explicitly so serve_xverify.sh writes to the same path.
+PORT="$PORT" XVERIFY_MODEL="$XVERIFY_MODEL" URL_FILE="$URL_FILE" bash "$ROOT/scripts/serve_xverify.sh"
