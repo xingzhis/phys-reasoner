@@ -172,7 +172,11 @@ export MODEL="${MODEL:-Qwen/Qwen3-4B-Thinking-2507}"
 export TRAIN_BATCH="${TRAIN_BATCH:-128}"
 export ROLLOUT_N="${ROLLOUT_N:-8}"
 # 3 epochs over 23,589-row filtered pool: 23589 / 128 ≈ 184 steps/epoch × 3.
+# NOTE: verl caps by min(TOTAL_STEPS * BATCH, len(dataloader) * TOTAL_EPOCHS) —
+# BOTH must be set so the cap binds correctly. TOTAL_EPOCHS=3 is the binding
+# knob here; TOTAL_STEPS is a safety ceiling slightly above the epoch math.
 export TOTAL_STEPS="${TOTAL_STEPS:-552}"
+export TOTAL_EPOCHS="${TOTAL_EPOCHS:-3}"
 export SAVE_FREQ="${SAVE_FREQ:-50}"
 export TEST_FREQ="${TEST_FREQ:-50}"
 

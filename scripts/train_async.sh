@@ -91,8 +91,16 @@ fi
 # Schedule. TOTAL_STEPS is the number of local trainer updates (each consumes
 # `require_batches * ppo_mini_batch_size` prompts). total_rollout_steps is the
 # total number of rollouts produced by the Rollouter across the whole run.
+#
+# verl's FullyAsyncRollouter.__init__ computes
+#   total_rollout_steps = min( len(dataloader) * trainer.total_epochs,
+#                              rollout.total_rollout_steps )
+# so BOTH knobs must be large enough to reach the target step count — otherwise
+# the smaller one binds. For long prod runs (multiple epochs) set TOTAL_EPOCHS
+# explicitly; smokes inherit the default 1 since TOTAL_STEPS << 1 epoch anyway.
 TOTAL_STEPS="${TOTAL_STEPS:-2}"
 TOTAL_ROLLOUT_STEPS=$((TOTAL_STEPS * TRAIN_BATCH))
+TOTAL_EPOCHS="${TOTAL_EPOCHS:-1}"
 SAVE_FREQ="${SAVE_FREQ:--1}"            # -1 = never save during smoke runs
 TEST_FREQ="${TEST_FREQ:--1}"            # -1 = never validate during smoke runs
 
@@ -211,7 +219,7 @@ echo "  mode        : $([ "$COT_BASELINE" == "1" ] && echo 'CoT baseline (no too
 echo "  train       : $TRAIN_FILES"
 echo "  val         : $VAL_FILES"
 echo "  resource    : rollout ${NNODES_ROLLOUT}n x ${N_GPUS_ROLLOUT}g | train ${NNODES_TRAIN}n x ${N_GPUS_TRAIN}g"
-echo "  batch       : ppo_mini=$PPO_MINI_BATCH, rollout_n=$ROLLOUT_N, total_rollout_steps=$TOTAL_ROLLOUT_STEPS"
+echo "  batch       : ppo_mini=$PPO_MINI_BATCH, rollout_n=$ROLLOUT_N, total_rollout_steps=$TOTAL_ROLLOUT_STEPS, total_epochs=$TOTAL_EPOCHS"
 echo "  seq lens    : prompt=$MAX_PROMPT_LEN  response=$MAX_RESPONSE_LEN"
 echo "  vLLM mem    : $VLLM_GPU_MEM_UTIL"
 echo "  output      : $TRAIN_DIR"
@@ -352,7 +360,7 @@ PYTHONNOUSERSITE=1 apptainer exec --nv \
     rollout.nnodes=$NNODES_ROLLOUT \
     rollout.n_gpus_per_node=$N_GPUS_ROLLOUT \
     rollout.total_rollout_steps=$TOTAL_ROLLOUT_STEPS \
-    trainer.total_epochs=1 \
+    trainer.total_epochs=$TOTAL_EPOCHS \
     trainer.save_freq=$SAVE_FREQ \
     trainer.test_freq=$TEST_FREQ \
     trainer.val_before_train=${VAL_BEFORE_TRAIN:-false} \

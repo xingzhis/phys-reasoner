@@ -140,7 +140,10 @@ export COT_BASELINE=1
 export MODEL="${MODEL:-Qwen/Qwen3-4B-Thinking-2507}"
 export TRAIN_BATCH="${TRAIN_BATCH:-128}"
 export ROLLOUT_N="${ROLLOUT_N:-8}"
+# 3 epochs over filtered pool — both TOTAL_STEPS and TOTAL_EPOCHS must agree
+# because verl caps by min(TOTAL_STEPS * BATCH, len(dataloader) * TOTAL_EPOCHS).
 export TOTAL_STEPS="${TOTAL_STEPS:-552}"
+export TOTAL_EPOCHS="${TOTAL_EPOCHS:-3}"
 export SAVE_FREQ="${SAVE_FREQ:-50}"
 export TEST_FREQ="${TEST_FREQ:-50}"
 export THINKING_BUDGET="${THINKING_BUDGET:-12288}"
