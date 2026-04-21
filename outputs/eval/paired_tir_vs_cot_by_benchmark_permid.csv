@@ -1,0 +1,3 @@
+benchmark,preset,judge,per_mid_pass_def,per_mid_call_def,n_paired,n_win,n_loss,n_tie_pass,n_tie_fail,win_rate,loss_rate,tie_pass_rate,tie_fail_rate,win_minus_loss,tir_pass_pct,cot_pass_pct,tir_call_pct
+abench_phy_b_permid,train,abench-tol1pct,all-4-subid-correct,any-of-4-subid-called,100,3,2,47,48,3.0,2.0,47.0,48.0,1.0,50.0,49.0,98.0
+abench_phy_b_permid,qwen,abench-tol1pct,all-4-subid-correct,any-of-4-subid-called,100,3,2,46,49,3.0,2.0,46.0,49.0,1.0,49.0,48.0,98.0

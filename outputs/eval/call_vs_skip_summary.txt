@@ -1,0 +1,95 @@
+# Task 1 — Call vs Skip conditional pass@1 (zero-shot, Qwen3-4B-Thinking-2507)
+
+Notes:
+- Zero-shot rollout.n = 1 per problem (verified).
+- 'called_tool' = rollouts that emitted a <tool_call> with parseable code (matches analyze_tool_use semantics).
+- For PHYBench, eed_mean is the paper's headline metric; call_pass_pct/skip_pass_pct are exact-match.
+
+## Preset: train  (train = RL-matching, qwen = Qwen-team-recommended)
+
+benchmark                cond               n   call%  skip% call_pass% skip_pass% overall%    C-S  eed_mean call_eed skip_eed  judge                 
+------------------------------------------------------------------------------------------------------------------------------------------------------
+abench_phy_a             zero_shot_COT    400     0.0  100.0        nan       19.5     19.5    nan       nan      nan      nan  abench-tol1pct        
+abench_phy_a             zero_shot_TIR    400    72.0   28.0       17.4       27.7     20.2  -10.3       nan      nan      nan  abench-tol1pct        
+abench_phy_b             zero_shot_COT    400     0.0  100.0        nan       63.2     63.2    nan       nan      nan      nan  abench-tol1pct        
+abench_phy_b             zero_shot_TIR    400    82.2   17.8       65.7       52.1     63.2   13.5       nan      nan      nan  abench-tol1pct        
+olympiad_oe_to_physics   zero_shot_COT    236     0.0  100.0        nan        5.1      5.1    nan       nan      nan      nan  olympiad-math-verify  
+olympiad_oe_to_physics   zero_shot_TIR    236    34.7   65.3        4.9        4.5      4.7    0.3       nan      nan      nan  olympiad-math-verify  
+phybench                 zero_shot_COT   1000     0.0  100.0        nan        1.0      1.0    nan       2.4      nan      2.4  phybench-exact        
+phybench                 zero_shot_TIR   1000    30.7   69.3        1.0        1.7      1.5   -0.8       3.0      2.7      3.2  phybench-exact        
+pool_v2_drsci            zero_shot_COT    503     0.0  100.0        nan       64.4     64.4    nan       nan      nan      nan  xverify-7b            
+pool_v2_drsci            zero_shot_TIR    503    38.4   61.6       64.8       61.9     63.0    2.8       nan      nan      nan  xverify-7b            
+pool_v2_physics          zero_shot_COT    191     0.0  100.0        nan       43.5     43.5    nan       nan      nan      nan  xverify-7b            
+pool_v2_physics          zero_shot_TIR    191    44.5   55.5       36.5       41.5     39.3   -5.0       nan      nan      nan  xverify-7b            
+pool_v2_scibench         zero_shot_COT    153     0.0  100.0        nan       56.2     56.2    nan       nan      nan      nan  xverify-7b            
+pool_v2_scibench         zero_shot_TIR    153    70.6   29.4       54.6       71.1     59.5  -16.5       nan      nan      nan  xverify-7b            
+pool_v2_ugphysics        zero_shot_COT    217     0.0  100.0        nan       41.0     41.0    nan       nan      nan      nan  xverify-7b            
+pool_v2_ugphysics        zero_shot_TIR    217    33.6   66.4       37.0       38.9     38.2   -1.9       nan      nan      nan  xverify-7b            
+
+## Preset: qwen  (train = RL-matching, qwen = Qwen-team-recommended)
+
+benchmark                cond               n   call%  skip% call_pass% skip_pass% overall%    C-S  eed_mean call_eed skip_eed  judge                 
+------------------------------------------------------------------------------------------------------------------------------------------------------
+abench_phy_a             zero_shot_COT    400     0.0  100.0        nan       21.5     21.5    nan       nan      nan      nan  abench-tol1pct        
+abench_phy_a             zero_shot_TIR    400    77.5   22.5       21.3       16.7     20.2    4.6       nan      nan      nan  abench-tol1pct        
+abench_phy_b             zero_shot_COT    400     0.0  100.0        nan       62.0     62.0    nan       nan      nan      nan  abench-tol1pct        
+abench_phy_b             zero_shot_TIR    400    89.2   10.8       64.7       58.1     64.0    6.6       nan      nan      nan  abench-tol1pct        
+olympiad_oe_to_physics   zero_shot_COT    236     0.0  100.0        nan        6.8      6.8    nan       nan      nan      nan  olympiad-math-verify  
+olympiad_oe_to_physics   zero_shot_TIR    236    39.8   60.2        6.4        5.6      5.9    0.7       nan      nan      nan  olympiad-math-verify  
+phybench                 zero_shot_COT   1000     0.0  100.0        nan        1.7      1.7    nan       3.0      nan      3.0  phybench-exact        
+phybench                 zero_shot_TIR   1000    31.4   68.6        1.3        2.6      2.2   -1.4       3.3      2.3      3.8  phybench-exact        
+pool_v2_drsci            zero_shot_COT    503     0.0  100.0        nan       65.4     65.4    nan       nan      nan      nan  xverify-7b            
+pool_v2_drsci            zero_shot_TIR    503    41.4   58.6       66.3       57.6     61.2    8.7       nan      nan      nan  xverify-7b            
+pool_v2_physics          zero_shot_COT    191     0.0  100.0        nan       39.8     39.8    nan       nan      nan      nan  xverify-7b            
+pool_v2_physics          zero_shot_TIR    191    48.7   51.3       37.6       35.7     36.6    1.9       nan      nan      nan  xverify-7b            
+pool_v2_scibench         zero_shot_COT    153     0.0  100.0        nan       57.5     57.5    nan       nan      nan      nan  xverify-7b            
+pool_v2_scibench         zero_shot_TIR    153    74.5   25.5       57.0       56.4     56.9    0.6       nan      nan      nan  xverify-7b            
+pool_v2_ugphysics        zero_shot_COT    217     0.0  100.0        nan       39.6     39.6    nan       nan      nan      nan  xverify-7b            
+pool_v2_ugphysics        zero_shot_TIR    217    35.0   65.0       34.2       37.6     36.4   -3.4       nan      nan      nan  xverify-7b            
+
+## Per-type zoom-in (in-dist pool_v2, TIR, train preset)
+
+benchmark            answer_type                                                     n  call% call_pass% skip_pass%    C-S overall%
+-----------------------------------------------------------------------------------------------------------------------------------
+pool_v2_drsci        equation                                                      108   25.0       51.9       51.9    0.0     51.9
+pool_v2_drsci        expression                                                     82   30.5       40.0       50.9  -10.9     47.6
+pool_v2_drsci        mcq                                                           231   34.2       60.8       70.4   -9.6     67.1
+pool_v2_drsci        numerical                                                      82   75.6       85.5       70.0   15.5     81.7
+pool_v2_physics      ["equation", "equation"]                                        2   50.0        0.0        0.0    0.0      0.0
+pool_v2_physics      ["equation", "expression"]                                      2    0.0        nan      100.0    nan    100.0
+pool_v2_physics      ["expression", "equation", "equation"]                          1    0.0        nan        0.0    nan      0.0
+pool_v2_physics      ["expression", "equation"]                                      2    0.0        nan       50.0    nan     50.0
+pool_v2_physics      ["expression", "expression", "expression", "expression"]        2    0.0        nan        0.0    nan      0.0
+pool_v2_physics      ["expression", "expression", "expression"]                      1    0.0        nan        0.0    nan      0.0
+pool_v2_physics      ["expression", "expression"]                                    5    0.0        nan       20.0    nan     20.0
+pool_v2_physics      ["expression", "numerical", "expression"]                       1  100.0        0.0        nan    nan      0.0
+pool_v2_physics      ["expression", "numerical", "numerical"]                        1  100.0        0.0        nan    nan      0.0
+pool_v2_physics      ["expression", "numerical"]                                     1  100.0        0.0        nan    nan      0.0
+pool_v2_physics      ["numerical", "equation"]                                       1    0.0        nan        0.0    nan      0.0
+pool_v2_physics      ["numerical", "numerical", "numerical", "expression", "numer    1  100.0        0.0        nan    nan      0.0
+pool_v2_physics      ["numerical", "numerical", "numerical", "numerical", "numeri    1  100.0        0.0        nan    nan      0.0
+pool_v2_physics      ["numerical", "numerical", "numerical", "numerical", "numeri    1  100.0        0.0        nan    nan      0.0
+pool_v2_physics      ["numerical", "numerical", "numerical", "numerical"]            1  100.0        0.0        nan    nan      0.0
+pool_v2_physics      ["numerical", "numerical", "numerical"]                         8  100.0       12.5        nan    nan     12.5
+pool_v2_physics      ["numerical", "numerical"]                                     12   91.7        0.0        0.0    0.0      0.0
+pool_v2_physics      ["numerical", "true_false"]                                     1    0.0        nan        0.0    nan      0.0
+pool_v2_physics      equation                                                        9    0.0        nan       44.4    nan     44.4
+pool_v2_physics      expression                                                     56   14.3       37.5       41.7   -4.2     41.1
+pool_v2_physics      mcq                                                            11   18.2      100.0       55.6   44.4     63.6
+pool_v2_physics      numerical                                                      71   67.6       52.1       47.8    4.3     50.7
+pool_v2_scibench     numerical                                                     153   70.6       54.6       71.1  -16.5     59.5
+pool_v2_ugphysics    ["equation", "equation"]                                        1  100.0        0.0        nan    nan      0.0
+pool_v2_ugphysics    ["equation", "expression"]                                      1  100.0        0.0        nan    nan      0.0
+pool_v2_ugphysics    ["equation", "true_false"]                                      1    0.0        nan        0.0    nan      0.0
+pool_v2_ugphysics    ["expression", "equation"]                                      1    0.0        nan        0.0    nan      0.0
+pool_v2_ugphysics    ["expression", "expression", "expression", "expression"]        1    0.0        nan        0.0    nan      0.0
+pool_v2_ugphysics    ["expression", "expression", "numerical", "numerical"]          1    0.0        nan        0.0    nan      0.0
+pool_v2_ugphysics    ["expression", "expression"]                                    6   33.3        0.0        0.0    0.0      0.0
+pool_v2_ugphysics    ["numerical", "numerical", "numerical", "numerical"]            1    0.0        nan        0.0    nan      0.0
+pool_v2_ugphysics    ["numerical", "numerical"]                                     13   69.2       11.1        0.0   11.1      7.7
+pool_v2_ugphysics    equation                                                       29   10.3       66.7       30.8   35.9     34.5
+pool_v2_ugphysics    expression                                                     60   11.7       14.3       39.6  -25.3     36.7
+pool_v2_ugphysics    interval                                                        7   28.6       50.0       40.0   10.0     42.9
+pool_v2_ugphysics    mcq                                                             9   11.1        0.0       87.5  -87.5     77.8
+pool_v2_ugphysics    numerical                                                      73   60.3       43.2       44.8   -1.6     43.8
+pool_v2_ugphysics    true_false                                                     13   23.1      100.0       50.0   50.0     61.5
