@@ -1,0 +1,85 @@
+bench,tag,answer_type,n,called_pct,overall_pass_pct
+pool_v2_drsci,train,equation,108,25.0,51.85185185185185
+pool_v2_drsci,train,expression,82,30.48780487804878,47.5609756097561
+pool_v2_drsci,train,mcq,231,34.1991341991342,67.09956709956711
+pool_v2_drsci,train,numerical,82,75.60975609756098,81.70731707317073
+pool_v2_drsci,qwen,equation,108,22.22222222222222,53.70370370370371
+pool_v2_drsci,qwen,expression,82,39.02439024390244,48.78048780487805
+pool_v2_drsci,qwen,mcq,231,38.52813852813853,64.06926406926407
+pool_v2_drsci,qwen,numerical,82,76.82926829268293,75.60975609756098
+pool_v2_physics,train,"[""equation"", ""equation""]",2,50.0,0.0
+pool_v2_physics,train,"[""equation"", ""expression""]",2,0.0,100.0
+pool_v2_physics,train,"[""expression"", ""equation"", ""equation""]",1,0.0,0.0
+pool_v2_physics,train,"[""expression"", ""equation""]",2,0.0,50.0
+pool_v2_physics,train,"[""expression"", ""expression"", ""expression"", ""expression""]",2,0.0,0.0
+pool_v2_physics,train,"[""expression"", ""expression"", ""expression""]",1,0.0,0.0
+pool_v2_physics,train,"[""expression"", ""expression""]",5,0.0,20.0
+pool_v2_physics,train,"[""expression"", ""numerical"", ""expression""]",1,100.0,0.0
+pool_v2_physics,train,"[""expression"", ""numerical"", ""numerical""]",1,100.0,0.0
+pool_v2_physics,train,"[""expression"", ""numerical""]",1,100.0,0.0
+pool_v2_physics,train,"[""numerical"", ""equation""]",1,0.0,0.0
+pool_v2_physics,train,"[""numerical"", ""numerical"", ""numerical"", ""expression"", ""numerical""]",1,100.0,0.0
+pool_v2_physics,train,"[""numerical"", ""numerical"", ""numerical"", ""numerical"", ""numerical"", ""numerical"", ""numerical"", ""numerical"", ""numerical""]",1,100.0,0.0
+pool_v2_physics,train,"[""numerical"", ""numerical"", ""numerical"", ""numerical"", ""numerical""]",1,100.0,0.0
+pool_v2_physics,train,"[""numerical"", ""numerical"", ""numerical"", ""numerical""]",1,100.0,0.0
+pool_v2_physics,train,"[""numerical"", ""numerical"", ""numerical""]",8,100.0,12.5
+pool_v2_physics,train,"[""numerical"", ""numerical""]",12,91.66666666666666,0.0
+pool_v2_physics,train,"[""numerical"", ""true_false""]",1,0.0,0.0
+pool_v2_physics,train,equation,9,0.0,44.44444444444444
+pool_v2_physics,train,expression,56,14.285714285714285,41.07142857142857
+pool_v2_physics,train,mcq,11,18.181818181818183,63.63636363636363
+pool_v2_physics,train,numerical,71,67.6056338028169,50.70422535211267
+pool_v2_physics,qwen,"[""equation"", ""equation""]",2,50.0,0.0
+pool_v2_physics,qwen,"[""equation"", ""expression""]",2,0.0,50.0
+pool_v2_physics,qwen,"[""expression"", ""equation"", ""equation""]",1,0.0,0.0
+pool_v2_physics,qwen,"[""expression"", ""equation""]",2,0.0,50.0
+pool_v2_physics,qwen,"[""expression"", ""expression"", ""expression"", ""expression""]",2,50.0,50.0
+pool_v2_physics,qwen,"[""expression"", ""expression"", ""expression""]",1,0.0,0.0
+pool_v2_physics,qwen,"[""expression"", ""expression""]",5,20.0,0.0
+pool_v2_physics,qwen,"[""expression"", ""numerical"", ""expression""]",1,100.0,0.0
+pool_v2_physics,qwen,"[""expression"", ""numerical"", ""numerical""]",1,100.0,0.0
+pool_v2_physics,qwen,"[""expression"", ""numerical""]",1,100.0,0.0
+pool_v2_physics,qwen,"[""numerical"", ""equation""]",1,0.0,0.0
+pool_v2_physics,qwen,"[""numerical"", ""numerical"", ""numerical"", ""expression"", ""numerical""]",1,100.0,0.0
+pool_v2_physics,qwen,"[""numerical"", ""numerical"", ""numerical"", ""numerical"", ""numerical"", ""numerical"", ""numerical"", ""numerical"", ""numerical""]",1,100.0,0.0
+pool_v2_physics,qwen,"[""numerical"", ""numerical"", ""numerical"", ""numerical"", ""numerical""]",1,0.0,0.0
+pool_v2_physics,qwen,"[""numerical"", ""numerical"", ""numerical"", ""numerical""]",1,100.0,0.0
+pool_v2_physics,qwen,"[""numerical"", ""numerical"", ""numerical""]",8,100.0,12.5
+pool_v2_physics,qwen,"[""numerical"", ""numerical""]",12,66.66666666666666,0.0
+pool_v2_physics,qwen,"[""numerical"", ""true_false""]",1,100.0,0.0
+pool_v2_physics,qwen,equation,9,11.11111111111111,22.22222222222222
+pool_v2_physics,qwen,expression,56,23.214285714285715,37.5
+pool_v2_physics,qwen,mcq,11,9.090909090909092,63.63636363636363
+pool_v2_physics,qwen,numerical,71,73.23943661971832,50.70422535211267
+pool_v2_ugphysics,train,"[""equation"", ""equation""]",1,100.0,0.0
+pool_v2_ugphysics,train,"[""equation"", ""expression""]",1,100.0,0.0
+pool_v2_ugphysics,train,"[""equation"", ""true_false""]",1,0.0,0.0
+pool_v2_ugphysics,train,"[""expression"", ""equation""]",1,0.0,0.0
+pool_v2_ugphysics,train,"[""expression"", ""expression"", ""expression"", ""expression""]",1,0.0,0.0
+pool_v2_ugphysics,train,"[""expression"", ""expression"", ""numerical"", ""numerical""]",1,0.0,0.0
+pool_v2_ugphysics,train,"[""expression"", ""expression""]",6,33.33333333333333,0.0
+pool_v2_ugphysics,train,"[""numerical"", ""numerical"", ""numerical"", ""numerical""]",1,0.0,0.0
+pool_v2_ugphysics,train,"[""numerical"", ""numerical""]",13,69.23076923076923,7.6923076923076925
+pool_v2_ugphysics,train,equation,29,10.344827586206897,34.48275862068966
+pool_v2_ugphysics,train,expression,60,11.666666666666666,36.666666666666664
+pool_v2_ugphysics,train,interval,7,28.57142857142857,42.857142857142854
+pool_v2_ugphysics,train,mcq,9,11.11111111111111,77.77777777777779
+pool_v2_ugphysics,train,numerical,73,60.273972602739725,43.83561643835616
+pool_v2_ugphysics,train,true_false,13,23.076923076923077,61.53846153846154
+pool_v2_ugphysics,qwen,"[""equation"", ""equation""]",1,100.0,0.0
+pool_v2_ugphysics,qwen,"[""equation"", ""expression""]",1,0.0,0.0
+pool_v2_ugphysics,qwen,"[""equation"", ""true_false""]",1,0.0,0.0
+pool_v2_ugphysics,qwen,"[""expression"", ""equation""]",1,0.0,0.0
+pool_v2_ugphysics,qwen,"[""expression"", ""expression"", ""expression"", ""expression""]",1,0.0,0.0
+pool_v2_ugphysics,qwen,"[""expression"", ""expression"", ""numerical"", ""numerical""]",1,0.0,0.0
+pool_v2_ugphysics,qwen,"[""expression"", ""expression""]",6,16.666666666666664,0.0
+pool_v2_ugphysics,qwen,"[""numerical"", ""numerical"", ""numerical"", ""numerical""]",1,0.0,0.0
+pool_v2_ugphysics,qwen,"[""numerical"", ""numerical""]",13,84.61538461538461,0.0
+pool_v2_ugphysics,qwen,equation,29,6.896551724137931,31.03448275862069
+pool_v2_ugphysics,qwen,expression,60,16.666666666666664,35.0
+pool_v2_ugphysics,qwen,interval,7,42.857142857142854,28.57142857142857
+pool_v2_ugphysics,qwen,mcq,9,22.22222222222222,77.77777777777779
+pool_v2_ugphysics,qwen,numerical,73,57.534246575342465,42.465753424657535
+pool_v2_ugphysics,qwen,true_false,13,30.76923076923077,69.23076923076923
+pool_v2_scibench,train,numerical,153,70.58823529411765,59.47712418300654
+pool_v2_scibench,qwen,numerical,153,74.50980392156863,56.86274509803921
