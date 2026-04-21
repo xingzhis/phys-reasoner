@@ -1,18 +1,18 @@
 # Outline — PhysCode, ICML 2026 AI4Physics workshop
 
-**Status:** v2 — claim-1-led thesis (Apr 21)
+**Status:** v2.1 — two-failure-modes framing (Apr 21, post-Task-1b)
 **Page budget:** 8 pages ICML 2-column (references excluded)
 
 ---
 
 ## Thesis (one sentence, locked)
 
-Tool availability alone is not enough: giving a reasoning-tuned LLM (Qwen3-4B-Thinking-2507) access to a symbolic-computation tool fails to consistently help on physics and, on four of five in-distribution benchmarks, hurts — despite call rates of 31–89% zero-shot. We show tool-integrated RLVR bridges this gap, with TIR-GRPO outperforming a strict CoT-GRPO baseline matched in data, training budget, and reward stack, and gains concentrated on answer types where zero-shot TIR underperforms most.
+Tool availability is worst where symbolic computation should intuitively help most: on expression-type physics problems, a reasoning-tuned LLM with a Python/SymPy tool performs 2–11 pp worse than the same model reasoning in natural language (across 4 of 5 benchmarks with appreciable n), while on numerical-type problems the model invokes the tool 60–82% of the time but extracts no aggregate benefit. We show tool-integrated RLVR closes both gaps: TIR-GRPO outperforms a strict CoT-GRPO baseline at matched training budget, with recalibration visible in both call rate and call-conditional accuracy.
 
 ## Contributions (3, in priority order)
 
-1. **Empirical finding (zero-shot characterization).** Paired comparison of TIR-mode vs. CoT-mode on the same problems shows tool availability does not translate to benefit on a reasoning-tuned 4B model — TIR ≤ CoT on 4 of 5 in-distribution physics benchmarks despite tool use being attempted on 31–89% of problems. We characterize this per-benchmark and per-answer-type.
-2. **Controlled RL intervention.** First apples-to-apples TIR-GRPO vs. CoT-GRPO at matched RL training budget on physics. TIR-GRPO closes and reverses the zero-shot gap; per-type decomposition shows gains concentrate on answer types where zero-shot TIR underperformed most.
+1. **Empirical finding (zero-shot characterization).** Using paired TIR-mode vs. CoT-mode evaluation on the same problems, we show two distinct failure modes: (A) **expression-type tool use hurts** across 4 of 5 benchmarks (W−L from −1.7 to −10.7 pp); (B) **numerical-type tool use is high-frequency but low-benefit** (60–82% call rate, ±5.5 pp aggregate effect). Both are selection-bias-free per-problem paired comparisons.
+2. **Controlled RL intervention.** First apples-to-apples TIR-GRPO vs. CoT-GRPO at matched RL training budget on physics. TIR-GRPO closes the zero-shot gap; per-type breakdown predicts where gains concentrate from the two zero-shot failure modes.
 3. **Recipe.** Single-block TIR with ScaleRL-style think-interrupt inside VeRL for Qwen3-Thinking, plus the Dr.GRPO + DAPO-lite training configuration. Reproducible artifact.
 
 ---
@@ -40,13 +40,13 @@ Pressure valve: collapse Analysis into Results; cut Related Work to ~0.4; drop F
 
 ## §1 Introduction — beats
 
-- **Hook:** Equipping a reasoning-tuned LLM with a symbolic-computation tool doesn't obviously help — and on 4 of 5 physics benchmarks we test, it hurts. The model does invoke the tool (31–89% of problems), but invoking it does not translate to accuracy gains.
-- **Why this is a physics RL story:** Physics is where tools should shine — it is precisely the domain with dimensional analysis, symbolic manipulation, and numerical evaluation that LLMs struggle to do reliably in chain-of-thought. That the gap *narrows or reverses* there is the surprise. RL must teach not just *when* but *how* to use the tool productively.
+- **Hook:** Equipping a reasoning-tuned LLM with a symbolic-computation tool *should* help most on exactly the problems where symbolic computation is needed. It doesn't. On expression-type physics problems, a paired head-to-head between the tool-enabled and plain-reasoning configurations of Qwen3-4B-Thinking-2507 shows **the tool-enabled condition loses by up to 10.7 pp** across 4 of 5 benchmarks. On numerical-type problems, the model attempts the tool 60–82% of the time but extracts no aggregate benefit.
+- **Why this is a physics RL story:** Physics has heterogeneous answer types (expression, numerical, equation, MCQ, interval). Tool usefulness varies by type; the zero-shot failure does too. This is a per-type story, not an "is tool use helpful" story, and RL is the natural intervention to teach *where and how* to use the tool productively.
 - **What we do:** train Qwen3-4B-Thinking-2507 with single-block tool-integrated RLVR on a curriculum-filtered physics training pool; compare against strict CoT-GRPO at matched training budget.
-- **What we find:** (placeholder) TIR-GRPO closes the zero-shot TIR-vs-CoT gap and surpasses CoT-GRPO across benchmarks. Gains concentrate on answer types where zero-shot TIR was worst.
-- **Why it matters for the workshop:** tool-augmented agents is a named direction. The zero-shot finding alone (tool availability isn't enough) quantifies a known-but-underreported failure mode for reasoning-tuned LLMs on physics.
+- **What we find:** (placeholder) TIR-GRPO closes the zero-shot TIR-vs-CoT gap and surpasses CoT-GRPO, with gains concentrated on the expression-type failure mode.
+- **Why it matters for the workshop:** tool-augmented agents is a named direction. The paired-per-type finding quantifies a concrete failure mode — expression-type tool calls are actively wrong — that prior tool-RL work (e.g. SimpleTIR on math) has not characterized for physics.
 - **Contribution bullets** (3, as above).
-- **Figure 1** (hero): paired bar chart — for each in-dist benchmark, two bars (TIR-mode, CoT-mode) zero-shot, plus two matching bars after RL (TIR-GRPO, CoT-GRPO). The visual story: zero-shot pair shows TIR ≤ CoT; post-RL pair shows the reversal.
+- **Figure 1** (hero): two-panel paired bar chart. Top: aggregate paired W−L per benchmark (zero-shot + post-RL). Bottom: paired W−L per answer-type grouped by benchmark, expression-row highlighted. The visual story: zero-shot pair shows TIR ≤ CoT especially on expression; post-RL pair shows the reversal.
 
 ## §2 Related Work — beats
 
@@ -116,11 +116,13 @@ Pressure valve: collapse Analysis into Results; cut Related Work to ~0.4; drop F
 
 ## §5 Results — beats
 
-### 5.1 Zero-shot: tool availability ≠ tool benefit (sets up the paper)
+### 5.1 Zero-shot: two failure modes of tool availability (paper's setup)
 
-- **Table A (headline):** paired TIR-mode vs CoT-mode zero-shot on each benchmark. Columns: benchmark, n, TIR pass@1, CoT pass@1, Δ(TIR−CoT), TIR call rate. One row per benchmark. Δ column is the story — negative on 4/5 in-dist slices.
-- **Per-problem paired comparison** (once Task 1b output lands): for each problem, is tool mode "Win" (correct when CoT wrong), "Loss" (wrong when CoT correct), "Tie"? Report Win/Loss/Tie counts per benchmark and per answer type — **this is the strongest form of the evidence, no selection bias**.
-- One paragraph interpretation: the model attempts tool use at 31–89% rates but on most benchmarks the attempts do not help or hurt aggregate accuracy.
+- **Table A (headline, paired per-benchmark):** columns = benchmark, n, TIR pass@1, CoT pass@1, W, L, TP, TF, W−L, TIR-call%. One row per benchmark. Interpretation: 3 of 4 in-dist pool_v2 slices show TIR ≤ CoT with W−L from −1.4 to −4.2; scibench is the positive outlier; external benchmarks near-tie.
+- **Table B (headline, paired per-type):** columns = benchmark, answer_type, n, W−L, TIR%, CoT%, call%. Filtered to n ≥ 10. Interpretation: expression-type is where the tool hurts (W−L from −1.7 to −10.7 on 4 of 5 benchmarks); numerical-type is high-call low-benefit; other types mostly tie.
+- One paragraph interpretation framing the two failure modes:
+  - Mode A (expression): infrequent tool use that is actively wrong.
+  - Mode B (numerical): frequent tool use that fails to convert to accuracy.
 
 ### 5.2 Within-TIR zoom-in: call-path vs skip-path (with caveat)
 

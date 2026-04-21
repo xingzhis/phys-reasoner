@@ -1,12 +1,13 @@
 # HANDOFF — paper writing session context
 
-**Created:** 2026-04-19. **Last revised:** 2026-04-21 (v3 — claim-1-led thesis after selection-bias discussion).
+**Created:** 2026-04-19. **Last revised:** 2026-04-21 (v3.1 — paired per-type data landed; expression-type is the headline).
 **Purpose:** full, loss-free context dump of the planning discussion so a fresh session can resume paper writing without re-deriving decisions.
 **Branch:** `paper-writing` (this branch). Not merged to main.
 **Main only has:** `docs/tool_use_analysis_handoff.md` (the HPC-side runbook for tool-use analysis).
 
 ## Revision log
 
+- **v3.1 (2026-04-21 late):** Paired per-problem Task 1b and Task 1 outputs landed from HPC session (commit `713a737`). Numbers sharpened the story: the aggregate "4 of 5" claim in v3 was slightly overstated; the correct headline is **expression-type paired loss across 4 of 5 benchmarks (−1.7 to −10.7 pp)**. Numerical type: high call (60–82%) but near-zero paired effect. Updated §4 thesis and §7 numbers.
 - **v3 (2026-04-21):** Raised the concern that within-TIR `call-pass% < skip-pass%` has selection bias (the model's choice to call is not random). Switched the thesis to lead with the **paired TIR-mode-vs-CoT-mode zero-shot comparison** (same problem, same prompt, only tool availability differs — no selection bias). Added Task 1b to HPC_TASKS for per-problem paired comparison. Discussed fallback path if post-RL results are weak. Also refactored bibliography/sample-abstracts/ → writing-samples/ and shifted those docs toward paper-writing style analysis.
 - **v2 (2026-04-19):** HPC tool-use analysis showed the base model DOES call tool at 31–89% rates. Reframed thesis around "tool-use miscalibration + RL recalibration" rather than the earlier "model ignores tool" story. Updated §4, §7, §8 accordingly. Training infra now 4 train + 6 rollout + 1 xVerify, staleness=1. Training data moved to a difficulty-filtered subset (size TBD).
 
@@ -50,11 +51,11 @@ All runs use Dr.GRPO + DAPO-lite configuration per `docs/training-decisions.md`:
 
 Infrastructure-level details (staleness, node counts, exact Hydra flags) go to appendix; body only mentions "VeRL async RL with rule+xVerify reward."
 
-## 4. Thesis — one sentence (locked, v3)
+## 4. Thesis — one sentence (locked, v3.1)
 
-> Tool availability alone is not enough: giving a reasoning-tuned LLM (Qwen3-4B-Thinking-2507) access to a symbolic-computation tool fails to consistently help on physics problems and, on four of five in-distribution benchmarks, hurts. Despite the model invoking the tool on 31–89% of problems zero-shot, tool-augmented accuracy falls at or below plain reasoning. We show tool-integrated RLVR bridges this gap: TIR-GRPO outperforms a strict CoT-GRPO baseline matched in data, training budget, and reward stack, with gains concentrated on answer types where zero-shot tool use underperforms most.
+> Tool availability is worst where tool use should intuitively help most: on expression-type physics problems, a reasoning-tuned LLM (Qwen3-4B-Thinking-2507) with a Python/SymPy tool performs 2–11 percentage points worse than the same model reasoning in natural language, across four of five benchmarks with appreciable n. On numerical problems the model invokes the tool on 60–82% of attempts but extracts no aggregate benefit. We show tool-integrated RLVR closes this gap: TIR-GRPO outperforms a strict CoT-GRPO baseline at matched training budget, with gains concentrated on the answer types where zero-shot tool use fails worst.
 
-One claim. Falsifiable. Directly supported by the already-run paired TIR-mode-vs-CoT-mode zero-shot comparison and the planned RL runs.
+Two claims, one intervention. Both zero-shot claims are directly supported by paired TIR-mode vs CoT-mode comparison on the same problems (no selection bias). The RL intervention is the planned test.
 
 ### Why this framing, not earlier drafts
 
@@ -62,18 +63,18 @@ One claim. Falsifiable. Directly supported by the already-run paired TIR-mode-vs
 - **v2 (dropped 2026-04-21):** "Within TIR mode, call-path pass < skip-path pass → miscalibration." Real but **selection-biased** — the model's choice of when to call isn't random, so low call-path pass might reflect problem difficulty rather than tool-use quality. A careful reviewer would flag this.
 - **v3 (current):** Leads with the paired TIR-vs-CoT aggregate comparison (same problems, same prompts, only tool availability differs — *no* selection bias). The within-TIR call-vs-skip observation becomes a secondary zoom-in with an explicit selection-bias caveat.
 
-### Claim evidence levels
+### Claim evidence levels (updated post-Task-1b)
 
 | Claim | Evidence | Confidence |
 |---|---|---|
-| **C1.** Tool availability doesn't consistently help zero-shot; sometimes hurts | Paired TIR-vs-CoT zero-shot table (§7.1) — 4/5 in-dist slices show TIR ≤ CoT | **High** |
-| **C2.** Base model calls tool at non-trivial rates | HPC tool-use analysis (§7.2) — 31–89% | **High** |
-| **C3.** Within TIR mode, call-path pass ≠ skip-path pass | HPC tool-use analysis (§7.2) | Medium — selection-biased, frame with caveat |
-| **C4.** Miscalibration is systematic by answer type | Partial: per-type call rate + aggregate pass exist; per-type call-path vs skip-path NOT yet run | Pending Task 1 Output 2 |
-| **C5.** Per-problem: tool-mode-vs-no-tool-mode paired comparison shows directional pattern | Not yet run — **new Task 1b** | Pending |
-| **C6.** RL recalibrates (TIR-GRPO > CoT-GRPO) | Needs training results | Unknown |
+| **C1.** Paired per-benchmark: TIR ≤ CoT on 3 of 4 in-dist pool_v2 slices | `paired_tir_vs_cot_by_benchmark.csv` — W−L: drsci −1.4, physics −4.2, ugphysics −2.8, scibench +3.3; external near-tie | **High** |
+| **C2.** Paired per-type: **tool hurts on expression-type** across 4 of 5 benchmarks with adequate n | `paired_tir_vs_cot_by_type.csv` — expression W−L: drsci −4.9, physics −10.7, ugphysics −1.7, olympiad −1.7, phybench +0.5 | **High — this is the sharpest finding** |
+| **C3.** Paired per-type: **tool is high-use, low-benefit on numerical** | drsci call% 75.6, W−L = 0.0; physics 67.6, −2.8; scibench 70.6, +3.3; abench_a 72.0, +0.8; abench_b 82.2, 0.0; ugphysics 60.3, −5.5 | **High** |
+| **C4.** Base model calls tool at non-trivial rates overall | 31–89% aggregate | **High** |
+| **C5.** Within-TIR call-path pass ≠ skip-path pass | Task 1 output, selection-biased | Medium, frame with caveat |
+| **C6.** RL recalibrates (TIR-GRPO > CoT-GRPO; especially on expression) | Needs training results | Unknown |
 
-C1 is the single strongest claim and carries the paper. C5 when it lands will be cleaner still. C6 is the endpoint. C3/C4 are supporting.
+**C1 + C2 together carry the zero-shot story.** C2 is sharper (per-type mechanism) and C1 is the aggregate endorsement. C6 is the intervention endpoint.
 
 ## 5. Contributions (3, in priority order)
 
@@ -137,35 +138,74 @@ Abstract language should reflect this: "TIR-GRPO teaches a reasoning-tuned model
 
 Sampling presets: `train` = `temp=1.0, top_p=1.0` (matches RL training); `qwen` = `temp=0.6, top_p=0.95, top_k=20` (Qwen team thinking-mode recommendation). We use the **train** preset in the paper for consistency with RL training.
 
-### 7.2 Zero-shot TIR, by call vs skip (HPC analysis 2026-04-19) — THE HEADLINE FINDING
+### 7.2 Paired TIR-mode vs CoT-mode (Task 1b, the headline evidence)
 
-From `outputs/eval/tool_use_by_type_summary.txt` (Qwen3-4B-Thinking-2507, TIR mode, train preset):
+From `outputs/eval/paired_tir_vs_cot_by_benchmark.csv` (train preset, xverify-7b judge unless noted):
 
-| benchmark | n | called% | skip_pass% | call_pass% | overall% |
-|---|---|---|---|---|---|
-| pool_v2_drsci | 503 | 38.4 | 61.9 | 66.5 | 63.0 |
-| pool_v2_physics | 191 | 44.5 | 41.5 | 41.1 | 39.3 |
-| pool_v2_scibench | 153 | 70.6 | 71.1 | 58.4 | 59.5 |
-| pool_v2_ugphysics | 217 | 33.6 | 38.9 | 37.0 | 38.2 |
-| olympiad_oe_to_physics | 236 | 34.7 | 4.5 | 6.2 | 4.7 |
-| phybench | 1000 | 30.7 | 1.7 | 1.0 | 1.5 |
-| abench_phy_a | 400 | 72.0 | 27.7 | 18.2 | 20.2 |
-| abench_phy_b | 400 | 82.2 | 52.1 | 68.0 | 63.2 |
+| benchmark | n | W | L | TP | TF | **W−L** | TIR% | CoT% | TIR_call% |
+|---|---|---|---|---|---|---|---|---|---|
+| pool_v2_drsci | 503 | 40 | 47 | 277 | 139 | **−1.4** | 63.0 | 64.4 | 38.4 |
+| pool_v2_physics | 191 | 5 | 13 | 70 | 103 | **−4.2** | 39.3 | 43.5 | 44.5 |
+| pool_v2_scibench | 153 | 12 | 7 | 79 | 55 | **+3.3** | 59.5 | 56.2 | 70.6 |
+| pool_v2_ugphysics | 217 | 12 | 18 | 71 | 116 | **−2.8** | 38.2 | 41.0 | 33.6 |
+| olympiad_oe_to_physics | 236 | 8 | 9 | 3 | 216 | **−0.4** | 4.7 | 5.1 | 34.7 |
+| phybench (exact) | 1000 | 7 | 2 | 8 | 983 | **+0.5** | 1.5 | 1.0 | 30.7 |
+| phybench (EED mean) | 1000 | — | — | — | — | **TIR−CoT = +0.64** | (cont.) | (cont.) | 30.7 |
+| abench_phy_a | 400 | 19 | 16 | 62 | 303 | **+0.8** | 20.2 | 19.5 | 72.0 |
+| abench_phy_b (per-row) | 400 | 9 | 9 | 244 | 138 | **0.0** | 63.2 | 63.2 | 82.2 |
+| abench_phy_b (per-mid, n=100) | 100 | 3 | 2 | 47 | 48 | **+1.0** | 50.0 | 49.0 | — |
 
-**Per-type on pool_v2_drsci/train:**
-- numerical: called% 75.6, pass 81.7 (call-path well-triaged)
-- expression, equation, MCQ: call rates 25–35%, pass 48–67% (under-called; skip-path accuracy lower than for numerical)
+W = TIR correct + CoT wrong; L = TIR wrong + CoT correct; TP = both correct; TF = both wrong.
 
-### 7.3 Reading the numbers
+**3 of 4 in-dist pool_v2 slices show TIR ≤ CoT** (drsci, physics, ugphysics); scibench is the one exception. External benchmarks are near-tie.
 
-- **Call rates are non-trivial (31–89%).** The v1 story "model ignores tool" is wrong.
-- **On most in-dist and external benchmarks, call-path pass ≤ skip-path pass.** Scibench, ugphysics, phybench, abench_a all show skip ≥ call. Tool calls are often unproductive.
-- **Where tools work, they work well:** pool_v2_drsci numerical (81.7% on call-path, at 75.6% call rate) and abench_phy_b (call 68.0% vs skip 52.1%) show productive tool use.
-- **The gap between "model knows to call the tool" and "calling the tool helps" is the paper's central observation.** RL needs to move both distributions: raise call rate on types where tools would help, and raise call-conditional pass through better code generation.
+### 7.3 Paired per-type (the SHARPEST finding)
 
-### 7.4 PHYBench and OlympiadBench caveats
+From `paired_tir_vs_cot_by_type.csv` (train preset, n ≥ 10 rows, scalar answer types):
 
-Exact symbolic judges cap raw pass@1 at 1–7%. For PHYBench the continuous EED metric is the primary headline; exact-match goes to the appendix.
+| benchmark | answer_type | n | **W−L** | TIR% | CoT% | call% |
+|---|---|---|---|---|---|---|
+| pool_v2_drsci | numerical | 82 | **+0.0** | 81.7 | 81.7 | 75.6 |
+| pool_v2_drsci | expression | 82 | **−4.9** | 47.6 | 52.4 | 30.5 |
+| pool_v2_drsci | equation | 108 | −0.9 | 51.9 | 52.8 | 25.0 |
+| pool_v2_drsci | mcq | 231 | −0.9 | 67.1 | 68.0 | 34.2 |
+| **pool_v2_physics** | **expression** | 56 | **−10.7** | **41.1** | **51.8** | **14.3** |
+| pool_v2_physics | numerical | 71 | −2.8 | 50.7 | 53.5 | 67.6 |
+| pool_v2_physics | mcq | 11 | 0.0 | 63.6 | 63.6 | 18.2 |
+| pool_v2_scibench | numerical | 153 | +3.3 | 59.5 | 56.2 | 70.6 |
+| pool_v2_ugphysics | expression | 60 | −1.7 | 36.7 | 38.3 | 11.7 |
+| pool_v2_ugphysics | numerical | 73 | −5.5 | 43.8 | 49.3 | 60.3 |
+| pool_v2_ugphysics | equation | 29 | 0.0 | 34.5 | 34.5 | 10.3 |
+| pool_v2_ugphysics | true_false | 13 | −7.7 | 61.5 | 69.2 | 23.1 |
+| olympiad_oe_to_physics | expression | 116 | −1.7 | 3.4 | 5.2 | 23.3 |
+| olympiad_oe_to_physics | numerical | 113 | +0.9 | 6.2 | 5.3 | 45.1 |
+| phybench | expression | 1000 | +0.5 | 1.5 | 1.0 | 30.7 |
+| abench_phy_a | numerical | 400 | +0.8 | 20.2 | 19.5 | 72.0 |
+| abench_phy_b | numerical | 400 | 0.0 | 63.2 | 63.2 | 82.2 |
+
+**Two clean patterns:**
+
+1. **Expression-type: tool hurts on 4 of 5 benchmarks.** W−L: drsci −4.9, physics −10.7, ugphysics −1.7, olympiad −1.7, phybench +0.5. The physics slice is the starkest: the model calls the tool on only 14% of expression problems, and when it does, it loses 10.7pp against CoT.
+2. **Numerical-type: high call rate (60–82%) but near-zero aggregate effect.** The model attempts tool use most on numerical problems — yet TIR and CoT pass rates are within ±5.5 pp across all benchmarks, and zero on three of them. The model is using the tool but not extracting benefit.
+
+### 7.4 Within-TIR call-vs-skip (Task 1, secondary — selection-biased)
+
+From `call_vs_skip_by_benchmark.csv` (train preset, overall):
+
+| benchmark | call% | call_pass% | skip_pass% | Δ |
+|---|---|---|---|---|
+| pool_v2_drsci | 38.4 | 64.8 | 61.9 | +2.8 |
+| pool_v2_physics | 44.5 | 36.5 | 41.5 | **−5.0** |
+| pool_v2_scibench | 70.6 | 54.6 | 71.1 | **−16.5** |
+| pool_v2_ugphysics | 33.6 | 37.0 | 38.9 | −1.9 |
+| abench_phy_a | 72.0 | 17.4 | 27.7 | **−10.3** |
+| abench_phy_b | 82.2 | 65.7 | 52.1 | +13.5 |
+
+Striking but selection-biased — the model's call decision is not random, so the gap reflects both "call quality" and "which problems the model chooses to call on." Use as a descriptive zoom-in; anchor causal claims on paired per-type data (7.3).
+
+### 7.5 PHYBench and OlympiadBench caveats
+
+Exact symbolic judges cap raw pass@1 at 1–7%. For PHYBench the continuous EED metric is the primary headline (0–100; higher = closer to exact); `tir−cot` EED mean difference is +0.64 with train preset. Exact-match goes to the appendix.
 
 ### 7.3 Benchmarks — decided list
 
@@ -180,25 +220,27 @@ External (held out from training):
 
 **Dropped:** MATH-500 (distracts from physics focus). **Stretch (only if time):** critpt (research-style problems; mentioned by user as nice-to-have for signaling research capability, but not on the critical path).
 
-## 8. Tool availability ≠ tool benefit — the central observation
+## 8. Two clean failure modes — where the paper gets its mechanism
 
-The base model (Qwen3-4B-Thinking-2507) calls the tool at 31–89% rates zero-shot, but the paired TIR-mode-vs-CoT-mode comparison shows that tool *availability* does not translate to tool *benefit*: on four of five in-distribution slices, TIR mode is equal to or worse than CoT mode. The model uses the tool, but using it does not help.
+The paired data reveals two structurally different failure modes for zero-shot tool use on a reasoning-tuned base:
 
-This is the gap RL training has to fill. There are two non-mutually-exclusive mechanisms RL can fix:
+**Failure mode A — "Tool hurts on expression-type."** On expression answers, the model calls the tool rarely (11–30%), and when it does, it loses 2–11 pp against plain reasoning. Across 4 of 5 benchmarks with adequate n (pool_v2_drsci, physics, ugphysics, olympiad), paired W − L on expression is negative. The starkest case is pool_v2_physics: 14.3% call rate, TIR 41.1% vs CoT 51.8% — **a 10.7pp loss with almost no tool use**. Reading: the small minority of tool calls are actively wrong.
 
-1. **Triage (when to call):** the model calls on problems where tool use hurts and skips on problems where it would help. Selection-biased within TIR-mode data, so best measured via per-problem tool-vs-no-tool paired comparison (Task 1b).
-2. **Execution quality (how to call):** when the model does call, the code is suboptimal (e.g., incorrect SymPy usage, wrong units). Observable via call-path pass rate at the benchmark level, shifting with training.
+**Failure mode B — "Tool is high-use, low-benefit on numerical."** On numerical answers, the model calls the tool 60–82% of the time — its default behavior — yet paired TIR vs CoT is within ±5.5 pp across every benchmark, and zero on three of them. Reading: the model is doing the work of making the call but not extracting accuracy from the result.
 
-Our job in §5 is to show (a) the zero-shot paired gap (Claim 1), (b) whether RL closes or reverses it, and (c) which mechanism drives the change, to the extent the data disambiguates.
+These two modes argue for different RL interventions:
+- **Mode A (expression):** RL should suppress unproductive calls — either teach the model to skip, or teach it to produce calls whose output actually helps.
+- **Mode B (numerical):** RL should improve call quality — better SymPy usage, better interpretation of tool output, better code.
+
+A single reward signal (binary correctness on the final boxed answer) can in principle drive both. Whether it *does* drive both — or drives a collapse (call rate → 0 or → 1) — is what the TIR-GRPO training run is for.
 
 ### Implications for the paper
 
-1. **Lead with the paired comparison (C1), not within-TIR call-vs-skip (C3).** C1 has no selection bias. C3 is a zoom-in that requires a caveat.
-2. **Don't oversell aggregate gains.** If post-RL macro gap is 2–5pp, write "closes the gap" not "substantially outperforms."
-3. **Zero-shot paired table is load-bearing.** Table A in §5.1 compares {TIR-mode, CoT-mode} × benchmarks with explicit Δ column. Paper starts from this observation.
-4. **Per-type Table 2 is supporting** — it gives the "where does tool use help" answer even zero-shot, and lets us predict where RL gains will concentrate.
-5. **Watch for collapse during training.** A reasoning-tuned base under RL might learn to skip the tool entirely (tool calls cost tokens and sometimes fail). Log tool-call rate per training step. If call rate → 0, frame as a finding about RL dynamics rather than a failure.
-6. **Watch for the opposite collapse.** Tool called on everything but call-path pass is flat. Would mean RL teaches tool invocation without teaching productive use.
+1. **Lead §5 with paired per-type data (C2), not within-TIR call-vs-skip (C5).** C2 is selection-bias-free and produces the sharpest mechanism claim. C5 is a zoom-in that requires a caveat.
+2. **Don't oversell aggregate gains.** Post-RL aggregate macro-gap of 2–5 pp is plenty — the per-type story carries the paper.
+3. **Two-plot hero figure:** top panel = paired TIR-vs-CoT W−L per benchmark (aggregate); bottom panel = paired W−L per answer-type across benchmarks (expression flagged).
+4. **Watch for training-time collapse.** Log tool-call rate per step per type. If expression call rate → 0 under RL, that's actually *a productive resolution of failure mode A* — report it as such, not as a failure.
+5. **Watch for opposite collapse.** Tool called on everything but call-path pass stays flat. Would mean RL teaches invocation without teaching productive use — failure mode B unresolved.
 
 ## 9. Paper outline (page budget)
 
