@@ -5,14 +5,17 @@
 #   het-group 0  TRAINER   4 nodes × 4 A100   FSDP-16 (Ray head + 3 workers)
 #   het-group 1  ROLLOUT   6 nodes × 4 A100
 #
-# Reads XVERIFY_URL from outputs/xverify_endpoints/shared.url, which must be
-# written by a separately-submitted serve_xverify_perlmutter.sbatch started
-# with `URL_FILE=...shared.url`. This layout fits two prod runs (TIR + CoT) +
-# one shared xverify into premium's 5-job cap (1+2+2=5).
+# Reads XVERIFY_URL from outputs/xverify_endpoints/current.url (the default
+# rendezvous path that verl's reward.py falls back to). A separately-submitted
+# serve_xverify_perlmutter.sbatch writes to that path by default, so no
+# --export=URL_FILE override is needed on the xverify submission either.
+# This layout fits two prod runs + one shared xverify into premium's 5-job
+# cap (1+2+2=5).
 #
 # Submit order (recommended):
-#   sbatch --export=ALL,URL_FILE=$PWD/outputs/xverify_endpoints/shared.url \
-#          scripts/perlmutter/serve_xverify_perlmutter.sbatch
+#   rm -f outputs/xverify_endpoints/current.url   # clear any stale rendezvous
+#   sbatch scripts/perlmutter/serve_xverify_perlmutter.sbatch
+#   # wait ~10 min for xverify to RUNNING + write current.url + load model
 #   sbatch scripts/perlmutter/prod_tir_het_4t_sharedxv.sbatch
 #   sbatch scripts/perlmutter/prod_cot_het_4t_sharedxv.sbatch
 #
@@ -118,7 +121,12 @@ cleanup() {
 trap cleanup EXIT
 
 # ---- poll the SHARED xverify URL file (written by serve_xverify_perlmutter) ----
-URL_FILE="${SHARED_URL_FILE:-$ROOT/outputs/xverify_endpoints/shared.url}"
+# Use the default `current.url` path so Ray remote rollout/reward workers,
+# whose apptainer env doesn't include XVERIFY_URL (propagation only reaches the
+# driver, not remote nodes), can discover the URL via reward.py's default
+# fallback. Writing to `shared.url` and relying on env-var hand-off broke on
+# job 51846557 — workers read the stale current.url and cascade-failed.
+URL_FILE="${SHARED_URL_FILE:-$ROOT/outputs/xverify_endpoints/current.url}"
 # Extended wait window — shared xverify may also be queued; premium 1-GPU jobs
 # usually start in <10 min but 1 h gives us margin if the QoS is busier.
 XVERIFY_WAIT_SECS="${XVERIFY_WAIT_SECS:-3600}"

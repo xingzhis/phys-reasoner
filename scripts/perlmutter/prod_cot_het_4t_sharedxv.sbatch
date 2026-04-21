@@ -91,7 +91,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-URL_FILE="${SHARED_URL_FILE:-$ROOT/outputs/xverify_endpoints/shared.url}"
+# Use default current.url path (Ray workers' fallback target — env-var hand-off
+# doesn't reach remote workers). See prod_tir_het_4t_sharedxv.sbatch for detail.
+URL_FILE="${SHARED_URL_FILE:-$ROOT/outputs/xverify_endpoints/current.url}"
 XVERIFY_WAIT_SECS="${XVERIFY_WAIT_SECS:-3600}"
 echo "[xverify] polling shared URL file $URL_FILE (timeout ${XVERIFY_WAIT_SECS}s) ..."
 deadline=$(( $(date +%s) + XVERIFY_WAIT_SECS ))
