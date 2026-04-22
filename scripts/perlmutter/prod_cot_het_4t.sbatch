@@ -36,7 +36,7 @@
 #SBATCH -C gpu&hbm80g
 #SBATCH -q regular
 #SBATCH -t 48:00:00
-#SBATCH -N 6
+#SBATCH -N 4
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=32
 #SBATCH --gpus-per-node=4
@@ -111,7 +111,7 @@ XVERIFY_PID=$!
 export N_GPUS_TRAIN="${N_GPUS_TRAIN:-4}"
 export N_GPUS_ROLLOUT="${N_GPUS_ROLLOUT:-4}"
 export NNODES_TRAIN="${NNODES_TRAIN:-4}"
-export NNODES_ROLLOUT="${NNODES_ROLLOUT:-6}"
+export NNODES_ROLLOUT="${NNODES_ROLLOUT:-4}"
 export HET_SRUN_HEAD="--het-group=0"
 export HET_SRUN_WORKER="--het-group=1"
 source "$ROOT/scripts/perlmutter/_ray_bringup.sh"
@@ -137,7 +137,9 @@ echo "[xverify] URL=$XVERIFY_URL"
 
 # ---- CoT baseline: COT_BASELINE=1 flips train_async.sh to single_turn_agent ----
 export COT_BASELINE=1
-export MODEL="${MODEL:-Qwen/Qwen3-4B-Thinking-2507}"
+export MODEL="${MODEL:-Qwen/Qwen3-4B}"
+export TRAIN_TEMPERATURE="${TRAIN_TEMPERATURE:-1.4}"
+export VAL_TEMPERATURE="${VAL_TEMPERATURE:-1.0}"
 export TRAIN_BATCH="${TRAIN_BATCH:-128}"
 export ROLLOUT_N="${ROLLOUT_N:-8}"
 # 3 epochs over filtered pool — both TOTAL_STEPS and TOTAL_EPOCHS must agree
@@ -160,7 +162,7 @@ export VAL_FILES="${VAL_FILES:-$ROOT/data/processed_cot/data/validation.parquet}
 export WANDB_PROJECT="${WANDB_PROJECT:-physcode_tir}"
 export LOGGERS="${LOGGERS:-console,wandb}"
 # Distinct experiment name so wandb + outputs don't collide with TIR run.
-export EXPERIMENT="${EXPERIMENT:-grpo_cot_4t_$(date +%Y%m%d.%H%M%S)}"
+export EXPERIMENT="${EXPERIMENT:-grpo_cot_qwen3b_t14_reg_$(date +%Y%m%d.%H%M%S)}"
 
 echo "[driver] launching train_async.sh COT_BASELINE=1 (EXPERIMENT=$EXPERIMENT, FSDP=$((NNODES_TRAIN*N_GPUS_TRAIN)))"
 srun --overlap --het-group=0 --nodes=1 --ntasks=1 -w "$HEAD_NODE" \

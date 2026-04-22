@@ -32,7 +32,7 @@
 #SBATCH -A m2651
 #SBATCH -C gpu&hbm80g
 #SBATCH -q premium
-#SBATCH -t 48:00:00
+#SBATCH -t 30:00:00
 #SBATCH -N 4
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=32
@@ -45,7 +45,7 @@
 #SBATCH -A m2651
 #SBATCH -C gpu&hbm80g
 #SBATCH -q premium
-#SBATCH -t 48:00:00
+#SBATCH -t 30:00:00
 #SBATCH -N 6
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=32
@@ -147,7 +147,13 @@ done
 export XVERIFY_URL
 
 # ---- production knobs (identical to prod_tir_het_4t.sbatch, minus xverify) ----
-export MODEL="${MODEL:-Qwen/Qwen3-4B-Thinking-2507}"
+export MODEL="${MODEL:-Qwen/Qwen3-4B}"
+# Training-time temperature override (val pinned at 1.0). Per saturation
+# diagnostic 2026-04-21: Thinking-2507 was over-sharpened by post-training,
+# producing sat_frac ~0.6 at temp=1.0. Switching to base Qwen3-4B + temp=1.4
+# during rollout to widen the policy distribution and unlock gradient signal.
+export TRAIN_TEMPERATURE="${TRAIN_TEMPERATURE:-1.4}"
+export VAL_TEMPERATURE="${VAL_TEMPERATURE:-1.0}"
 
 export TRAIN_BATCH="${TRAIN_BATCH:-128}"
 export ROLLOUT_N="${ROLLOUT_N:-8}"
@@ -180,7 +186,7 @@ export WANDB_PROJECT="${WANDB_PROJECT:-physcode_tir}"
 export LOGGERS="${LOGGERS:-console,wandb}"
 # Distinct _sxv_ tag so this run doesn't collide with the pending regular-queue
 # submission (51822832) if it ever starts, and disambiguates on wandb.
-export EXPERIMENT="${EXPERIMENT:-grpo_tir_4t_sxv_$(date +%Y%m%d.%H%M%S)}"
+export EXPERIMENT="${EXPERIMENT:-grpo_tir_qwen3b_t14_$(date +%Y%m%d.%H%M%S)}"
 
 echo "[driver] launching train_async.sh on $HEAD_NODE (EXPERIMENT=$EXPERIMENT, FSDP=$((NNODES_TRAIN*N_GPUS_TRAIN)))"
 srun --overlap --het-group=0 --nodes=1 --ntasks=1 -w "$HEAD_NODE" \

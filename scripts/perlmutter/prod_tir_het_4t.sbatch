@@ -44,7 +44,7 @@
 #SBATCH -C gpu&hbm80g
 #SBATCH -q regular
 #SBATCH -t 48:00:00
-#SBATCH -N 6
+#SBATCH -N 4
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=32
 #SBATCH --gpus-per-node=4
@@ -135,7 +135,7 @@ XVERIFY_PID=$!
 export N_GPUS_TRAIN="${N_GPUS_TRAIN:-4}"
 export N_GPUS_ROLLOUT="${N_GPUS_ROLLOUT:-4}"
 export NNODES_TRAIN="${NNODES_TRAIN:-4}"
-export NNODES_ROLLOUT="${NNODES_ROLLOUT:-6}"
+export NNODES_ROLLOUT="${NNODES_ROLLOUT:-4}"
 export HET_SRUN_HEAD="--het-group=0"
 export HET_SRUN_WORKER="--het-group=1"
 source "$ROOT/scripts/perlmutter/_ray_bringup.sh"
@@ -167,7 +167,10 @@ done
 export XVERIFY_URL
 
 # ---- production knobs (all validated by smoke_tir_het_4t, job 51819857) ----
-export MODEL="${MODEL:-Qwen/Qwen3-4B-Thinking-2507}"
+export MODEL="${MODEL:-Qwen/Qwen3-4B}"
+# Match the SXV variant — base Qwen3-4B + train-temp 1.4 + val-temp 1.0
+export TRAIN_TEMPERATURE="${TRAIN_TEMPERATURE:-1.4}"
+export VAL_TEMPERATURE="${VAL_TEMPERATURE:-1.0}"
 
 export TRAIN_BATCH="${TRAIN_BATCH:-128}"
 export ROLLOUT_N="${ROLLOUT_N:-8}"
@@ -203,7 +206,7 @@ export VAL_FILES="${VAL_FILES:-$ROOT/data/processed_tir/data/validation.parquet}
 
 export WANDB_PROJECT="${WANDB_PROJECT:-physcode_tir}"
 export LOGGERS="${LOGGERS:-console,wandb}"
-export EXPERIMENT="${EXPERIMENT:-grpo_tir_4t_$(date +%Y%m%d.%H%M%S)}"
+export EXPERIMENT="${EXPERIMENT:-grpo_tir_qwen3b_t14_reg_$(date +%Y%m%d.%H%M%S)}"
 
 # ---- launch driver on trainer head ----
 echo "[driver] launching train_async.sh on $HEAD_NODE (EXPERIMENT=$EXPERIMENT, FSDP=$((NNODES_TRAIN*N_GPUS_TRAIN)))"
