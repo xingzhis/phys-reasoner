@@ -47,6 +47,28 @@ def reconstruct_solution(row) -> str:
     return "\n".join(parts)
 
 
+def _rule_worker_loop(in_q, out_q):
+    """Long-lived worker: reads (idx, kwargs) from in_q, puts (idx, score) on out_q.
+
+    Sympy/math_verify execute inside C extensions that ignore Python signal
+    handlers (SIGALRM is only checked at Python bytecode boundaries), so a hung
+    row cannot be interrupted in-process. We instead run verify_answer in a
+    subprocess the parent can kill; that's the only reliable preemption.
+    """
+    from phys_reasoner.verifier.router import verify_answer  # noqa: PLC0415
+
+    while True:
+        msg = in_q.get()
+        if msg is None:
+            return
+        idx, kwargs = msg
+        try:
+            s = verify_answer(**kwargs)
+        except Exception:
+            s = -1.0
+        out_q.put((idx, s))
+
+
 def rule_only_pass(df: pd.DataFrame, rule_timeout: int = 0) -> tuple[list[float], list[int], list[tuple[str, str, str]]]:
     """First pass: run rule-based verify_answer for every row.
 
@@ -55,34 +77,57 @@ def rule_only_pass(df: pd.DataFrame, rule_timeout: int = 0) -> tuple[list[float]
         xv_idx:      indices into df that returned -1.0 (need xverify)
         xv_inputs:   list of (pred_str, gold_str, problem_str) triples for each xv_idx
 
-    rule_timeout > 0 installs a SIGALRM-based per-row timeout. On timeout
-    (or any other exception from verify_answer), the row is treated as
-    rule-undecidable (score = -1.0) and forwarded to xVerify — the same branch
-    training would take on rule=None (see router._compare_single:
-    "xVerify fallback (called for rule=False or rule=None)"). Needed because
-    math_verify sets parsing_timeout=None internally, so some pathological
-    expression-type rows would hang indefinitely otherwise.
+    rule_timeout > 0 runs each row in a long-lived worker subprocess with a
+    per-row wall-clock deadline. On timeout, the worker is killed + respawned
+    and the row is treated as rule-undecidable (score = -1.0) and forwarded to
+    xVerify — the same branch training takes on rule=None (see
+    router._compare_single: "xVerify fallback called for rule=False or rule=None").
+    SIGALRM was tried first but does not interrupt sympy's C extensions.
     """
-    import signal as _signal
-
-    from phys_reasoner.verifier.router import verify_answer
+    from phys_reasoner.verifier.router import verify_answer  # noqa: F401  (preload for worker fork)
 
     n = len(df)
     rule_scores: list[float] = [0.0] * n
     xv_idx: list[int] = []
     xv_inputs: list[tuple[str, str, str]] = []
 
-    class _RuleTimeout(Exception):
-        pass
+    use_subprocess = bool(rule_timeout and rule_timeout > 0)
 
-    def _handler(signum, frame):
-        raise _RuleTimeout()
+    if use_subprocess:
+        import multiprocessing as _mp
+        import queue as _queue
 
-    use_alarm = bool(rule_timeout and rule_timeout > 0)
-    if use_alarm:
-        _signal.signal(_signal.SIGALRM, _handler)
-        print(f"[rule] per-row timeout enabled: {rule_timeout}s → xverify fallback on timeout "
-              f"(matches training's rule=None branch)")
+        # fork context: worker inherits already-imported sympy/math_verify from
+        # parent, avoiding ~1s of re-import per respawn.
+        _ctx = _mp.get_context("fork")
+        _in_q: _mp.Queue = _ctx.Queue()
+        _out_q: _mp.Queue = _ctx.Queue()
+        _worker = _ctx.Process(target=_rule_worker_loop, args=(_in_q, _out_q))
+        _worker.start()
+        print(f"[rule] subprocess-timeout enabled: {rule_timeout}s per row → "
+              f"xverify fallback on timeout (matches training's rule=None branch)")
+
+    def _call_with_timeout(kwargs: dict):
+        """Returns (score, status) where status in {"ok", "timeout", "exception"}."""
+        nonlocal _worker, _in_q, _out_q
+        _in_q.put((0, kwargs))
+        try:
+            _idx, score = _out_q.get(timeout=rule_timeout)
+            return score, "ok"
+        except _queue.Empty:
+            # worker is stuck in C code; kill and respawn
+            try:
+                _worker.kill()
+                _worker.join(timeout=2)
+            except Exception:
+                pass
+            # Fresh queues — old ones may contain a stale result that the
+            # killed worker was mid-putting.
+            _in_q = _ctx.Queue()
+            _out_q = _ctx.Queue()
+            _worker = _ctx.Process(target=_rule_worker_loop, args=(_in_q, _out_q))
+            _worker.start()
+            return -1.0, "timeout"
 
     n_timeouts = 0
     n_exceptions = 0
@@ -98,27 +143,25 @@ def rule_only_pass(df: pd.DataFrame, rule_timeout: int = 0) -> tuple[list[float]
         tolerance = float(extra_info.get("tolerance", 0.05))
         problem = extra_info.get("problem", "")
 
-        if use_alarm:
-            _signal.alarm(rule_timeout)
-        try:
-            s = verify_answer(
-                pred_text=solution,
-                gold_answer=gold if gold is not None else "",
-                answer_type=answer_type,
-                gold_unit=unit or "",
-                tolerance=tolerance,
-                xverify_judge=None,  # rule-only pass
-                problem_text=problem or "",
-            )
-        except _RuleTimeout:
-            n_timeouts += 1
-            s = -1.0
-        except Exception:
-            n_exceptions += 1
-            s = -1.0
-        finally:
-            if use_alarm:
-                _signal.alarm(0)
+        kwargs = dict(
+            pred_text=solution,
+            gold_answer=gold if gold is not None else "",
+            answer_type=answer_type,
+            gold_unit=unit or "",
+            tolerance=tolerance,
+            xverify_judge=None,  # rule-only pass
+            problem_text=problem or "",
+        )
+        if use_subprocess:
+            s, status = _call_with_timeout(kwargs)
+            if status == "timeout":
+                n_timeouts += 1
+        else:
+            try:
+                s = verify_answer(**kwargs)
+            except Exception:
+                n_exceptions += 1
+                s = -1.0
         rule_scores[i] = s
         if s == -1.0:
             # xverify will compare reconstructed solution (not just \boxed extract) —
@@ -139,6 +182,15 @@ def rule_only_pass(df: pd.DataFrame, rule_timeout: int = 0) -> tuple[list[float]
                   flush=True)
     print(f"[rule] done in {time.time()-t0:.1f}s. rule-decided={n-len(xv_idx)} "
           f"need_xverify={len(xv_idx)} (of which timeouts={n_timeouts} exceptions={n_exceptions})")
+    if use_subprocess:
+        try:
+            _in_q.put(None)
+            _worker.join(timeout=2)
+            if _worker.is_alive():
+                _worker.kill()
+                _worker.join(timeout=1)
+        except Exception:
+            pass
     return rule_scores, xv_idx, xv_inputs
 
 
@@ -153,6 +205,7 @@ def vllm_xverify_batch(
     Returns list[bool] of same length: True if judged correct.
     """
     from vllm import LLM, SamplingParams
+    from transformers import AutoTokenizer
     from phys_reasoner.verifier.xverify_judge import _XVERIFY_PROMPT
 
     # Build prompts in the same format as XVerifyJudge._build_prompt
@@ -164,6 +217,28 @@ def vllm_xverify_batch(
         )
         for (pred, gold, problem) in prompts
     ]
+
+    # Some physics rollouts produce very long reasoning traces; after
+    # _XVERIFY_PROMPT formatting a handful of rows exceed max_model_len.
+    # Truncate the LEFT of the overly long prompt text (i.e. drop the
+    # reasoning front; keep the boxed answer at the end) so vLLM accepts it.
+    # We reserve 16 tokens of headroom on top of the 10 `max_new_tokens` so the
+    # vLLM length check passes comfortably.
+    tok = AutoTokenizer.from_pretrained(model_path)
+    budget = max_model_len - 16 - 10
+    n_truncated = 0
+    n_truncated_chars = 0
+    for i, t in enumerate(prompt_texts):
+        ids = tok.encode(t, add_special_tokens=False)
+        if len(ids) > budget:
+            n_truncated += 1
+            before = len(t)
+            trunc_ids = ids[-budget:]
+            prompt_texts[i] = tok.decode(trunc_ids, skip_special_tokens=True)
+            n_truncated_chars += before - len(prompt_texts[i])
+    if n_truncated:
+        print(f"[vllm] left-truncated {n_truncated}/{len(prompt_texts)} overlong prompts "
+              f"(dropped {n_truncated_chars} chars total)")
 
     print(f"[vllm] loading {model_path}")
     t_load = time.time()
@@ -262,8 +337,24 @@ def main():
     from huggingface_hub import snapshot_download
     model_path = snapshot_download(args.xverify_model, local_files_only=True)
 
-    # Phase 1: rule-only pass
-    rule_scores, xv_idx, xv_inputs = rule_only_pass(df, rule_timeout=args.rule_timeout)
+    # Phase 1: rule-only pass — cache result to disk so vLLM crashes don't
+    # force us to re-run the ~15-min CPU pass.
+    import pickle
+    rule_cache = out_dir / "_rule_pass_cache.pkl"
+    if rule_cache.exists():
+        print(f"[rule] loading cached result from {rule_cache}")
+        with open(rule_cache, "rb") as f:
+            rule_scores, xv_idx, xv_inputs = pickle.load(f)
+        assert len(rule_scores) == len(df), (
+            f"rule cache length {len(rule_scores)} != df length {len(df)}; "
+            "delete the cache and re-run if the merged parquet changed"
+        )
+        print(f"[rule] loaded: rule-decided={len(df)-len(xv_idx)} need_xverify={len(xv_idx)}")
+    else:
+        rule_scores, xv_idx, xv_inputs = rule_only_pass(df, rule_timeout=args.rule_timeout)
+        with open(rule_cache, "wb") as f:
+            pickle.dump((rule_scores, xv_idx, xv_inputs), f)
+        print(f"[rule] cached result to {rule_cache}")
 
     # Phase 2: vLLM batch xverify
     if xv_inputs:
