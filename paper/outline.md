@@ -1,19 +1,21 @@
 # Outline — PhysCode, ICML 2026 AI4Physics workshop
 
-**Status:** v2.1 — two-failure-modes framing (Apr 21, post-Task-1b)
+**Status:** v3 — base model switched to Qwen3-4B (hybrid); thesis provisional pending Task 1b re-run (Apr 21 late)
 **Page budget:** 8 pages ICML 2-column (references excluded)
 
 ---
 
-## Thesis (one sentence, locked)
+## Thesis — provisional (v3, pending Qwen3-4B paired data)
 
-Tool availability is worst where symbolic computation should intuitively help most: on expression-type physics problems, a reasoning-tuned LLM with a Python/SymPy tool performs 2–11 pp worse than the same model reasoning in natural language (across 4 of 5 benchmarks with appreciable n), while on numerical-type problems the model invokes the tool 60–82% of the time but extracts no aggregate benefit. We show tool-integrated RLVR closes both gaps: TIR-GRPO outperforms a strict CoT-GRPO baseline at matched training budget, with recalibration visible in both call rate and call-conditional accuracy.
+**v3.0 safe fallback:** Tool availability does not consistently translate to benefit on physics for Qwen3-4B (hybrid instruct/think): aggregate paired comparisons show heterogeneous effects — TIR wins on OlympiadBench (+5.1 pp), loses on ABench-Phy-B per-mid (−9.0 pp) and SciBench (−4.6 pp), and is within ±2 pp on the remaining in-distribution slices. We show tool-integrated RLVR converts this inconsistent behavior into consistent benefit: TIR-GRPO outperforms a strict CoT-GRPO baseline at matched training budget.
+
+**v3.1 sharpened (activate if Task 1b on Qwen3-4B confirms the per-type pattern from Thinking):** add "with gains concentrated on answer types where zero-shot TIR underperforms most (expression / numerical distinction — see §5)."
 
 ## Contributions (3, in priority order)
 
-1. **Empirical finding (zero-shot characterization).** Using paired TIR-mode vs. CoT-mode evaluation on the same problems, we show two distinct failure modes: (A) **expression-type tool use hurts** across 4 of 5 benchmarks (W−L from −1.7 to −10.7 pp); (B) **numerical-type tool use is high-frequency but low-benefit** (60–82% call rate, ±5.5 pp aggregate effect). Both are selection-bias-free per-problem paired comparisons.
-2. **Controlled RL intervention.** First apples-to-apples TIR-GRPO vs. CoT-GRPO at matched RL training budget on physics. TIR-GRPO closes the zero-shot gap; per-type breakdown predicts where gains concentrate from the two zero-shot failure modes.
-3. **Recipe.** Single-block TIR with ScaleRL-style think-interrupt inside VeRL for Qwen3-Thinking, plus the Dr.GRPO + DAPO-lite training configuration. Reproducible artifact.
+1. **Empirical finding (zero-shot characterization).** Paired TIR-mode vs. CoT-mode evaluation on the same problems shows Qwen3-4B's tool-augmented performance is heterogeneous across physics benchmarks, with non-trivial losses on some (ABench-B per-mid −9, SciBench −4.6) and gains on others (OlympiadBench +5.1). [UPGRADE IF v3.1 ACTIVATES: per-type breakdown shows two distinct failure modes.]
+2. **Controlled RL intervention.** First apples-to-apples TIR-GRPO vs. CoT-GRPO at matched RL training budget on physics. TIR-GRPO closes the zero-shot gap.
+3. **Recipe.** Single-block TIR with ScaleRL-style think-interrupt inside VeRL for Qwen3-4B hybrid, plus the Dr.GRPO + DAPO-lite training configuration. Reproducible artifact.
 
 ---
 

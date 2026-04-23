@@ -1,12 +1,13 @@
 # HANDOFF — paper writing session context
 
-**Created:** 2026-04-19. **Last revised:** 2026-04-21 (v3.1 — paired per-type data landed; expression-type is the headline).
+**Created:** 2026-04-19. **Last revised:** 2026-04-21 late (v4 — base model switched from Qwen3-4B-Thinking-2507 to Qwen3-4B base hybrid instruct/think; thesis provisional pending paired data on new rollouts).
 **Purpose:** full, loss-free context dump of the planning discussion so a fresh session can resume paper writing without re-deriving decisions.
 **Branch:** `paper-writing` (this branch). Not merged to main.
 **Main only has:** `docs/tool_use_analysis_handoff.md` (the HPC-side runbook for tool-use analysis).
 
 ## Revision log
 
+- **v4 (2026-04-21 late):** Base model switched from `Qwen3-4B-Thinking-2507` to `Qwen3-4B` (hybrid instruct/think — neither base-base nor RL'd thinking). Rationale: Thinking model was hard to train. All 32 zero-shot eval cells rerun on the new model. Aggregate picture is similar ("TIR ≠ consistent benefit") but the specific benchmark-level pattern is different: OlympiadBench now favors TIR (+5.1pp), ABench-B per-mid now penalizes TIR by 9pp, in-dist deltas are smaller. The v3.1 two-failure-modes thesis (expression hurts, numerical high-use low-benefit) was grounded in the Thinking model's paired per-type data. **Thesis is now provisional** pending Task 1 + Task 1b re-run on the Qwen3-4B rollouts.
 - **v3.1 (2026-04-21 late):** Paired per-problem Task 1b and Task 1 outputs landed from HPC session (commit `713a737`). Numbers sharpened the story: the aggregate "4 of 5" claim in v3 was slightly overstated; the correct headline is **expression-type paired loss across 4 of 5 benchmarks (−1.7 to −10.7 pp)**. Numerical type: high call (60–82%) but near-zero paired effect. Updated §4 thesis and §7 numbers.
 - **v3 (2026-04-21):** Raised the concern that within-TIR `call-pass% < skip-pass%` has selection bias (the model's choice to call is not random). Switched the thesis to lead with the **paired TIR-mode-vs-CoT-mode zero-shot comparison** (same problem, same prompt, only tool availability differs — no selection bias). Added Task 1b to HPC_TASKS for per-problem paired comparison. Discussed fallback path if post-RL results are weak. Also refactored bibliography/sample-abstracts/ → writing-samples/ and shifted those docs toward paper-writing style analysis.
 - **v2 (2026-04-19):** HPC tool-use analysis showed the base model DOES call tool at 31–89% rates. Reframed thesis around "tool-use miscalibration + RL recalibration" rather than the earlier "model ignores tool" story. Updated §4, §7, §8 accordingly. Training infra now 4 train + 6 rollout + 1 xVerify, staleness=1. Training data moved to a difficulty-filtered subset (size TBD).
@@ -22,15 +23,21 @@ Read this first. Everything else in `paper/` follows from what's here.
 - **Page limit:** 8 pages ICML 2-column, references excluded.
 - **Topic fit:** "Physics-centric Scientific Reasoning with LLMs and Agents — tool-augmented agents" is a named direction in the CFP. The paper is squarely on-topic.
 
-## 2. Base model (final)
+## 2. Base model (final — v4, 2026-04-21)
 
-`Qwen/Qwen3-4B-Thinking-2507` — this is the final base model for all training and eval.
+**`Qwen/Qwen3-4B`** — the hybrid instruct/think base. Not the pure base, not the thinking-RL'd variant (`Qwen3-4B-Thinking-2507`).
 
-This is a switch from Qwen3.5-4B that happened upstream. It matters because:
+Rationale: the Thinking model was hard to train; the hybrid base is more stable. The hybrid base still supports `enable_thinking=True` — it just hasn't been further RL'd for chain-of-thought reasoning.
 
-- Qwen3-Thinking is reasoning-tuned and already strong on physics (beats Qwen3.5-4B by 18–30pp across benchmarks per the archived sweep in `outputs/eval/README_QWEN35_SWEEP_IN_PROGRESS.md`).
-- At zero-shot, in TIR mode, it **often skips the tool and pure-reasons**. The eval doc (`docs/eval_results.md`) notes this directly: "Qwen3-Thinking often pure-reasons inside TIR mode without invoking the tool."
-- This shifts the paper's framing (see §8 below).
+Cross-model zero-shot comparison (TIR/train on in-dist + olympiad):
+
+| | scibench | physics | ugphysics | olympiad | drsci |
+|---|---|---|---|---|---|
+| Qwen3.5-4B (old target) | 0.30 | 0.29 | 0.20 | 0.10 | 0.41 |
+| **Qwen3-4B (current target)** | **0.53** | **0.40** | **0.32** | **0.19** | **0.59** |
+| Qwen3-4B-Thinking (prior v3 target) | 0.60 | 0.39 | 0.38 | 0.05 | 0.63 |
+
+Qwen3-4B base is within ~5 pp of Thinking on most cells and beats it on OlympiadBench (Thinking's elaborate reasoning produces less-canonical symbolic forms that the strict AutoScoringJudge rejects). All 32 zero-shot cells are complete for Qwen3-4B; numbers are in §7.
 
 ## 3. Training and comparison plan (what will produce the paper's numbers)
 
@@ -51,11 +58,19 @@ All runs use Dr.GRPO + DAPO-lite configuration per `docs/training-decisions.md`:
 
 Infrastructure-level details (staleness, node counts, exact Hydra flags) go to appendix; body only mentions "VeRL async RL with rule+xVerify reward."
 
-## 4. Thesis — one sentence (locked, v3.1)
+## 4. Thesis — provisional (v4, pending Task 1b on Qwen3-4B)
 
-> Tool availability is worst where tool use should intuitively help most: on expression-type physics problems, a reasoning-tuned LLM (Qwen3-4B-Thinking-2507) with a Python/SymPy tool performs 2–11 percentage points worse than the same model reasoning in natural language, across four of five benchmarks with appreciable n. On numerical problems the model invokes the tool on 60–82% of attempts but extracts no aggregate benefit. We show tool-integrated RLVR closes this gap: TIR-GRPO outperforms a strict CoT-GRPO baseline at matched training budget, with gains concentrated on the answer types where zero-shot tool use fails worst.
+### Safe fallback (v4.0, works today without paired data on the new model)
 
-Two claims, one intervention. Both zero-shot claims are directly supported by paired TIR-mode vs CoT-mode comparison on the same problems (no selection bias). The RL intervention is the planned test.
+> Tool availability does not consistently translate to benefit on physics for a 4B hybrid instruct/think model: aggregate TIR-mode vs CoT-mode comparison is heterogeneous across benchmarks — TIR wins on OlympiadBench (+5.1 pp), loses on ABench-Physics-B per-mid (−9.0 pp) and SciBench (−4.6 pp), and is within ±2 pp on the remaining slices. We show tool-integrated RLVR converts this inconsistent zero-shot behavior into consistent benefit: TIR-GRPO outperforms a strict CoT-GRPO baseline at matched training budget, with per-type gains aligned with where zero-shot TIR underperforms most.
+
+### Sharpened version (v4.1 — activate if paired per-type pattern survives)
+
+If Task 1 + Task 1b on Qwen3-4B rollouts reveal the same expression-hurts / numerical-high-use-low-benefit structure we saw on Qwen3-Thinking, we can revert to the v3.1 two-failure-modes framing. That decision is made once the paired CSVs land for the new model.
+
+### Why this is now provisional
+
+The v3.1 thesis ("expression is where tool hurts; numerical is high-use low-benefit") was anchored in Qwen3-Thinking's per-type paired data (`paired_tir_vs_cot_by_type.csv`). Whether the same structural pattern holds for Qwen3-4B base is an open question — the aggregate landscape has shifted (OlympiadBench flipped, ABench-B per-mid shifted), and per-type may have shifted with it.
 
 ### Why this framing, not earlier drafts
 
@@ -63,18 +78,20 @@ Two claims, one intervention. Both zero-shot claims are directly supported by pa
 - **v2 (dropped 2026-04-21):** "Within TIR mode, call-path pass < skip-path pass → miscalibration." Real but **selection-biased** — the model's choice of when to call isn't random, so low call-path pass might reflect problem difficulty rather than tool-use quality. A careful reviewer would flag this.
 - **v3 (current):** Leads with the paired TIR-vs-CoT aggregate comparison (same problems, same prompts, only tool availability differs — *no* selection bias). The within-TIR call-vs-skip observation becomes a secondary zoom-in with an explicit selection-bias caveat.
 
-### Claim evidence levels (updated post-Task-1b)
+### Claim evidence levels (v4, post-model-switch)
 
-| Claim | Evidence | Confidence |
+**These claims refer to the OLD model (Qwen3-4B-Thinking-2507) — kept for reference; reusable if per-type patterns survive on the new model.**
+
+| Claim | Evidence (Thinking model) | Transfer to Qwen3-4B base |
 |---|---|---|
-| **C1.** Paired per-benchmark: TIR ≤ CoT on 3 of 4 in-dist pool_v2 slices | `paired_tir_vs_cot_by_benchmark.csv` — W−L: drsci −1.4, physics −4.2, ugphysics −2.8, scibench +3.3; external near-tie | **High** |
-| **C2.** Paired per-type: **tool hurts on expression-type** across 4 of 5 benchmarks with adequate n | `paired_tir_vs_cot_by_type.csv` — expression W−L: drsci −4.9, physics −10.7, ugphysics −1.7, olympiad −1.7, phybench +0.5 | **High — this is the sharpest finding** |
-| **C3.** Paired per-type: **tool is high-use, low-benefit on numerical** | drsci call% 75.6, W−L = 0.0; physics 67.6, −2.8; scibench 70.6, +3.3; abench_a 72.0, +0.8; abench_b 82.2, 0.0; ugphysics 60.3, −5.5 | **High** |
-| **C4.** Base model calls tool at non-trivial rates overall | 31–89% aggregate | **High** |
-| **C5.** Within-TIR call-path pass ≠ skip-path pass | Task 1 output, selection-biased | Medium, frame with caveat |
-| **C6.** RL recalibrates (TIR-GRPO > CoT-GRPO; especially on expression) | Needs training results | Unknown |
+| C1. Paired per-benchmark: TIR ≤ CoT on 3 of 4 in-dist pool_v2 | W−L drsci −1.4, physics −4.2, ugphysics −2.8, scibench +3.3 | **Confirmed aggregate-level** on new model (drsci −0.8, physics +1.1, ugphysics −1.4, scibench −4.6; see §7.1) |
+| C2. Paired per-type: tool hurts on expression-type across 4 of 5 benchmarks | drsci −4.9, physics −10.7, ugphysics −1.7, olympiad −1.7, phybench +0.5 | **Unknown — Task 1b not yet rerun on Qwen3-4B rollouts** |
+| C3. Paired per-type: numerical is high-use low-benefit | call% 60–82 with ±5.5 pp effect | **Unknown — needs Task 1b re-run** |
+| C4. Base model calls tool at non-trivial rates overall | 31–89% aggregate | **Likely similar; needs Task 1 re-run for confirmation** |
+| C5. Within-TIR call-path pass ≠ skip-path pass | Task 1 output, selection-biased | Needs Task 1 re-run |
+| C6. RL recalibrates (TIR-GRPO > CoT-GRPO) | Needs training results | Needs training results |
 
-**C1 + C2 together carry the zero-shot story.** C2 is sharper (per-type mechanism) and C1 is the aggregate endorsement. C6 is the intervention endpoint.
+**Action:** HPC session to rerun Task 1 + Task 1b on the new Qwen3-4B zero-shot rollouts (`outputs/eval/<bench>/<mode>__Qwen-Qwen3-4B__<tag>/`). Scripts are already parameterized via `--outputs-eval`.
 
 ## 5. Contributions (3, in priority order)
 
@@ -112,33 +129,42 @@ This is sharper than "TIR wins" because:
 
 Abstract language should reflect this: "TIR-GRPO teaches a reasoning-tuned model to use symbolic computation where it pays off; we show this shifts accuracy on tool-suited problem types while leaving pure-reasoning strengths intact."
 
-## 7. Zero-shot eval results (already run, in main via `docs/eval_results.md`)
+## 7. Zero-shot eval results — Qwen3-4B base (current target, v4)
 
-### 7.1 Aggregate pass@1 (no call/skip split)
+### 7.1 Aggregate pass@1, Qwen3-4B base
 
 **In-distribution (pool_v2 test):**
 
-| benchmark (n) | tir/train | cot/train | tir/qwen | cot/qwen |
-|---|---|---|---|---|
-| pool_v2_scibench (153) | **0.599** | 0.566 | 0.572 | 0.579 |
-| pool_v2_physics (191) | 0.393 | **0.435** | 0.367 | 0.398 |
-| pool_v2_ugphysics (217) | 0.383 | **0.410** | 0.364 | 0.396 |
-| pool_v2_drsci (503) | 0.630 | 0.644 | 0.612 | **0.654** |
+| benchmark (n) | tir/train | cot/train | tir/qwen | cot/qwen | TIR−CoT (train) |
+|---|---|---|---|---|---|
+| pool_v2_scibench (153) | 0.533 | **0.579** | 0.579 | 0.579 | **−4.6** |
+| pool_v2_physics (191) | 0.398 | 0.387 | 0.403 | 0.403 | +1.1 |
+| pool_v2_ugphysics (217) | 0.318 | 0.332 | 0.309 | **0.336** | −1.4 |
+| pool_v2_drsci (503) | 0.592 | **0.600** | 0.571 | 0.592 | −0.8 |
 
 **External (held out):**
 
-| benchmark (n) | tir/train | cot/train | tir/qwen | cot/qwen |
-|---|---|---|---|---|
-| olympiad_oe_to_physics (236) pass@1 | 0.047 | 0.051 | 0.059 | **0.068** |
-| phybench (1000) exact pass@1 | 0.015 | 0.010 | **0.022** | 0.017 |
-| phybench mean EED (0-100) | 3.03 | 2.39 | **3.30** | 3.01 |
-| abench_phy_a (400) | 0.203 | 0.195 | 0.203 | **0.215** |
-| abench_phy_b (400) per-row | 0.633 | 0.633 | 0.640 | 0.620 |
-| abench_phy_b (100) per-mid (all-4-subid) | **0.500** | 0.490 | 0.490 | 0.480 |
+| benchmark (n) | tir/train | cot/train | tir/qwen | cot/qwen | TIR−CoT (train) |
+|---|---|---|---|---|---|
+| olympiad_oe_to_physics (236) | **0.191** | 0.140 | 0.157 | 0.153 | **+5.1** |
+| phybench (1000) exact | 0.015 | 0.010 | 0.020 | 0.019 | +0.5 |
+| phybench (1000) mean_EED | 2.93 | 2.53 | 3.21 | **3.29** | +0.40 |
+| abench_phy_a (400) | 0.138 | 0.155 | 0.135 | **0.160** | −1.8 |
+| abench_phy_b (400) per-row | 0.590 | **0.620** | 0.588 | 0.618 | −3.0 |
+| abench_phy_b (100) per-mid | 0.390 | **0.480** | 0.410 | 0.470 | **−9.0** |
 
-Sampling presets: `train` = `temp=1.0, top_p=1.0` (matches RL training); `qwen` = `temp=0.6, top_p=0.95, top_k=20` (Qwen team thinking-mode recommendation). We use the **train** preset in the paper for consistency with RL training.
+**Reading:** heterogeneous across benchmarks — TIR wins meaningfully on OlympiadBench (+5.1); ties or slight loss in-dist; loses on ABench-B per-mid (−9.0) and SciBench (−4.6). The "TIR ≈ CoT" statement holds in aggregate magnitude (|Δ| ≤ 5 pp for most cells) but directionality varies.
 
-### 7.2 Paired TIR-mode vs CoT-mode (Task 1b, the headline evidence)
+Sampling presets: `train` = `temp=1.0, top_p=1.0` (matches RL training); `qwen` = `temp=0.6, top_p=0.95, top_k=20`. We use **train** preset in the paper for consistency with RL.
+
+### 7.1-archive. Qwen3-4B-Thinking zero-shot (prior v3 target)
+
+Archived — see git history for v3.1 numbers. Kept only as reference for cross-model comparison in §2 above.
+
+### 7.2 Paired TIR-mode vs CoT-mode (Task 1b, headline evidence) — STALE FOR QWEN3-4B-THINKING; NEEDS RE-RUN FOR QWEN3-4B BASE
+
+**The tables below are for Qwen3-Thinking (prior target).** They remain useful for understanding the analysis structure. Once HPC reruns Task 1b on Qwen3-4B rollouts, this section will be replaced with the new numbers.
+
 
 From `outputs/eval/paired_tir_vs_cot_by_benchmark.csv` (train preset, xverify-7b judge unless noted):
 
@@ -427,8 +453,8 @@ See `paper/HPC_TASKS.md` for input/output specs, invariants, and priority order.
 
 ## 19. Things decided that should not be re-opened (unless new evidence)
 
-- **Framing (v2):** "Zero-shot tool use is miscalibrated; RL recalibrates." Not the old "model ignores tool" (v1, falsified by HPC data). Not reward-noise mechanism.
-- **Base model:** Qwen3-4B-Thinking-2507.
+- **Framing (v4 provisional):** "Tool availability does not consistently translate to benefit; RL converts inconsistent zero-shot behavior into consistent benefit." Upgrade path to v3.1 two-failure-modes framing is available pending Task 1b on Qwen3-4B rollouts.
+- **Base model (v4):** **Qwen/Qwen3-4B** (hybrid instruct/think). Not Qwen3-4B-Thinking-2507 (hard to train). Not Qwen3.5-4B (prior, dropped).
 - **CoT-GRPO:** strict apples-to-apples + both zero-shot CoT and zero-shot TIR references in Table 1.
 - **External benchmarks kept:** OlympiadBench, PHYBench (EED primary), ABench A, ABench B. In-dist: pool_v2 × 4 slices. Dropped: MATH-500.
 - **Verifier edge-case rules:** implementation detail, appendix only. Not pitched as a contribution.

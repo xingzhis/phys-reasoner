@@ -35,6 +35,21 @@ All tasks below specify **what** to compute and **what format** the output shoul
 
 ---
 
+## Task 0 (2026-04-21 late) — URGENT: rerun Tasks 1 and 1b on Qwen3-4B zero-shot rollouts
+
+**Context:** base model switched from Qwen3-4B-Thinking-2507 to Qwen3-4B (hybrid). All 32 zero-shot eval cells have been rerun and live under
+`outputs/eval/<bench>/<mode>__Qwen-Qwen3-4B__<tag>/` (distinct from the older `Qwen-Qwen3-4B-Thinking-2507__` directories).
+
+**Action:** rerun Task 1 and Task 1b on the new rollouts. Scripts are already parameterized — just point them at the Qwen3-4B cells.
+
+**Outputs:** replace the existing `outputs/eval/call_vs_skip_*.csv` and `paired_tir_vs_cot_*.csv` with the new-model versions. Consider saving the old versions to `outputs/eval/archive_qwen3_thinking/` first, since they still have pedagogical value.
+
+**Priority:** top priority, blocks §5.1 Table A and Table B in the paper. Everything else (Tasks 2–8) continues to be gated on training.
+
+**Reason we care:** the v3.1 thesis ("expression hurts, numerical high-use low-benefit") was rooted in the Thinking model's per-type paired data. Whether the same pattern survives the model switch is open — aggregate patterns already differ (OlympiadBench flipped, ABench-B per-mid shifted). The new paired data decides whether we revert to a crisp two-failure-modes thesis (v4.1 sharpened) or stay on the safer aggregate-only v4.0 fallback.
+
+---
+
 ## Task 1b — Per-problem paired TIR-mode vs CoT-mode comparison (the cleanest evidence)
 
 **Why:** Table A in §5.1 and the strongest form of Claim 1 (no selection bias). For each problem evaluated in both TIR mode and CoT mode zero-shot, classify the pair as Win / Loss / Tie:

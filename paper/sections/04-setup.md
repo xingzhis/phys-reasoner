@@ -6,7 +6,7 @@
 
 ## 4.1 Base model and baselines
 
-We train from **Qwen3-4B-Thinking-2507** [CITE:qwen3], a 4B-parameter
+We train from **Qwen3-4B (hybrid instruct/think)** [CITE:qwen3], a 4B-parameter
 reasoning-tuned base released by the Qwen team. Four conditions are
 compared throughout the paper:
 
