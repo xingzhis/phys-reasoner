@@ -329,12 +329,25 @@ def run_dump(
         )
 
     # --- Create vLLM engine (once; reused across chunks) ---
-    print(f"Creating vLLM engine: max_model_len={max_model_len}, gpu_mem={gpu_mem}")
+    # Qwen3-4B at 20k context needs ~2.81 GB KV per sequence. On 40G A100 this
+    # is brutal. Settings tuned for 40G:
+    #   max_num_seqs=16 — minimal activation buffer reservation
+    #   max_num_batched_tokens=4096 — chunked prefill
+    #   KV cache pool must be ≥ 2.81 GB × max_num_seqs ≈ 45 GB ideally, but
+    #   we accept ~12 GB (4 concurrent) to fit within 40G.
+    import os as _os
+    max_num_seqs = int(_os.environ.get("VLLM_MAX_NUM_SEQS", "16"))
+    max_num_batched_tokens = int(_os.environ.get("VLLM_MAX_NUM_BATCHED_TOKENS", "4096"))
+    print(f"Creating vLLM engine: max_model_len={max_model_len}, gpu_mem={gpu_mem}, "
+          f"max_num_seqs={max_num_seqs}, max_num_batched_tokens={max_num_batched_tokens}")
     llm = LLM(
         model=model_path,
         dtype="bfloat16",
         gpu_memory_utilization=gpu_mem,
         max_model_len=max_model_len,
+        max_num_seqs=max_num_seqs,
+        max_num_batched_tokens=max_num_batched_tokens,
+        enable_chunked_prefill=True,
         enforce_eager=True,  # Match VeRL; CUDA graphs can destabilize Qwen3.5 GDN attention
     )
 
@@ -614,7 +627,17 @@ def run_dump(
                 "extra_info": extra_infos[prob_idx],
             })
 
-        # Flush chunk parquet (crash safety)
+        # Flush chunk parquet (crash safety).
+        # pyarrow rejects lone UTF-16 surrogates in strings; the model occasionally
+        # emits them (e.g. '\udcXX'). Scrub string fields before serialization.
+        def _scrub(v):
+            if isinstance(v, str):
+                # encode with 'replace' turns unencodable surrogates into '?'
+                return v.encode("utf-8", "replace").decode("utf-8")
+            return v
+        for rec in chunk_records:
+            for k, v in rec.items():
+                rec[k] = _scrub(v)
         pd.DataFrame(chunk_records).to_parquet(chunk_path, index=False)
         print(f"  flushed {len(chunk_records)} rollouts → {chunk_path}")
         all_records.extend(chunk_records)

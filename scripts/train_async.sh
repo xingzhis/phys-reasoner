@@ -272,8 +272,9 @@ PYTHONNOUSERSITE=1 apptainer exec --nv \
   python3 -m verl.experimental.fully_async_policy.fully_async_main \
     algorithm.adv_estimator=grpo \
     algorithm.use_kl_in_reward=False \
-    algorithm.kl_ctrl.kl_coef=0.0 \
+    algorithm.kl_ctrl.kl_coef=${KL_COEF:-0.0} \
     algorithm.norm_adv_by_std_in_grpo=False \
+    ${FILTER_GROUPS_ENABLE:+algorithm.filter_groups.enable=$FILTER_GROUPS_ENABLE algorithm.filter_groups.metric=${FILTER_GROUPS_METRIC:-acc} algorithm.filter_groups.max_num_gen_batches=${FILTER_GROUPS_MAX_GENS:-10}} \
     actor_rollout_ref.actor.loss_agg_mode=token-mean \
     actor_rollout_ref.actor.clip_ratio_low=0.2 \
     actor_rollout_ref.actor.clip_ratio_high=0.28 \

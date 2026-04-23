@@ -233,6 +233,14 @@ def extract_tool_call_code(text: str) -> str | None:
     )
     if json_match:
         # Unescape JSON string contents without depending on stricter whole-object parsing.
-        return bytes(json_match.group(1), "utf-8").decode("unicode_escape")
+        # Model occasionally emits truncated \U…/\u… escapes (e.g. when it hits a token
+        # boundary mid-escape) which crash the unicode_escape codec. Fall back to the raw
+        # matched text in that case — the sandbox will still get something runnable or
+        # reject it cleanly via ast.parse.
+        raw = json_match.group(1)
+        try:
+            return bytes(raw, "utf-8").decode("unicode_escape")
+        except UnicodeDecodeError:
+            return raw
 
     return None

@@ -100,7 +100,9 @@ def _check_imports(code: str) -> str | None:
     """
     try:
         tree = ast.parse(code)
-    except SyntaxError:
+    except (SyntaxError, ValueError):
+        # ValueError covers UnicodeEncodeError raised by compile() when the
+        # model emits unpaired UTF-16 surrogate escapes (e.g. '\udcff').
         return "<syntax error>"
 
     for node in ast.walk(tree):
