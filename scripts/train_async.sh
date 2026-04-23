@@ -274,7 +274,7 @@ PYTHONNOUSERSITE=1 apptainer exec --nv \
     algorithm.use_kl_in_reward=False \
     algorithm.kl_ctrl.kl_coef=${KL_COEF:-0.0} \
     algorithm.norm_adv_by_std_in_grpo=False \
-    ${FILTER_GROUPS_ENABLE:+algorithm.filter_groups.enable=$FILTER_GROUPS_ENABLE algorithm.filter_groups.metric=${FILTER_GROUPS_METRIC:-acc} algorithm.filter_groups.max_num_gen_batches=${FILTER_GROUPS_MAX_GENS:-10}} \
+    ${FILTER_GROUPS_ENABLE:+++algorithm.filter_groups.enable=$FILTER_GROUPS_ENABLE ++algorithm.filter_groups.metric=${FILTER_GROUPS_METRIC:-acc} ++algorithm.filter_groups.max_num_gen_batches=${FILTER_GROUPS_MAX_GENS:-10}} \
     actor_rollout_ref.actor.loss_agg_mode=token-mean \
     actor_rollout_ref.actor.clip_ratio_low=0.2 \
     actor_rollout_ref.actor.clip_ratio_high=0.28 \
@@ -294,6 +294,8 @@ PYTHONNOUSERSITE=1 apptainer exec --nv \
     actor_rollout_ref.model.path="$MODEL" \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
+    actor_rollout_ref.model.use_fused_kernels=${USE_FUSED_KERNELS:-False} \
+    actor_rollout_ref.model.fused_kernel_options.impl_backend=${FUSED_KERNEL_BACKEND:-torch} \
     actor_rollout_ref.actor.optim.lr=$LR \
     actor_rollout_ref.actor.optim.lr_scheduler_type=$LR_SCHEDULER_TYPE \
     actor_rollout_ref.actor.optim.lr_warmup_steps=$LR_WARMUP_STEPS \
