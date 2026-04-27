@@ -22,7 +22,7 @@
 # HET-GROUP 0: TRAINER 4×4 on 40G
 #SBATCH -A m2651
 #SBATCH -C gpu&hbm40g
-#SBATCH -q regular
+#SBATCH -q premium
 #SBATCH -t 48:00:00
 #SBATCH -N 4
 #SBATCH --ntasks-per-node=1
@@ -33,7 +33,7 @@
 # HET-GROUP 1: ROLLOUT 2×4 on 40G
 #SBATCH -A m2651
 #SBATCH -C gpu&hbm40g
-#SBATCH -q regular
+#SBATCH -q premium
 #SBATCH -t 48:00:00
 #SBATCH -N 12
 #SBATCH --ntasks-per-node=1
@@ -122,8 +122,8 @@ TRAIN_DIR="$ROOT/outputs/physcode_ablation/z4i_prod_tir_${EXP_TS}"
 mkdir -p "$TRAIN_DIR"
 
 MODEL_PATH=Qwen/Qwen3-4B
-PHYSICS_TRAIN=$ROOT/data/phys_tir_107k/train.parquet
-PHYSICS_VAL=$ROOT/data/phys_tir_107k/validation.parquet
+PHYSICS_TRAIN=$ROOT/data/phys_tir_17k/train.parquet
+PHYSICS_VAL=$ROOT/data/phys_tir_17k/validation.parquet
 REWARD_PATH=$ROOT/src/phys_reasoner/training/reward.py
 
 # Budget: 1024 prompt + 12288 thinking + 16 interrupt + 7184 post-interrupt = 20496 model_len.
