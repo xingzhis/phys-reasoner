@@ -215,7 +215,7 @@ srun --overlap --het-group=0 --nodes=1 --ntasks=1 -w "$HEAD_NODE" \
         actor_rollout_ref.rollout.multi_turn.tool_response_truncate_side=right \
         +actor_rollout_ref.rollout.multi_turn.thinking_budget=12288 \
         +actor_rollout_ref.rollout.multi_turn.tool_call_budget=2048 \
-        async_training.trigger_parameter_sync_step=4 \
+        async_training.trigger_parameter_sync_step=1 \
         async_training.require_batches=1 \
         async_training.staleness_threshold=1.0 \
         async_training.partial_rollout=True \
