@@ -152,7 +152,8 @@ srun --overlap --het-group=0 --nodes=1 --ntasks=1 -w "$HEAD_NODE" \
         data.val_files="$PHYSICS_VAL" \
         data.prompt_key=prompt \
         data.truncation=left \
-        data.max_prompt_length=1024 \
+        data.max_prompt_length=1280 \
+        data.filter_overlong_prompts=True \
         data.max_response_length=$RESPONSE_LEN \
         data.train_batch_size=0 \
         data.gen_batch_size=1 \

@@ -15,15 +15,15 @@
 #   reward: reward_polaris.py → reward.py (rule + xverify; required for expression/equation types)
 # xverify URL polled from outputs/xverify_endpoints/current.url (must be running).
 
-#SBATCH --job-name=z4i_prod_cot
+#SBATCH --job-name=z4i_smoke_tir
 #SBATCH --output=logs/%x_%j.log
 #SBATCH --error=logs/%x_%j.err
 
 # HET-GROUP 0: TRAINER 4×4 on 40G
 #SBATCH -A m2651
 #SBATCH -C gpu&hbm40g
-#SBATCH -q regular
-#SBATCH -t 48:00:00
+#SBATCH -q premium
+#SBATCH -t 03:00:00
 #SBATCH -N 4
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=32
@@ -33,8 +33,8 @@
 # HET-GROUP 1: ROLLOUT 2×4 on 40G
 #SBATCH -A m2651
 #SBATCH -C gpu&hbm40g
-#SBATCH -q regular
-#SBATCH -t 48:00:00
+#SBATCH -q premium
+#SBATCH -t 03:00:00
 #SBATCH -N 12
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=32
@@ -49,7 +49,7 @@ unset SIF OVERLAY
 source "$ROOT/env.sh"
 [[ -f "$SIF" && -f "$OVERLAY" ]] || { echo "ERROR: SIF/OVERLAY missing" >&2; exit 1; }
 
-echo "=== z4i_prod_cot.sbatch ==="
+echo "=== z4i_smoke_tir.sbatch ==="
 echo "  Job       : $SLURM_JOB_ID"
 echo "  Trainer   : $SLURM_JOB_NODELIST_HET_GROUP_0"
 echo "  Rollout   : $SLURM_JOB_NODELIST_HET_GROUP_1"
@@ -118,12 +118,12 @@ cleanup() {
 trap cleanup EXIT
 
 EXP_TS=$(date +%Y%m%d.%H%M%S)
-TRAIN_DIR="$ROOT/outputs/physcode_ablation/z4i_prod_cot_${EXP_TS}"
+TRAIN_DIR="$ROOT/outputs/physcode_ablation/z4i_smoke_tir_${EXP_TS}"
 mkdir -p "$TRAIN_DIR"
 
 MODEL_PATH=Qwen/Qwen3-4B
-PHYSICS_TRAIN=$ROOT/data/phys_cot_107k/train.parquet
-PHYSICS_VAL=$ROOT/data/phys_cot_107k/validation.parquet
+PHYSICS_TRAIN=$ROOT/data/phys_tir_107k/train.parquet
+PHYSICS_VAL=$ROOT/data/phys_tir_107k/validation.parquet
 REWARD_PATH=$ROOT/src/phys_reasoner/training/reward.py
 
 # Budget: 1024 prompt + 12288 thinking + 16 interrupt + 7184 post-interrupt = 20496 model_len.
@@ -204,8 +204,8 @@ srun --overlap --het-group=0 --nodes=1 --ntasks=1 -w "$HEAD_NODE" \
         actor_rollout_ref.rollout.calculate_log_probs=True \
         actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1 \
         actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
-        actor_rollout_ref.rollout.agent.default_agent_loop=single_turn_agent \
-        actor_rollout_ref.rollout.multi_turn.enable=false \
+        actor_rollout_ref.rollout.agent.default_agent_loop=tool_agent \
+        actor_rollout_ref.rollout.multi_turn.enable=true \
         actor_rollout_ref.rollout.multi_turn.format=hermes \
         actor_rollout_ref.rollout.multi_turn.tool_config_path="$ROOT/scripts/physcode_tools.yaml" \
         actor_rollout_ref.rollout.multi_turn.max_assistant_turns=2 \
@@ -233,7 +233,7 @@ srun --overlap --het-group=0 --nodes=1 --ntasks=1 -w "$HEAD_NODE" \
         trainer.test_freq=100 \
         trainer.val_before_train=false \
         trainer.project_name=physcode_ablation \
-        trainer.experiment_name=z4i_prod_cot_${EXP_TS} \
+        trainer.experiment_name=z4i_smoke_tir_${EXP_TS} \
         trainer.default_local_dir=$TRAIN_DIR \
         trainer.default_hdfs_dir=null \
         'trainer.logger=["console","wandb"]' \
