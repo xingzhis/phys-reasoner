@@ -210,7 +210,7 @@ srun --overlap --het-group=0 --nodes=1 --ntasks=1 -w "$HEAD_NODE" \
         +actor_rollout_ref.rollout.multi_turn.tool_call_budget=2048 \
         async_training.trigger_parameter_sync_step=4 \
         async_training.require_batches=1 \
-        async_training.staleness_threshold=0.5 \
+        async_training.staleness_threshold=1.0 \
         async_training.partial_rollout=True \
         async_training.use_trainer_do_validate=False \
         reward.custom_reward_function.path="$REWARD_PATH" \
