@@ -56,8 +56,14 @@ echo "  Rollout   : $SLURM_JOB_NODELIST_HET_GROUP_1"
 
 # --- xverify URL (must be set before APT_CMD references it) ---
 URL_FILE="${SHARED_URL_FILE:-$ROOT/outputs/xverify_endpoints/current.url}"
-[[ -f "$URL_FILE" ]] || { echo "ERROR: xverify URL file missing at $URL_FILE" >&2; exit 1; }
-XVERIFY_URL=$(head -n1 "$URL_FILE")
+XVERIFY_WAIT_SECS="${XVERIFY_WAIT_SECS:-86400}"   # poll up to 24h for URL (regular queue may keep xverify pending for hours)
+echo "[xverify] polling $URL_FILE (timeout ${XVERIFY_WAIT_SECS}s) ..."
+deadline=$(( $(date +%s) + XVERIFY_WAIT_SECS ))
+while (( $(date +%s) < deadline )); do
+    [[ -f "$URL_FILE" ]] && { XVERIFY_URL=$(head -n1 "$URL_FILE"); break; }
+    sleep 30
+done
+[[ -z "${XVERIFY_URL:-}" ]] && { echo "ERROR: xverify URL never appeared in ${XVERIFY_WAIT_SECS}s" >&2; exit 1; }
 echo "[xverify] URL = $XVERIFY_URL"
 export XVERIFY_URL
 
