@@ -22,7 +22,7 @@
 #SBATCH -A m2651
 
 # 7B fits on any 40G+ card; '-C gpu' is fine.
-#SBATCH -C gpu&hbm80g
+#SBATCH -C gpu&hbm40g
 
 # Shared QoS for fractional (1-GPU) allocation. NERSC typically
 #               supports '-q shared' with --gpus-per-task=1. If not available,
@@ -34,7 +34,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --gpus-per-task=1
-#SBATCH --time=48:00:00
+#SBATCH --time=04:00:00
 
 set -euo pipefail
 
