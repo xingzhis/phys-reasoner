@@ -1,29 +1,35 @@
 #!/bin/bash
-# Z4m — Prod recipe (think-interrupt + 19488 budget) on Goldilocks-from-pilot.
-# This is the actual think-interrupt test Z4j was supposed to be:
-#   - Z4j on Z4h-245 couldn't fire interrupt because mean response length was 4000,
-#     well under 12288 thinking_budget (<2% fire rate).
-#   - Pilot probe at prod budget shows 7.3% natural interrupt fire rate on the
-#     mixed-type Goldilocks-from-pilot data → meaningful test.
-# Changes from Z4h baseline:
-#   data: Z4h-245 → Goldilocks-from-pilot (226 train, 11 val; types {mcq:123, num:54, expr:37, eq:23})
-#   data.max_response_length: 8192 → 19488
-#   rollout.max_model_len/max_num_batched_tokens: 9216 → 20512
-#   actor.ppo_max_token_len_per_gpu: 12288 → 20480
-#   multi_turn.thinking_budget: null → 12288
-#   multi_turn.tool_call_budget: null → 2048
-#   reward: reward_polaris.py → reward.py (rule + xverify; required for expression/equation types)
-# xverify URL polled from outputs/xverify_endpoints/current.url (must be running).
+# Z4u-prime-pyspy — diagnostic re-run of Z4u-prime with py-spy stall watchdog.
+#
+# Same recipe as z4uprime_tier1_drain (batch=128 + sync_step=1 + drop=True, 4T+8R,
+# Goldilocks-from-pilot 226 train). Adds a background watchdog on the head node
+# that polls the trainer log mtime; when it goes stale for >10 min, runs
+# `py-spy dump --pid <python_pid>` on every Python process across all hetgroup
+# nodes. Output saved to logs/pyspy_dumps/<JOBID>/<timestamp>/.
+#
+# Goal: capture exact `await`/syscall location of the silent stall to
+# discriminate between candidate root causes (sync subprocess vs vLLM/NCCL).
+#
+# Recipe deltas vs Z4t (52108644, worked, 31 steps, climbing reward):
+#   ppo_mini_batch_size : 16 -> 128
+#   trigger_param_sync  : 4  -> 1
+# Everything else (data, model, response_len, rollout_n, drop=True, threshold=1,
+# 4T+8R, ulysses_sp=2) is unchanged.
+#
+# Speed expectation: with batch=128 and only 8 rollout nodes (32 vLLM servers,
+# vs Z4i's 12N=48 servers), rollouter throughput ~2/3 of Z4i. If step time is
+# acceptable (<10 min), the 8R config is also a candidate for prod. If slow,
+# we'll scale to 12R for prod-regular but keep 8R for the comparison.
 
-#SBATCH --job-name=z4i_prod_cot_reg
+#SBATCH --job-name=z4uprime_tier1_drain
 #SBATCH --output=logs/%x_%j.log
 #SBATCH --error=logs/%x_%j.err
 
 # HET-GROUP 0: TRAINER 4×4 on 40G
 #SBATCH -A m2651
 #SBATCH -C gpu&hbm40g
-#SBATCH -q regular
-#SBATCH -t 48:00:00
+#SBATCH -q premium
+#SBATCH -t 06:00:00
 #SBATCH -N 4
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=32
@@ -33,9 +39,9 @@
 # HET-GROUP 1: ROLLOUT 2×4 on 40G
 #SBATCH -A m2651
 #SBATCH -C gpu&hbm40g
-#SBATCH -q regular
-#SBATCH -t 48:00:00
-#SBATCH -N 6
+#SBATCH -q premium
+#SBATCH -t 06:00:00
+#SBATCH -N 8
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=32
 #SBATCH --gpus-per-node=4
@@ -49,21 +55,15 @@ unset SIF OVERLAY
 source "$ROOT/env.sh"
 [[ -f "$SIF" && -f "$OVERLAY" ]] || { echo "ERROR: SIF/OVERLAY missing" >&2; exit 1; }
 
-echo "=== z4i_prod_cot_reg.sbatch ==="
+echo "=== z4uprime_tier1_drain.sbatch ==="
 echo "  Job       : $SLURM_JOB_ID"
 echo "  Trainer   : $SLURM_JOB_NODELIST_HET_GROUP_0"
 echo "  Rollout   : $SLURM_JOB_NODELIST_HET_GROUP_1"
 
 # --- xverify URL (must be set before APT_CMD references it) ---
 URL_FILE="${SHARED_URL_FILE:-$ROOT/outputs/xverify_endpoints/current.url}"
-XVERIFY_WAIT_SECS="${XVERIFY_WAIT_SECS:-86400}"   # poll up to 24h for URL (regular queue may keep xverify pending for hours)
-echo "[xverify] polling $URL_FILE (timeout ${XVERIFY_WAIT_SECS}s) ..."
-deadline=$(( $(date +%s) + XVERIFY_WAIT_SECS ))
-while (( $(date +%s) < deadline )); do
-    [[ -f "$URL_FILE" ]] && { XVERIFY_URL=$(head -n1 "$URL_FILE"); break; }
-    sleep 30
-done
-[[ -z "${XVERIFY_URL:-}" ]] && { echo "ERROR: xverify URL never appeared in ${XVERIFY_WAIT_SECS}s" >&2; exit 1; }
+[[ -f "$URL_FILE" ]] || { echo "ERROR: xverify URL file missing at $URL_FILE" >&2; exit 1; }
+XVERIFY_URL=$(head -n1 "$URL_FILE")
 echo "[xverify] URL = $XVERIFY_URL"
 export XVERIFY_URL
 
@@ -87,6 +87,7 @@ APT_CMD=(
     --env "PHYS_REQUIRE_XVERIFY=1"
     --env "XVERIFY_URL=$XVERIFY_URL"
     --env "INTERRUPT_LEN=16"
+    --env "VERL_WAIT_INFLIGHT_AT_SYNC=1"
     --env "PYTORCH_ALLOC_CONF=expandable_segments:True"
     --env "NCCL_IB_TIMEOUT=32"
     --env "NCCL_IBEXT_DISABLE=1"
@@ -105,7 +106,7 @@ export HEAD_NODE TRAIN_WORKER_NODES WORKER_NODES
 export N_GPUS_TRAIN=4
 export N_GPUS_ROLLOUT=4
 export NNODES_TRAIN=4
-export NNODES_ROLLOUT=6
+export NNODES_ROLLOUT=8
 export HET_SRUN_HEAD="--het-group=0"
 export HET_SRUN_WORKER="--het-group=1"
 source "$ROOT/scripts/perlmutter/_ray_bringup.sh"
@@ -118,12 +119,12 @@ cleanup() {
 trap cleanup EXIT
 
 EXP_TS=$(date +%Y%m%d.%H%M%S)
-TRAIN_DIR="$ROOT/outputs/physcode_ablation/z4i_prod_cot_reg_${EXP_TS}"
+TRAIN_DIR="$ROOT/outputs/physcode_ablation/z4uprime_tier1_drain_${EXP_TS}"
 mkdir -p "$TRAIN_DIR"
 
 MODEL_PATH=Qwen/Qwen3-4B
-PHYSICS_TRAIN=$ROOT/data/processed_cot/data/train.parquet
-PHYSICS_VAL=$ROOT/data/processed_cot/data/validation.parquet
+PHYSICS_TRAIN=$ROOT/data/processed_tir_goldilocks_from_pilot/data/train.parquet
+PHYSICS_VAL=$ROOT/data/processed_tir_goldilocks_from_pilot/data/validation.parquet
 REWARD_PATH=$ROOT/src/phys_reasoner/training/reward.py
 
 # Budget: 1024 prompt + 12288 thinking + 16 interrupt + 7184 post-interrupt = 20496 model_len.
@@ -131,6 +132,69 @@ REWARD_PATH=$ROOT/src/phys_reasoner/training/reward.py
 # (Slack of 16 vs 19472 for safety; verl truncates to response_length anyway.)
 RESPONSE_LEN=19488
 MODEL_LEN=$((1024 + RESPONSE_LEN))
+
+# --- py-spy presence check (binary already staged in .async-extras/bin) -----
+PYSPY_BIN_PRECHECK="$ROOT/.async-extras/bin/py-spy"
+[[ -x "$PYSPY_BIN_PRECHECK" ]] || { echo "ERROR: $PYSPY_BIN_PRECHECK missing" >&2; exit 1; }
+echo "[driver] py-spy ready: $($PYSPY_BIN_PRECHECK --version)"
+
+# --- py-spy stall watchdog --------------------------------------------------
+# Polls TRAIN_DIR/train.log every 30s; when it goes stale for >STALL_SEC (10 min),
+# launches py-spy dumps across both hetgroups via srun --overlap. Saves under
+# logs/pyspy_dumps/<JOBID>/<seq>_<timestamp>/. Runs MAX_DUMPS times then quiesces
+# so a long real silence (e.g. legitimate slow update_actor) doesn't spam.
+TRAIN_LOG="$TRAIN_DIR/train.log"
+PYSPY_DIR="$ROOT/logs/pyspy_dumps/${SLURM_JOB_ID}"
+mkdir -p "$PYSPY_DIR"
+PYSPY_BIN="$ROOT/.async-extras/bin/py-spy"
+
+watchdog_loop() {
+    local stale_sec=600          # declare stall after 10 min log idle
+    local poll_sec=30
+    local max_dumps=3            # bound output volume per run
+    local dump_count=0
+    local cooldown_sec=300       # don't double-fire within 5 min
+    local last_dump_time=0
+    while true; do
+        sleep "$poll_sec"
+        [[ -f "$TRAIN_LOG" ]] || continue
+        local mtime now age
+        mtime=$(stat -c %Y "$TRAIN_LOG" 2>/dev/null || echo 0)
+        now=$(date +%s)
+        age=$((now - mtime))
+        if (( age >= stale_sec && now - last_dump_time >= cooldown_sec && dump_count < max_dumps )); then
+            dump_count=$((dump_count + 1))
+            last_dump_time=$now
+            local seq=$(printf "%02d" "$dump_count")
+            local stamp=$(date +%Y%m%d.%H%M%S)
+            local out="$PYSPY_DIR/${seq}_${stamp}_age${age}s"
+            mkdir -p "$out"
+            echo "[watchdog $(date '+%H:%M:%S')] STALL #${dump_count} (log idle ${age}s) -> $out" >&2
+            for hg in 0 1; do
+                srun --overlap --het-group=$hg --ntasks-per-node=1 \
+                    "${APT_CMD[@]}" \
+                    bash -c '
+                        host=$(hostname)
+                        echo "=== host=$host pid_listing ==="
+                        ps -eo pid,pcpu,stat,comm,args --sort=-pcpu | grep -E "python|ray::" | grep -v grep | head -30
+                        echo
+                        for p in $(pgrep -f "python|ray::" | head -20); do
+                            echo "=== pid=$p ==="
+                            timeout 30 '"$PYSPY_BIN"' dump --pid $p 2>&1 | head -50 || echo "py-spy failed for $p"
+                            echo
+                        done
+                    ' > "$out/hetgroup_${hg}.txt" 2>&1
+            done
+            echo "[watchdog $(date '+%H:%M:%S')] dump #${dump_count} written" >&2
+        fi
+    done
+}
+watchdog_loop &
+WATCHDOG_PID=$!
+# Replace the prior cleanup trap with one that also kills the watchdog.
+trap 'kill $WATCHDOG_PID 2>/dev/null; type ray_teardown &>/dev/null && ray_teardown || true' EXIT
+echo "[driver] watchdog launched as pid=$WATCHDOG_PID (dumps in $PYSPY_DIR)"
+# ----------------------------------------------------------------------------
 
 echo "[driver] launching Z4m on $HEAD_NODE  (response_len=$RESPONSE_LEN, model_len=$MODEL_LEN, data=Goldilocks-from-pilot,filter=on,4T+8R, xverify=$XVERIFY_URL)"
 srun --overlap --het-group=0 --nodes=1 --ntasks=1 -w "$HEAD_NODE" \
@@ -152,8 +216,7 @@ srun --overlap --het-group=0 --nodes=1 --ntasks=1 -w "$HEAD_NODE" \
         data.val_files="$PHYSICS_VAL" \
         data.prompt_key=prompt \
         data.truncation=left \
-        data.max_prompt_length=1280 \
-        data.filter_overlong_prompts=True \
+        data.max_prompt_length=1024 \
         data.max_response_length=$RESPONSE_LEN \
         data.train_batch_size=0 \
         data.gen_batch_size=1 \
@@ -204,8 +267,8 @@ srun --overlap --het-group=0 --nodes=1 --ntasks=1 -w "$HEAD_NODE" \
         actor_rollout_ref.rollout.calculate_log_probs=True \
         actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1 \
         actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
-        actor_rollout_ref.rollout.agent.default_agent_loop=single_turn_agent \
-        actor_rollout_ref.rollout.multi_turn.enable=false \
+        actor_rollout_ref.rollout.agent.default_agent_loop=tool_agent \
+        actor_rollout_ref.rollout.multi_turn.enable=true \
         actor_rollout_ref.rollout.multi_turn.format=hermes \
         actor_rollout_ref.rollout.multi_turn.tool_config_path="$ROOT/scripts/physcode_tools.yaml" \
         actor_rollout_ref.rollout.multi_turn.max_assistant_turns=2 \
@@ -218,7 +281,7 @@ srun --overlap --het-group=0 --nodes=1 --ntasks=1 -w "$HEAD_NODE" \
         async_training.trigger_parameter_sync_step=1 \
         async_training.require_batches=1 \
         async_training.staleness_threshold=1.0 \
-        +async_training.rollout_timeout_sec=720.0 \
+        +async_training.rollout_timeout_sec=600.0 \
         async_training.partial_rollout=True \
         async_training.use_trainer_do_validate=False \
         reward.custom_reward_function.path="$REWARD_PATH" \
@@ -226,15 +289,15 @@ srun --overlap --het-group=0 --nodes=1 --ntasks=1 -w "$HEAD_NODE" \
         trainer.critic_warmup=0 \
         trainer.nnodes=4 \
         trainer.n_gpus_per_node=4 \
-        rollout.nnodes=6 \
+        rollout.nnodes=8 \
         rollout.n_gpus_per_node=4 \
         rollout.total_rollout_steps=999999999 \
-        trainer.total_epochs=3 \
-        trainer.save_freq=50 \
-        trainer.test_freq=100 \
+        trainer.total_epochs=30 \
+        trainer.save_freq=-1 \
+        trainer.test_freq=-1 \
         trainer.val_before_train=false \
         trainer.project_name=physcode_ablation \
-        trainer.experiment_name=z4i_prod_cot_reg_${EXP_TS} \
+        trainer.experiment_name=z4uprime_tier1_drain_${EXP_TS} \
         trainer.default_local_dir=$TRAIN_DIR \
         trainer.default_hdfs_dir=null \
         'trainer.logger=["console","wandb"]' \
