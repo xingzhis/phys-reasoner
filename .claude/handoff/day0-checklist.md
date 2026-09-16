@@ -66,11 +66,19 @@ If `fetch_dataset.py` fails with an HF auth error, the HF_TOKEN in `.env` may be
 
 If any fail: **→ ask user** before editing.
 
-## 4. TODO(collab) resolution
+## 4. SLURM header sanity check (canonical values now baked in)
 
-- [ ] `grep -n 'TODO(collab)' scripts/perlmutter/*.sbatch` — lists the account/queue/constraint placeholders.
-- [ ] Ask the collaborator (in-person or via the tmux session) for their most recent working sbatch on Perlmutter that uses the same account/queue shape. Read it, note the values.
-- [ ] **→ ask user** to confirm the resolved values before editing the sbatch. Do not commit the resolution until approved.
+The Perlmutter SLURM values are resolved as of 2026-04-20 and documented in `scripts/perlmutter/README.md` §2. Canonical header (every het-group):
+
+```
+#SBATCH -A m2651
+#SBATCH -C gpu&hbm80g
+#SBATCH -q premium
+```
+
+- [ ] `grep -n '^#SBATCH -\(A\|C\|q\)' scripts/perlmutter/smoke_tir_het.sbatch` → should show 3 het-groups × 3 values each, all matching the block above.
+- [ ] No `TODO(collab)` markers remain in the sbatch files: `grep -n 'TODO(collab)' scripts/perlmutter/*.sbatch` is empty. If any resurface (e.g. after a rebase), **→ ask user** before filling them.
+- [ ] Note: xverify het-group uses `-q premium` (not `-q shared`) because allocation `m2651` lacks shared-queue access — this reserves a whole 4×A100 node for a 1-GPU xverify workload. See README.md §2 "xverify GPU waste" for mitigation options.
 
 ## 5. Chat template probe (confirms hermes format)
 

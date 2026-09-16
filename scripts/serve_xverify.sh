@@ -22,13 +22,14 @@ PORT="${PORT:-8765}"
 HOST_BIND="${HOST_BIND:-0.0.0.0}"
 XVERIFY_MODEL="${XVERIFY_MODEL:-IAAR-Shanghai/xVerify-7B-I}"
 
-# Rendezvous: trainer discovers this server by reading current.url. Both the
-# het sbatches (which run this script directly under srun) and the companion
-# sbatch wrappers depend on this file existing; writing from here is the one
-# place that covers both paths.
+# Rendezvous: trainer discovers this server by reading URL_FILE. Callers may
+# override via env to avoid collisions when multiple prod jobs run concurrently
+# (e.g. TIR + CoT parallel). Default stays current.url for back-compat with
+# single-job sbatches. See scripts/perlmutter/prod_tir_het_4t.sbatch for the
+# per-JOBID pattern.
 HOST=$(hostname)
 URL="http://${HOST}:${PORT}/judge"
-URL_FILE="$ROOT/outputs/xverify_endpoints/current.url"
+URL_FILE="${URL_FILE:-$ROOT/outputs/xverify_endpoints/current.url}"
 mkdir -p "$(dirname "$URL_FILE")"
 
 echo "=== serve_xverify.sh ==="

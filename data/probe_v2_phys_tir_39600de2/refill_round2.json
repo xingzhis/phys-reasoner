@@ -1,0 +1,16 @@
+{
+  "source_parquet": "/pscratch/sd/b/bwhou/17-phy-reasoner/phys-reasoner/data/probe_v2_phys_tir_39600de2/remainder_vs_probe1.parquet",
+  "source_rows": 91531,
+  "scan_roots": [
+    "/pscratch/sd/b/bwhou/17-phy-reasoner/phys-reasoner/outputs/probe_qwen3_4b_v2_107k/fleet",
+    "/pscratch/sd/b/bwhou/17-phy-reasoner/phys-reasoner/outputs/probe_qwen3_4b_v2_107k/refill_round1",
+    "/pscratch/sd/b/bwhou/17-phy-reasoner/phys-reasoner/outputs/probe_qwen3_4b_v2_107k/refill_round2",
+    "/pscratch/sd/b/bwhou/17-phy-reasoner/phys-reasoner/outputs/probe_qwen3_4b_v2_107k/refill_round3"
+  ],
+  "files_scanned": 2501,
+  "rollouts_scanned": 490744,
+  "done_prompts": 61343,
+  "refill_parquet": "/pscratch/sd/b/bwhou/17-phy-reasoner/phys-reasoner/data/probe_v2_phys_tir_39600de2/refill_round2.parquet",
+  "refill_rows": 30188,
+  "coverage_before_refill_pct": 67.019
+}

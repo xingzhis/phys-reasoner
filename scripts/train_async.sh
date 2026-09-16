@@ -91,8 +91,16 @@ fi
 # Schedule. TOTAL_STEPS is the number of local trainer updates (each consumes
 # `require_batches * ppo_mini_batch_size` prompts). total_rollout_steps is the
 # total number of rollouts produced by the Rollouter across the whole run.
+#
+# verl's FullyAsyncRollouter.__init__ computes
+#   total_rollout_steps = min( len(dataloader) * trainer.total_epochs,
+#                              rollout.total_rollout_steps )
+# so BOTH knobs must be large enough to reach the target step count — otherwise
+# the smaller one binds. For long prod runs (multiple epochs) set TOTAL_EPOCHS
+# explicitly; smokes inherit the default 1 since TOTAL_STEPS << 1 epoch anyway.
 TOTAL_STEPS="${TOTAL_STEPS:-2}"
 TOTAL_ROLLOUT_STEPS=$((TOTAL_STEPS * TRAIN_BATCH))
+TOTAL_EPOCHS="${TOTAL_EPOCHS:-1}"
 SAVE_FREQ="${SAVE_FREQ:--1}"            # -1 = never save during smoke runs
 TEST_FREQ="${TEST_FREQ:--1}"            # -1 = never validate during smoke runs
 
@@ -178,6 +186,15 @@ PPO_MAX_TOKEN_LEN_PER_GPU="${PPO_MAX_TOKEN_LEN_PER_GPU:-20480}"
 # `export VAR=...` flows through deterministically.
 TRAIN_SP="${TRAIN_SP:-2}"
 STALENESS="${STALENESS:-1}"
+# Rollout vLLM tensor-parallel size. Default = N_GPUS_ROLLOUT (one engine across all
+# rollout GPUs per node). Set ROLLOUT_TP=1 for POLARIS-style single-GPU engines
+# (N parallel vLLM engines per node, no TP sharding).
+ROLLOUT_TP="${ROLLOUT_TP:-$N_GPUS_ROLLOUT}"
+# Reward function. Default = our physics xverify-backed compute_score.
+# Unset both to use verl's built-in reward manager (routed by data_source/ability in parquet),
+# e.g. for POLARIS math data that uses verl's default math scorer.
+REWARD_FN_PATH="${REWARD_FN_PATH-$ROOT/src/phys_reasoner/training/reward.py}"
+REWARD_FN_NAME="${REWARD_FN_NAME-compute_score}"
 REF_LOG_PROB_MAX_TOKEN_LEN="${REF_LOG_PROB_MAX_TOKEN_LEN:-81920}"
 ACTOR_PARAM_OFFLOAD="${ACTOR_PARAM_OFFLOAD:-False}"
 ACTOR_OPT_OFFLOAD="${ACTOR_OPT_OFFLOAD:-True}"
@@ -211,7 +228,7 @@ echo "  mode        : $([ "$COT_BASELINE" == "1" ] && echo 'CoT baseline (no too
 echo "  train       : $TRAIN_FILES"
 echo "  val         : $VAL_FILES"
 echo "  resource    : rollout ${NNODES_ROLLOUT}n x ${N_GPUS_ROLLOUT}g | train ${NNODES_TRAIN}n x ${N_GPUS_TRAIN}g"
-echo "  batch       : ppo_mini=$PPO_MINI_BATCH, rollout_n=$ROLLOUT_N, total_rollout_steps=$TOTAL_ROLLOUT_STEPS"
+echo "  batch       : ppo_mini=$PPO_MINI_BATCH, rollout_n=$ROLLOUT_N, total_rollout_steps=$TOTAL_ROLLOUT_STEPS, total_epochs=$TOTAL_EPOCHS"
 echo "  seq lens    : prompt=$MAX_PROMPT_LEN  response=$MAX_RESPONSE_LEN"
 echo "  vLLM mem    : $VLLM_GPU_MEM_UTIL"
 echo "  output      : $TRAIN_DIR"
@@ -264,9 +281,10 @@ PYTHONNOUSERSITE=1 apptainer exec --nv \
   python3 -m verl.experimental.fully_async_policy.fully_async_main \
     algorithm.adv_estimator=grpo \
     algorithm.use_kl_in_reward=False \
-    algorithm.kl_ctrl.kl_coef=0.0 \
-    algorithm.norm_adv_by_std_in_grpo=False \
-    actor_rollout_ref.actor.loss_agg_mode=token-mean \
+    algorithm.kl_ctrl.kl_coef=${KL_COEF:-0.0} \
+    algorithm.norm_adv_by_std_in_grpo=${NORM_ADV_BY_STD:-False} \
+    ${FILTER_GROUPS_ENABLE:+++algorithm.filter_groups.enable=$FILTER_GROUPS_ENABLE ++algorithm.filter_groups.metric=${FILTER_GROUPS_METRIC:-acc} ++algorithm.filter_groups.max_num_gen_batches=${FILTER_GROUPS_MAX_GENS:-10}} \
+    actor_rollout_ref.actor.loss_agg_mode=${LOSS_AGG_MODE:-token-mean} \
     actor_rollout_ref.actor.clip_ratio_low=0.2 \
     actor_rollout_ref.actor.clip_ratio_high=0.28 \
     actor_rollout_ref.actor.clip_ratio_c=10.0 \
@@ -285,6 +303,8 @@ PYTHONNOUSERSITE=1 apptainer exec --nv \
     actor_rollout_ref.model.path="$MODEL" \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
+    actor_rollout_ref.model.use_fused_kernels=${USE_FUSED_KERNELS:-False} \
+    actor_rollout_ref.model.fused_kernel_options.impl_backend=${FUSED_KERNEL_BACKEND:-torch} \
     actor_rollout_ref.actor.optim.lr=$LR \
     actor_rollout_ref.actor.optim.lr_scheduler_type=$LR_SCHEDULER_TYPE \
     actor_rollout_ref.actor.optim.lr_warmup_steps=$LR_WARMUP_STEPS \
@@ -297,14 +317,12 @@ PYTHONNOUSERSITE=1 apptainer exec --nv \
     actor_rollout_ref.actor.use_kl_loss=False \
     actor_rollout_ref.actor.kl_loss_coef=0.0 \
     actor_rollout_ref.actor.entropy_coeff=0 \
-    actor_rollout_ref.actor.use_rollout_log_probs=True \
+    actor_rollout_ref.actor.use_rollout_log_probs=${USE_ROLLOUT_LOG_PROBS:-False} \
     actor_rollout_ref.actor.fsdp_config.strategy=fsdp \
     actor_rollout_ref.actor.fsdp_config.param_offload=$ACTOR_PARAM_OFFLOAD \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=$ACTOR_OPT_OFFLOAD \
-    actor_rollout_ref.actor.fsdp_config.model_dtype=bfloat16 \
     actor_rollout_ref.actor.ulysses_sequence_parallel_size=$TRAIN_SP \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
-    actor_rollout_ref.ref.fsdp_config.model_dtype=bfloat16 \
     actor_rollout_ref.ref.ulysses_sequence_parallel_size=$TRAIN_SP \
     actor_rollout_ref.ref.log_prob_use_dynamic_bsz=$DYN_BSZ_FLAG \
     actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=$REF_LOG_PROB_MAX_TOKEN_LEN \
@@ -313,7 +331,8 @@ PYTHONNOUSERSITE=1 apptainer exec --nv \
     actor_rollout_ref.rollout.name=vllm \
     actor_rollout_ref.rollout.mode=async \
     actor_rollout_ref.rollout.n=$ROLLOUT_N \
-    actor_rollout_ref.rollout.temperature=1.0 \
+    actor_rollout_ref.rollout.temperature=${TRAIN_TEMPERATURE:-1.0} \
+    actor_rollout_ref.rollout.val_kwargs.temperature=${VAL_TEMPERATURE:-1.0} \
     actor_rollout_ref.rollout.top_p=1.0 \
     actor_rollout_ref.rollout.gpu_memory_utilization=$VLLM_GPU_MEM_UTIL \
     actor_rollout_ref.rollout.max_model_len=$((MAX_PROMPT_LEN + MAX_RESPONSE_LEN)) \
@@ -322,7 +341,8 @@ PYTHONNOUSERSITE=1 apptainer exec --nv \
     actor_rollout_ref.rollout.enable_prefix_caching=True \
     actor_rollout_ref.rollout.enable_chunked_prefill=True \
     actor_rollout_ref.rollout.enforce_eager=$ROLLOUT_ENFORCE_EAGER \
-    actor_rollout_ref.rollout.tensor_model_parallel_size=$N_GPUS_ROLLOUT \
+    +actor_rollout_ref.rollout.engine_kwargs.vllm.disable_custom_all_reduce=${VLLM_DISABLE_CUSTOM_ALL_REDUCE:-True} \
+    actor_rollout_ref.rollout.tensor_model_parallel_size=$ROLLOUT_TP \
     actor_rollout_ref.rollout.calculate_log_probs=True \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=$LOG_PROB_MICRO_BS_PER_GPU \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=$LOG_PROB_MICRO_BS_PER_GPU \
@@ -343,15 +363,15 @@ PYTHONNOUSERSITE=1 apptainer exec --nv \
     async_training.staleness_threshold=$STALENESS \
     async_training.partial_rollout=False \
     async_training.use_trainer_do_validate=False \
-    reward.custom_reward_function.path="$ROOT/src/phys_reasoner/training/reward.py" \
-    reward.custom_reward_function.name=compute_score \
+    ${REWARD_FN_PATH:+reward.custom_reward_function.path="$REWARD_FN_PATH"} \
+    ${REWARD_FN_NAME:+reward.custom_reward_function.name=$REWARD_FN_NAME} \
     trainer.critic_warmup=0 \
     trainer.nnodes=$NNODES_TRAIN \
     trainer.n_gpus_per_node=$N_GPUS_TRAIN \
     rollout.nnodes=$NNODES_ROLLOUT \
     rollout.n_gpus_per_node=$N_GPUS_ROLLOUT \
     rollout.total_rollout_steps=$TOTAL_ROLLOUT_STEPS \
-    trainer.total_epochs=1 \
+    trainer.total_epochs=$TOTAL_EPOCHS \
     trainer.save_freq=$SAVE_FREQ \
     trainer.test_freq=$TEST_FREQ \
     trainer.val_before_train=${VAL_BEFORE_TRAIN:-false} \

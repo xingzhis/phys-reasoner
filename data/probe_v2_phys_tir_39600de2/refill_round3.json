@@ -1,0 +1,6 @@
+{
+  "source_rows": 91531,
+  "refill_rows": 21994,
+  "coverage_before_refill_pct": 75.971,
+  "order": "shuffled seed=203 to decorrelate from round2 natural-order split"
+}

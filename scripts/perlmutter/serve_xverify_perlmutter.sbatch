@@ -16,25 +16,25 @@
 #SBATCH --output=logs/%x_%j.log
 #SBATCH --error=logs/%x_%j.err
 
-# TODO(collab): NERSC project account. Must be the same _g account used by the
+# NERSC project account. Must be the same _g account used by the
 #               training sbatch (cross-job rendezvous via shared filesystem works
 #               fine across accounts, but node-hour accounting will differ).
-#SBATCH -A TODO_ACCOUNT_g
+#SBATCH -A m2651
 
-# TODO(collab): 7B fits on any 40G+ card; '-C gpu' is fine.
-#SBATCH -C gpu
+# 7B fits on any 40G+ card; '-C gpu' is fine.
+#SBATCH -C gpu&hbm40g
 
-# TODO(collab): Shared QoS for fractional (1-GPU) allocation. NERSC typically
+# Shared QoS for fractional (1-GPU) allocation. NERSC typically
 #               supports '-q shared' with --gpus-per-task=1. If not available,
 #               drop to '-q regular' and accept a whole-node allocation (wastes
 #               3 GPUs) or bundle into the het variant instead.
-#SBATCH -q shared
+#SBATCH -q premium
 
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --gpus-per-task=1
-#SBATCH --time=48:00:00
+#SBATCH --time=04:00:00
 
 set -euo pipefail
 
@@ -53,7 +53,10 @@ XVERIFY_MODEL="${XVERIFY_MODEL:-IAAR-Shanghai/xVerify-7B-I}"
 # training job, fall back to `hostname --ip-address` and write the IP instead.
 HOST=$(hostname)
 URL="http://${HOST}:${PORT}/judge"
-URL_FILE="$ROOT/outputs/xverify_endpoints/current.url"
+# URL_FILE can be overridden via --export=ALL,URL_FILE=... when multiple
+# concurrent consumers need distinct rendezvous files (e.g. TIR+CoT prod
+# sharing one xverify — use a `shared.url` path in that case).
+URL_FILE="${URL_FILE:-$ROOT/outputs/xverify_endpoints/current.url}"
 
 echo "=== serve_xverify_perlmutter.sbatch ==="
 echo "  Job   : $SLURM_JOB_ID"
@@ -78,4 +81,5 @@ mv "$TMP" "$URL_FILE"
 trap 'rm -f "$URL_FILE"; echo "[xverify] URL file cleaned"' EXIT
 
 # Delegate to the underlying server runner (uses apptainer internally).
-PORT="$PORT" XVERIFY_MODEL="$XVERIFY_MODEL" bash "$ROOT/scripts/serve_xverify.sh"
+# Pass URL_FILE explicitly so serve_xverify.sh writes to the same path.
+PORT="$PORT" XVERIFY_MODEL="$XVERIFY_MODEL" URL_FILE="$URL_FILE" bash "$ROOT/scripts/serve_xverify.sh"

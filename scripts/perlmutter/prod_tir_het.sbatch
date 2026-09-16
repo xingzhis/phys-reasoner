@@ -11,8 +11,8 @@
 # Resume (same EXPERIMENT → verl auto-resumes from latest checkpoint):
 #   sbatch --export=ALL,EXPERIMENT=<prev> scripts/perlmutter/prod_tir_het.sbatch
 #
-# All 'TODO(collab)' markers are cluster-specific values the collaborator must fill.
-# Grep '^# TODO(collab)' to find every one.
+# Perlmutter canonical config is baked in (see scripts/perlmutter/README.md §2).
+# Resolved 2026-04-20 for allocation m2651.
 
 #SBATCH --job-name=physcode_prod_tir_het
 #SBATCH --output=logs/%x_%j.log
@@ -21,12 +21,12 @@
 # =============================================================================
 # HET-GROUP 0: TRAINER (Ray head) — 1 node × 4 GPU
 # =============================================================================
-# TODO(collab): NERSC project account with GPU allocation, e.g. m1234_g
-#SBATCH -A TODO_ACCOUNT_g
-# TODO(collab): -C gpu = A100-40G. For 80G: -C 'gpu&a100_80gb' (confirm exact feature name).
-#SBATCH -C gpu
-# TODO(collab): 'regular' (48h cap) | 'premium' (faster, 2x cost) — confirm budget policy.
-#SBATCH -q regular
+# NERSC project account with GPU allocation, e.g. m1234_g
+#SBATCH -A m2651
+# -C gpu = A100-40G. For 80G: -C 'gpu&a100_80gb' (confirm exact feature name).
+#SBATCH -C gpu&hbm80g
+# 'regular' (48h cap) | 'premium' (faster, 2x cost) — confirm budget policy.
+#SBATCH -q premium
 #SBATCH -t 48:00:00
 #SBATCH -N 1
 #SBATCH --ntasks-per-node=1
@@ -37,11 +37,11 @@
 # =============================================================================
 # HET-GROUP 1: ROLLOUT (Ray workers) — 5 nodes × 4 GPU
 # =============================================================================
-# TODO(collab): same account as group 0
-#SBATCH -A TODO_ACCOUNT_g
-# TODO(collab): match group 0 GPU class (both 40G or both 80G; mixing is fine in theory but untested)
-#SBATCH -C gpu
-#SBATCH -q regular
+# same account as group 0
+#SBATCH -A m2651
+# match group 0 GPU class (both 40G or both 80G; mixing is fine in theory but untested)
+#SBATCH -C gpu&hbm80g
+#SBATCH -q premium
 #SBATCH -t 48:00:00
 #SBATCH -N 5
 #SBATCH --ntasks-per-node=1
@@ -52,14 +52,14 @@
 # =============================================================================
 # HET-GROUP 2: XVERIFY (reward server) — 1 × 1 GPU (shared QoS)
 # =============================================================================
-# TODO(collab): same account
-#SBATCH -A TODO_ACCOUNT_g
-# TODO(collab): 7B fits on 40G; either class fine
-#SBATCH -C gpu
-# TODO(collab): Perlmutter shared-GPU QoS. NERSC typically supports '-q shared' with
+# same account
+#SBATCH -A m2651
+# 7B fits on 40G; either class fine
+#SBATCH -C gpu&hbm80g
+# Perlmutter shared-GPU QoS. NERSC typically supports '-q shared' with
 #               --gpus-per-task=1 for fractional-node allocation. CONFIRM before submit —
 #               if not available, use the companion variant (prod_tir_companion.sbatch).
-#SBATCH -q shared
+#SBATCH -q premium
 #SBATCH -t 48:00:00
 #SBATCH -N 1
 #SBATCH --ntasks=1
@@ -104,6 +104,15 @@ APT_CMD=(
     --env "TRITON_CACHE_DIR=/tmp/.cache/triton"
     --env "MPLCONFIGDIR=/tmp/.cache/matplotlib"
     --env "PHYS_REQUIRE_XVERIFY=1"
+    --env "PYTORCH_ALLOC_CONF=expandable_segments:True"
+    # NCCL tuning for Perlmutter Slingshot. See smoke_tir_het.sbatch for rationale.
+    # NCCL_NVLS_ENABLE REMOVED 2026-04-20 (A100 has NVLink Bridge not NVSwitch).
+    --env "NCCL_IB_TIMEOUT=32"
+    --env "NCCL_IBEXT_DISABLE=1"
+    --env "TORCH_NCCL_ENABLE_MONITORING=0"
+    # vLLM's custom all-reduce disabled at verl config layer via
+    # engine_kwargs.vllm.disable_custom_all_reduce=True in train_async.sh
+    # (Perlmutter A100 `custom_all_reduce.cuh:455 'invalid argument'` fix).
     "$SIF"
 )
 export APT_CMD
@@ -185,15 +194,18 @@ export XVERIFY_URL
 # N_GPUS_* / NNODES_* are already exported above (before Ray bring-up) so that
 # both Ray and verl see the same values; do NOT re-assign them here.
 # -----------------------------------------------------------------------------
-export MODEL="${MODEL:-Qwen/Qwen3.5-4B}"
+export MODEL="${MODEL:-Qwen/Qwen3-4B-Thinking-2507}"
 
 export TRAIN_BATCH="${TRAIN_BATCH:-128}"            # ppo_mini_batch_size
 export ROLLOUT_N="${ROLLOUT_N:-8}"                  # GRPO group size
-export TOTAL_STEPS="${TOTAL_STEPS:-3000}"           # ~3 epochs over 108k pool
-export SAVE_FREQ="${SAVE_FREQ:-200}"                # 15 checkpoints across the run
-export TEST_FREQ="${TEST_FREQ:-100}"                # 30 eval points across the run
+# ~3 epochs over the 23,589-row filtered pool: 23589 / 128 ≈ 184 steps/epoch × 3.
+# Raise ceiling via --export=ALL,TOTAL_STEPS=... if you want more epochs.
+export TOTAL_STEPS="${TOTAL_STEPS:-552}"
+export SAVE_FREQ="${SAVE_FREQ:-50}"                 # ~11 checkpoints at 552 steps
+export TEST_FREQ="${TEST_FREQ:-50}"                 # aligned with save cadence
 
-# Sequence budgets (match probe).
+# Sequence budgets — think-interrupt enabled. Total MAX_RESPONSE_LEN computed
+# in train_async.sh as THINKING + 16 + TOOL_CALL + 1024 + ANSWER = 19,472.
 export THINKING_BUDGET="${THINKING_BUDGET:-12288}"
 export TOOL_CALL_BUDGET="${TOOL_CALL_BUDGET:-2048}"
 export ANSWER_BUDGET="${ANSWER_BUDGET:-4096}"
@@ -203,9 +215,18 @@ export VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-0.85}"
 
 # Trainer memory. Use dynamic batch sizing (see Q10 in checklist.md).
 # PPO_MICRO_BS_PER_GPU is ignored when USE_DYNAMIC_BSZ=1 below.
+# 20480 = max_prompt(1024) + max_response(19472) packed per GPU; matches
+# what smoke A/B measured stable. Bump to 24576 only with spare memory headroom.
 export USE_DYNAMIC_BSZ="${USE_DYNAMIC_BSZ:-1}"
-export PPO_MAX_TOKEN_LEN_PER_GPU="${PPO_MAX_TOKEN_LEN_PER_GPU:-24576}"
+export PPO_MAX_TOKEN_LEN_PER_GPU="${PPO_MAX_TOKEN_LEN_PER_GPU:-20480}"
 export ACTOR_OPT_OFFLOAD="${ACTOR_OPT_OFFLOAD:-True}"
+
+# Qwen3-switch knobs (unblocked by moving off Qwen3.5 GDN):
+#   TRAIN_SP=2 → Ulysses sequence parallelism, 2-way split across trainer GPUs.
+#   STALENESS=1 → rollout of step t+1 overlaps trainer update of step t
+#                 (~40% wall savings at prod budget per smoke B measurement).
+export TRAIN_SP="${TRAIN_SP:-2}"
+export STALENESS="${STALENESS:-1}"
 
 # Data defaults resolve to the local HF-download path (fetch_dataset.py output).
 export TRAIN_FILES="${TRAIN_FILES:-$ROOT/data/processed_tir/data/train.parquet}"

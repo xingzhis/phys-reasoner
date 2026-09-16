@@ -73,6 +73,7 @@ def score_rollouts(
     xverify_model: str = "IAAR-Shanghai/xVerify-7B-I",
     xverify_device: str = "cuda",
     no_xverify: bool = False,
+    xverify_url: str = "",
 ) -> None:
     import pandas as pd  # noqa: PLC0415
 
@@ -82,9 +83,15 @@ def score_rollouts(
     n = len(df)
     print(f"Loaded {n} rollouts from {rollouts_path}")
 
-    # Load xVerify (unless disabled — rule-only scoring for smoke tests)
     xverify_judge = None
-    if not no_xverify:
+    if xverify_url:
+        from phys_reasoner.verifier.xverify_client import XVerifyHTTPClient  # noqa: PLC0415
+        print(f"Using remote xVerify: {xverify_url}")
+        xverify_judge = XVerifyHTTPClient(url=xverify_url)
+        if not xverify_judge.health_check():
+            raise RuntimeError(f"xVerify server at {xverify_url} failed health check")
+        print("xVerify HTTP client ready.")
+    elif not no_xverify:
         from phys_reasoner.verifier.xverify_judge import XVerifyJudge  # noqa: PLC0415
         print(f"Loading xVerify: {xverify_model} on {xverify_device} ...")
         xverify_judge = XVerifyJudge(model_name=xverify_model, device=xverify_device)
@@ -178,6 +185,8 @@ def main() -> None:
     p.add_argument("--xverify_device", default="cuda")
     p.add_argument("--no_xverify", action="store_true",
                    help="Skip xVerify (rule-only). Useful for smoke tests without GPU.")
+    p.add_argument("--xverify_url", default="",
+                   help="If set, use remote xVerify server via HTTP (takes precedence over local load).")
     args = p.parse_args()
     score_rollouts(
         rollouts_path=args.rollouts,
@@ -185,6 +194,7 @@ def main() -> None:
         xverify_model=args.xverify_model,
         xverify_device=args.xverify_device,
         no_xverify=args.no_xverify,
+        xverify_url=args.xverify_url,
     )
 
 
